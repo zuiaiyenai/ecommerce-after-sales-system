@@ -1,0 +1,16 @@
+{
+  "name": "电商售后",
+  "appid": "__UNI__ECOMMERCE",
+  "description": "电商售后客服与用户评价分析系统小程序端",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "vueVersion": "3",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "wx63e183f04243d3d0",
+    "setting": {
+      "urlCheck": false
+    },
+    "usingComponents": true
+  }
+}

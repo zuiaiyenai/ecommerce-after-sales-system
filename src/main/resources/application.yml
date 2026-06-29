@@ -1,0 +1,30 @@
+server:
+  port: 8080
+  address: 0.0.0.0
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: ecommerce-aftersales
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/ecommerce_aftersales?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+app:
+  jwt:
+    secret: "${JWT_SECRET:change-this-secret-key-to-at-least-32-bytes-in-production}"
+    expire-minutes: 10080
