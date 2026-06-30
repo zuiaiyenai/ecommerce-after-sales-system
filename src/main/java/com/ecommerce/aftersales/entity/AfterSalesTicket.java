@@ -21,6 +21,10 @@ public class AfterSalesTicket {
 
     private Long userId;
 
+    private Long merchantId;
+
+    private String merchantCode;
+
     private String productName;
 
     private String afterSaleType;

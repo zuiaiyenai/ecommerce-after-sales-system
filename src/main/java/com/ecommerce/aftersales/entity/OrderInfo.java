@@ -17,6 +17,10 @@ public class OrderInfo {
 
     private Long userId;
 
+    private Long merchantId;
+
+    private String merchantCode;
+
     private BigDecimal totalAmount;
 
     private BigDecimal payAmount;

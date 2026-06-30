@@ -1,362 +1,53 @@
 const USE_REAL_API = import.meta.env.VITE_USE_REAL_API === 'true';
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080';
+const BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080');
 const TOKEN_KEY = 'merchant_cs_token';
 const EVALUATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 let token = localStorage.getItem(TOKEN_KEY) || '';
 
 let staffProfile = {
-  staffId: 1,
-  staffNo: 'CS0001',
-  merchantCode: 'MERCHANT_DEMO',
-  account: 'cs_demo',
-  realName: '林真',
+  staffId: null,
+  staffNo: '',
+  merchantCode: '',
+  account: '',
+  realName: '',
   role: 'CUSTOMER_SERVICE',
-  onlineStatus: 'ONLINE',
+  onlineStatus: 'OFFLINE',
   maxSessionCount: 8
 };
 
-const overview = {
-  greeting: '早上好，林真',
-  todayTodoCount: 35,
-  aiEnabled: true,
-  metrics: [
-    { title: '待接入会话', value: 18, trend: '+6', accent: 'orange' },
-    { title: '待审核工单', value: 12, trend: '+2', accent: 'slate' },
-    { title: '超时预警', value: 5, trend: '-1', accent: 'green' }
-  ],
-  timeline: [
-    { time: '09:20', title: '系统分配新会话 6 个', type: 'normal' },
-    { time: '09:35', title: '工单 TK20260625011 触发 SLA 预警', type: 'warn' },
-    { time: '09:50', title: '退款审核队列已完成自动优先级排序', type: 'normal' }
-  ]
-};
+function normalizeBaseUrl(url) {
+  return url.replace(/\/+$/, '').replace(/\/api$/, '');
+}
 
-const todos = [
-  { id: 1, target: '/tickets/201', title: '售后工单 #TK20260625018', tag: '退款审核', amount: '128.00 元', priority: '高', priorityTone: 'high', action: '审核' },
-  { id: 2, target: '/sessions/101', title: '会话 #CS20260625007', tag: '人工介入', amount: '情绪升级', priority: '高', priorityTone: 'high', action: '接入' },
-  { id: 3, target: '/notices', title: '评价复核 #RV20260625003', tag: '差评申诉', amount: '1 条', priority: '中', priorityTone: 'medium', action: '复核' },
-  { id: 4, target: '/notices', title: '服务预警确认', tag: '系统提醒', amount: '4 条', priority: '低', priorityTone: 'normal', action: '确认' }
-];
+function buildUrl(path) {
+  return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
 
-const performance = {
-  metrics: [
-    { label: '30 秒响应率', value: '92%', desc: '目标 90%', currentPercent: 92, targetPercent: 90 },
-    { label: '一次解决率', value: '68%', desc: '目标 70%', currentPercent: 68, targetPercent: 70 },
-    { label: '平均处理时长', value: '06:24', desc: '目标 08:00', currentPercent: 80, targetPercent: 100 }
-  ]
-};
-
-let sessions = [
-  {
-    id: 101,
-    sessionNo: 'CS20260625007',
-    user: '王晓雪',
-    topic: '退款进度咨询',
-    level: '高优先级',
-    wait: '等待 02:13',
-    emotion: '情绪预警',
-    sourceChannel: '小程序咨询',
-    status: 'PROCESSING',
-    orderNo: 'ORD202606250018',
-    product: '便携榨汁杯',
-    productName: '便携榨汁杯',
-    ticketNo: 'TK20260625018',
-    lastMessageContent: '我的退款什么时候能到账？',
-    aiSummary: '用户关注退款到账时间，情绪偏急，需要先核对退款审核状态并给出明确时效。',
-    evaluationStatus: null
-  },
-  {
-    id: 102,
-    sessionNo: 'CS20260625008',
-    user: '陈志远',
-    topic: '换货物流异常',
-    level: '待用户评价',
-    wait: '等待评价',
-    emotion: '可安抚',
-    sourceChannel: '网页客服',
-    status: 'AWAITING_EVALUATION',
-    orderNo: 'ORD202606240033',
-    product: '智能恒温杯',
-    productName: '智能恒温杯',
-    ticketNo: 'TK20260625019',
-    lastMessageContent: '已发送服务评价邀请，等待用户评价。',
-    aiSummary: '用户反馈换货物流停滞，建议核对物流轨迹并承诺同步处理结果。',
-    evaluationRequestedAt: minutesAgo(10),
-    evaluationStatus: 'REQUESTED'
-  },
-  {
-    id: 103,
-    sessionNo: 'CS20260625009',
-    user: '李倩',
-    topic: '商品质量咨询',
-    level: '待用户评价',
-    wait: '等待评价',
-    emotion: 'AI 可接管',
-    sourceChannel: '公众号',
-    status: 'AWAITING_EVALUATION',
-    orderNo: 'ORD202606230071',
-    product: '无线耳机',
-    productName: '无线耳机',
-    ticketNo: '',
-    lastMessageContent: '已发送服务评价邀请，等待用户评价。',
-    aiSummary: '用户询问质保范围，建议先确认购买时间和故障表现，再引用售后政策。',
-    evaluationRequestedAt: minutesAgo(35),
-    evaluationStatus: 'REQUESTED'
-  },
-  {
-    id: 104,
-    sessionNo: 'CS20260625010',
-    user: '周语',
-    topic: '优惠券使用说明',
-    level: '已完成',
-    wait: '已完成评价',
-    emotion: '评价完成',
-    sourceChannel: 'APP',
-    status: 'RESOLVED',
-    orderNo: 'ORD202606220018',
-    product: '轻音降噪耳机 Pro',
-    productName: '轻音降噪耳机 Pro',
-    ticketNo: '',
-    lastMessageContent: '用户已完成服务评价',
-    aiSummary: '用户问题已解决并完成评价。',
-    evaluationRequestedAt: minutesAgo(50),
-    evaluatedAt: minutesAgo(45),
-    rating: 5,
-    evaluationStatus: 'SUBMITTED'
-  },
-  {
-    id: 105,
-    sessionNo: 'CS20260625011',
-    user: '周航',
-    topic: '空气炸锅退款资料确认',
-    level: '高优先级',
-    wait: '等待 04:18',
-    emotion: '焦虑',
-    sourceChannel: '小程序咨询',
-    status: 'WAITING',
-    orderNo: 'ORD202606230088',
-    product: '空气炸锅',
-    productName: '空气炸锅',
-    ticketNo: 'TK20260625021',
-    lastMessageContent: '我已经上传照片了，还需要补什么？',
-    aiSummary: '用户询问退款凭证要求，建议核对照片是否覆盖商品外观、故障点和订单信息。',
-    evaluationStatus: null
-  },
-  {
-    id: 106,
-    sessionNo: 'CS20260625012',
-    user: '林雨晴',
-    topic: '音箱退货物流',
-    level: '普通优先级',
-    wait: '等待 01:46',
-    emotion: '可安抚',
-    sourceChannel: '网页客服',
-    status: 'PROCESSING',
-    orderNo: 'ORD202606220114',
-    product: '蓝牙音箱',
-    productName: '蓝牙音箱',
-    ticketNo: 'TK20260625022',
-    lastMessageContent: '退回件已经签收，退款什么时候处理？',
-    aiSummary: '用户关注仓库验收后的退款时效，需要同步售后状态。',
-    evaluationStatus: null
-  },
-  {
-    id: 107,
-    sessionNo: 'CS20260625013',
-    user: '孙浩',
-    topic: '手环换货进度',
-    level: '高优先级',
-    wait: '等待 06:02',
-    emotion: '不满',
-    sourceChannel: 'APP',
-    status: 'PROCESSING',
-    orderNo: 'ORD202606220126',
-    product: '运动手环',
-    productName: '运动手环',
-    ticketNo: 'TK20260625023',
-    lastMessageContent: '已经等了两天，换货单还没更新。',
-    aiSummary: '用户等待时间较长，建议先说明当前节点并承诺跟进时点。',
-    evaluationStatus: null
-  },
-  {
-    id: 108,
-    sessionNo: 'CS20260625014',
-    user: '吴越',
-    topic: '智能台灯少件',
-    level: '待补充',
-    wait: '等待资料',
-    emotion: '中性',
-    sourceChannel: '公众号',
-    status: 'AWAITING_EVALUATION',
-    orderNo: 'ORD202606210079',
-    product: '智能台灯',
-    productName: '智能台灯',
-    ticketNo: 'TK20260625024',
-    lastMessageContent: '已发送服务评价邀请，等待用户评价。',
-    aiSummary: '已告知用户补充配件照片和外包装照片。',
-    evaluationRequestedAt: minutesAgo(12),
-    evaluationStatus: 'REQUESTED'
-  },
-  {
-    id: 109,
-    sessionNo: 'CS20260625015',
-    user: '郑楠',
-    topic: '机械键盘按键异常',
-    level: '待客服关闭',
-    wait: '评价超时',
-    emotion: '中性',
-    sourceChannel: '小程序咨询',
-    status: 'READY_TO_CLOSE',
-    orderNo: 'ORD202606200156',
-    product: '机械键盘',
-    productName: '机械键盘',
-    ticketNo: 'TK20260625025',
-    lastMessageContent: '用户 30 分钟内未完成评价，客服可关闭该会话。',
-    aiSummary: '客服已完成换货说明，用户未评价。',
-    evaluationRequestedAt: minutesAgo(50),
-    evaluationStatus: 'TIMEOUT'
-  },
-  {
-    id: 110,
-    sessionNo: 'CS20260625016',
-    user: '冯乐',
-    topic: '投影仪退款申诉',
-    level: '高优先级',
-    wait: '等待 07:35',
-    emotion: '情绪预警',
-    sourceChannel: '网页客服',
-    status: 'WAITING',
-    orderNo: 'ORD202606200178',
-    product: '便携投影仪',
-    productName: '便携投影仪',
-    ticketNo: 'TK20260625026',
-    lastMessageContent: '为什么我的退款申请被驳回？',
-    aiSummary: '用户对驳回原因不满，需要解释售后时效和证据要求。',
-    evaluationStatus: null
-  },
-  {
-    id: 111,
-    sessionNo: 'CS20260625017',
-    user: '罗晨',
-    topic: '无线充电器未发货退款',
-    level: '普通优先级',
-    wait: '等待 00:52',
-    emotion: '中性',
-    sourceChannel: 'APP',
-    status: 'PROCESSING',
-    orderNo: 'ORD202606190096',
-    product: '无线充电器',
-    productName: '无线充电器',
-    ticketNo: 'TK20260625027',
-    lastMessageContent: '订单还没发货，我想直接退款。',
-    aiSummary: '未发货退款诉求，可核对发货状态后引导提交仅退款。',
-    evaluationStatus: null
-  },
-  {
-    id: 112,
-    sessionNo: 'CS20260625018',
-    user: '许诺',
-    topic: '扫地机器人换货',
-    level: '高优先级',
-    wait: '等待 03:24',
-    emotion: '可安抚',
-    sourceChannel: '小程序咨询',
-    status: 'PROCESSING',
-    orderNo: 'ORD202606180137',
-    product: '扫地机器人',
-    productName: '扫地机器人',
-    ticketNo: 'TK20260625028',
-    lastMessageContent: '检测件什么时候补发？',
-    aiSummary: '用户关注换货补发时间，需要同步仓库处理计划。',
-    evaluationStatus: null
-  },
-  {
-    id: 113,
-    sessionNo: 'CS20260625019',
-    user: '高琳',
-    topic: '咖啡机退货说明',
-    level: '待用户评价',
-    wait: '等待评价',
-    emotion: '评价邀请',
-    sourceChannel: '公众号',
-    status: 'AWAITING_EVALUATION',
-    orderNo: 'ORD202606180152',
-    product: '咖啡机',
-    productName: '咖啡机',
-    ticketNo: 'TK20260625029',
-    lastMessageContent: '已发送服务评价邀请，等待用户评价。',
-    aiSummary: '已说明退货包装要求和退款预计时效。',
-    evaluationRequestedAt: minutesAgo(5),
-    evaluationStatus: 'REQUESTED'
-  },
-  {
-    id: 114,
-    sessionNo: 'CS20260625020',
-    user: '唐敏',
-    topic: '显示器质保咨询',
-    level: '已完成',
-    wait: '已完成评价',
-    emotion: '评价完成',
-    sourceChannel: 'APP',
-    status: 'RESOLVED',
-    orderNo: 'ORD202606190063',
-    product: '护眼显示器',
-    productName: '护眼显示器',
-    ticketNo: '',
-    lastMessageContent: '用户已完成服务评价',
-    aiSummary: '用户确认质保范围后完成评价。',
-    evaluationRequestedAt: minutesAgo(80),
-    evaluatedAt: minutesAgo(76),
-    rating: 5,
-    evaluationStatus: 'SUBMITTED'
+function saveToken(newToken) {
+  token = newToken;
+  if (newToken) {
+    localStorage.setItem(TOKEN_KEY, newToken);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
   }
-];
+}
 
-const messagesBySession = {
-  101: [
-    { id: 1, sessionId: 101, senderRole: 'USER', messageType: 'TEXT', content: '我的退款什么时候能到账？' },
-    { id: 2, sessionId: 101, senderRole: 'SERVICE', messageType: 'TEXT', content: '您好，我已经帮您核对退款进度。' }
-  ],
-  102: [
-    { id: 3, sessionId: 102, senderRole: 'USER', messageType: 'TEXT', content: '换货包裹三天没有更新了。' },
-    { id: 4, sessionId: 102, senderRole: 'SERVICE', messageType: 'TEXT', content: '我会帮您联系物流核实，并同步处理结果。' }
-  ],
-  103: [
-    { id: 5, sessionId: 103, senderRole: 'USER', messageType: 'TEXT', content: '这个问题属于质保范围吗？' }
-  ],
-  104: [
-    { id: 6, sessionId: 104, senderRole: 'USER', messageType: 'TEXT', content: '优惠券为什么不能使用？' },
-    { id: 7, sessionId: 104, senderRole: 'SERVICE', messageType: 'TEXT', content: '这张券仅限满 299 元订单使用，当前订单金额不足。' }
-  ]
-};
-
-let tickets = [
-  { id: 201, ticketNo: 'TK20260625018', title: '退款审核', status: 'PENDING_REVIEW', afterSalesType: 'REFUND', applyRefundAmount: '128.00', priority: 'HIGH' },
-  { id: 202, ticketNo: 'TK20260625019', title: '换货物流异常', status: 'PROCESSING', afterSalesType: 'EXCHANGE', applyRefundAmount: '0.00', priority: 'NORMAL' },
-  { id: 203, ticketNo: 'TK20260625020', title: '少件补发申请', status: 'PENDING_REVIEW', afterSalesType: 'RESEND', applyRefundAmount: '0.00', priority: 'NORMAL' },
-  { id: 204, ticketNo: 'TK20260625021', title: '空气炸锅仅退款审核', status: 'PENDING_REVIEW', afterSalesType: 'REFUND', applyRefundAmount: '329.00', priority: 'HIGH' },
-  { id: 205, ticketNo: 'TK20260625022', title: '蓝牙音箱退货退款', status: 'PROCESSING', afterSalesType: 'REFUND', applyRefundAmount: '189.00', priority: 'NORMAL' },
-  { id: 206, ticketNo: 'TK20260625023', title: '运动手环换货审核', status: 'PENDING_REVIEW', afterSalesType: 'EXCHANGE', applyRefundAmount: '0.00', priority: 'NORMAL' },
-  { id: 207, ticketNo: 'TK20260625024', title: '智能台灯补充资料', status: 'PROCESSING', afterSalesType: 'RESEND', applyRefundAmount: '0.00', priority: 'HIGH' },
-  { id: 208, ticketNo: 'TK20260625025', title: '机械键盘换货处理', status: 'PROCESSING', afterSalesType: 'EXCHANGE', applyRefundAmount: '0.00', priority: 'HIGH' },
-  { id: 209, ticketNo: 'TK20260625026', title: '投影仪退款驳回', status: 'REJECTED', afterSalesType: 'REFUND', applyRefundAmount: '1299.00', priority: 'NORMAL' },
-  { id: 210, ticketNo: 'TK20260625027', title: '无线充电器退款审核', status: 'PENDING_REVIEW', afterSalesType: 'REFUND', applyRefundAmount: '99.00', priority: 'NORMAL' },
-  { id: 211, ticketNo: 'TK20260625028', title: '扫地机器人换货处理', status: 'PROCESSING', afterSalesType: 'EXCHANGE', applyRefundAmount: '0.00', priority: 'HIGH' },
-  { id: 212, ticketNo: 'TK20260625029', title: '咖啡机退货退款审核', status: 'PENDING_REVIEW', afterSalesType: 'REFUND', applyRefundAmount: '699.00', priority: 'HIGH' },
-  { id: 213, ticketNo: 'TK20260625030', title: '显示器售后复核驳回', status: 'REJECTED', afterSalesType: 'REFUND', applyRefundAmount: '899.00', priority: 'NORMAL' }
-];
-
-const ticketLogs = {
-  201: [
-    { id: 1, ticketId: 201, actionType: 'CREATE', actionDesc: '用户提交售后申请' },
-    { id: 2, ticketId: 201, actionType: 'ASSIGN', actionDesc: '系统分配至客服林真' }
-  ],
-  202: [
-    { id: 3, ticketId: 202, actionType: 'CREATE', actionDesc: '用户提交换货申请' },
-    { id: 4, ticketId: 202, actionType: 'LOGISTICS_CHECK', actionDesc: '等待物流节点更新' }
-  ]
-};
+async function request(path, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  };
+  const response = await fetch(buildUrl(path), {
+    headers,
+    ...options
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || '接口请求失败');
+  }
+  return payload.data;
+}
 
 function delay(data, ms = 140) {
   return new Promise((resolve) => {
@@ -397,54 +88,46 @@ function normalizeEvaluationTimeout(session) {
 }
 
 function normalizeSessions() {
-  sessions = sessions.map(normalizeEvaluationTimeout);
-}
-
-async function request(path, options = {}) {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
-    ...options
+  let changed = false;
+  sessions = sessions.map(item => {
+    const current = normalizeEvaluationTimeout(item);
+    if (current !== item) {
+      changed = true;
+    }
+    return current;
   });
-  const payload = await response.json();
-  if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || '接口请求失败');
+  if (changed) {
+    sessionMap = new Map(sessions.map(s => [s.id, s]));
   }
-  return payload.data;
 }
 
-function saveToken(nextToken) {
-  token = nextToken;
-  localStorage.setItem(TOKEN_KEY, nextToken);
-}
-
-export function hasToken() {
-  return Boolean(token);
-}
+// ==================== Auth ====================
 
 export async function login(credentials) {
-  if (USE_REAL_API) {
-    const data = await request('/api/merchant-cs/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(credentials)
-    });
-    saveToken(data.token);
-    staffProfile = data.staff;
-    return data;
+  if (!USE_REAL_API) {
+    if (credentials.account !== 'cs_demo' || credentials.password !== '123456' || credentials.merchantCode !== 'MERCHANT_DEMO') {
+      throw new Error('账号或密码错误');
+    }
+    staffProfile = {
+      staffId: 1,
+      staffNo: 'CS0001',
+      merchantCode: credentials.merchantCode,
+      account: credentials.account,
+      realName: '林真',
+      role: 'CUSTOMER_SERVICE',
+      onlineStatus: 'ONLINE',
+      maxSessionCount: 8
+    };
+    saveToken('demo-token');
+    return delay({ token: 'demo-token', staff: staffProfile });
   }
-
-  if (credentials.account !== 'cs_demo' || credentials.password !== '123456') {
-    throw new Error('账号或密码错误，测试账号为 cs_demo / 123456');
-  }
-
-  const data = {
-    token: `mock-token-${Date.now()}`,
-    staff: staffProfile
-  };
+  const data = await request('/api/merchant-cs/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(credentials)
+  });
   saveToken(data.token);
-  return delay(data);
+  staffProfile = data.staff;
+  return data;
 }
 
 export async function logout() {
@@ -452,181 +135,376 @@ export async function logout() {
     await request('/api/merchant-cs/auth/logout', { method: 'POST' });
   }
   token = '';
+  staffProfile = {
+    staffId: null,
+    staffNo: '',
+    merchantCode: '',
+    account: '',
+    realName: '',
+    role: 'CUSTOMER_SERVICE',
+    onlineStatus: 'OFFLINE',
+    maxSessionCount: 8
+  };
   localStorage.removeItem(TOKEN_KEY);
 }
 
 export async function getCurrentStaff() {
-  if (USE_REAL_API) {
-    return request('/api/merchant-cs/auth/me');
+  if (!USE_REAL_API) {
+    return delay(staffProfile);
   }
-  return delay(staffProfile);
+  const data = await request('/api/merchant-cs/auth/me');
+  staffProfile = { ...staffProfile, ...data };
+  return data;
 }
 
 export async function updateWorkStatus(onlineStatus) {
-  if (USE_REAL_API) {
-    const data = await request('/api/merchant-cs/work-status', {
-      method: 'PUT',
-      body: JSON.stringify({ onlineStatus })
+  if (!USE_REAL_API) {
+    staffProfile.onlineStatus = onlineStatus;
+    return delay(staffProfile);
+  }
+  const data = await request('/api/merchant-cs/work-status', {
+    method: 'PUT',
+    body: JSON.stringify({ onlineStatus })
+  });
+  staffProfile.onlineStatus = data.onlineStatus;
+  return data;
+}
+
+// ==================== Dashboard ====================
+
+export async function getDashboardOverview() {
+  if (!USE_REAL_API) {
+    return delay({
+      ...overview,
+      greeting: `早上好，${staffProfile.realName || '客服'}`,
+      metrics: [
+        { title: '待接入会话', value: sessions.filter(s => !['RESOLVED', 'CLOSED'].includes(s.status)).length, trend: '+0', accent: 'orange' },
+        { title: '待审核工单', value: tickets.filter(t => t.status === 'PENDING_REVIEW').length, trend: '+0', accent: 'slate' },
+        { title: '待处理', value: 0, trend: '+0', accent: 'green' }
+      ]
     });
-    staffProfile = data;
-    return data;
   }
-  staffProfile = { ...staffProfile, onlineStatus };
-  return delay(staffProfile);
+  return request('/api/merchant-cs/dashboard/overview');
 }
 
-export function getDashboardOverview() {
-  return USE_REAL_API ? request('/api/merchant-cs/dashboard/overview') : delay(overview);
-}
-
-export function getDashboardTodos() {
-  return USE_REAL_API ? request('/api/merchant-cs/dashboard/todos') : delay(todos);
-}
-
-export function getDashboardPerformance() {
-  return USE_REAL_API ? request('/api/merchant-cs/dashboard/performance') : delay(performance);
-}
-
-export function getSessions() {
-  if (USE_REAL_API) {
-    return request('/api/merchant-cs/sessions');
+export async function getDashboardTodos() {
+  if (!USE_REAL_API) {
+    return delay(todos);
   }
-  normalizeSessions();
-  return delay({ records: sessions, total: sessions.length });
+  return request('/api/merchant-cs/dashboard/todos');
+}
+
+export async function getDashboardPerformance() {
+  if (!USE_REAL_API) {
+    return delay(performance);
+  }
+  return request('/api/merchant-cs/dashboard/performance');
+}
+
+// ==================== Sessions ====================
+
+export async function getSessions(params = {}) {
+  if (!USE_REAL_API) {
+    const current = sessions;
+    const filtered = !params.status
+      ? current
+      : current.filter(s => s.status === params.status);
+    const records = filtered.slice(((params.page || 1) - 1) * (params.size || 20), (params.page || 1) * (params.size || 20));
+    return delay({ records, total: filtered.length });
+  }
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.keyword) query.set('keyword', params.keyword);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/sessions?${query.toString()}`);
 }
 
 export async function getSession(sessionId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}`);
+  if (!USE_REAL_API) {
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) throw new Error('会话不存在');
+    return delay(session);
   }
-  normalizeSessions();
-  return delay(sessions.find((item) => item.id === Number(sessionId)));
+  return request(`/api/merchant-cs/sessions/${sessionId}`);
 }
 
-export function getSessionMessages(sessionId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}/messages`);
+export async function getSessionMessages(sessionId) {
+  if (!USE_REAL_API) {
+    return delay(messagesBySession[sessionId] || []);
   }
-  return delay(messagesBySession[Number(sessionId)] || []);
+  return request(`/api/merchant-cs/sessions/${sessionId}/messages`);
 }
+
+let sessionMap = new Map();
 
 export async function sendSessionMessage(sessionId, content) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ messageType: 'TEXT', content })
-    });
+  if (!USE_REAL_API) {
+    if (!content?.trim()) throw new Error('消息内容不能为空');
+    const messages = messagesBySession[sessionId] || [];
+    const newMsg = {
+      id: Date.now(),
+      sessionId,
+      senderRole: 'SERVICE',
+      messageType: 'TEXT',
+      content,
+      createdAt: formatTime(new Date())
+    };
+    messagesBySession[sessionId] = [...messages, newMsg];
+    const current = sessions.find(s => s.id === sessionId);
+    if (current) {
+      current.status = current.status === 'WAITING' ? 'PROCESSING' : current.status;
+      current.lastMessageContent = content;
+      current.lastMessageTime = newMsg.createdAt;
+      if (!sessionMap.has(sessionId)) {
+        sessionMap.set(sessionId, { ...current });
+      }
+    }
+    return delay(newMsg);
   }
-  const message = { id: Date.now(), sessionId: Number(sessionId), senderRole: 'SERVICE', messageType: 'TEXT', content };
-  messagesBySession[Number(sessionId)] = [...(messagesBySession[Number(sessionId)] || []), message];
-  sessions = sessions.map((item) => (
-    item.id === Number(sessionId)
-      ? { ...item, lastMessageContent: content, status: item.status === 'WAITING' ? 'PROCESSING' : item.status }
-      : item
-  ));
-  return delay(message);
+  return request(`/api/merchant-cs/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ messageType: 'TEXT', content })
+  });
 }
 
 export async function requestSessionEvaluation(sessionId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}/evaluation-request`, { method: 'POST' });
+  if (!USE_REAL_API) {
+    const current = sessions.find(s => s.id === sessionId);
+    if (current) {
+      current.status = 'AWAITING_EVALUATION';
+      current.evaluationRequestedAt = formatTime(new Date());
+      current.lastMessageContent = '已发送服务评价邀请，等待用户评价。';
+      current.lastMessageTime = current.evaluationRequestedAt;
+      sessionMap.set(sessionId, { ...current });
+    }
+    return delay(current || null);
   }
-  const now = formatTime(new Date());
-  sessions = sessions.map((item) => (
-    item.id === Number(sessionId)
-      ? {
-          ...item,
-          status: 'AWAITING_EVALUATION',
-          level: '待用户评价',
-          wait: '等待评价',
-          lastMessageContent: '已发送服务评价邀请，等待用户在 30 分钟内完成评价。',
-          lastMessageTime: now,
-          evaluationRequestedAt: now,
-          evaluatedAt: null,
-          rating: null,
-          evaluationStatus: 'REQUESTED'
-        }
-      : item
-  ));
-  return delay(sessions.find((item) => item.id === Number(sessionId)));
+  return request(`/api/merchant-cs/sessions/${sessionId}/evaluation-request`, { method: 'POST' });
 }
 
-export async function submitSessionEvaluation(sessionId, rating = 5, content = '用户已完成服务评价') {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}/evaluation`, {
-      method: 'POST',
-      body: JSON.stringify({ rating, content })
-    });
+export async function submitSessionEvaluation(sessionId, rating, content) {
+  if (!USE_REAL_API) {
+    const current = sessions.find(s => s.id === sessionId);
+    if (current) {
+      current.status = 'RESOLVED';
+      current.rating = rating || 5;
+      current.evaluatedAt = formatTime(new Date());
+      current.lastMessageContent = content || '用户已完成服务评价';
+      current.lastMessageTime = current.evaluatedAt;
+      sessionMap.set(sessionId, { ...current });
+    }
+    return delay(current || null);
   }
-  const now = formatTime(new Date());
-  sessions = sessions.map((item) => (
-    item.id === Number(sessionId)
-      ? {
-          ...item,
-          status: 'RESOLVED',
-          level: '已完成',
-          wait: '已完成评价',
-          emotion: '评价完成',
-          lastMessageContent: content,
-          lastMessageTime: now,
-          evaluatedAt: now,
-          rating,
-          evaluationStatus: 'SUBMITTED'
-        }
-      : item
-  ));
-  return delay(sessions.find((item) => item.id === Number(sessionId)));
+  return request(`/api/merchant-cs/sessions/${sessionId}/evaluation`, {
+    method: 'POST',
+    body: JSON.stringify({ rating, content })
+  });
 }
 
 export async function closeSession(sessionId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/sessions/${sessionId}/close`, { method: 'POST' });
+  if (!USE_REAL_API) {
+    const current = sessions.find(s => s.id === sessionId);
+    if (current) {
+      current.status = 'CLOSED';
+      current.lastMessageContent = '会话已由客服关闭。';
+      current.lastMessageTime = formatTime(new Date());
+      sessionMap.set(sessionId, { ...current });
+    }
+    return delay(current || null);
   }
-  normalizeSessions();
-  const target = sessions.find((item) => item.id === Number(sessionId));
-  if (target?.status !== 'READY_TO_CLOSE') {
-    throw new Error('只有待客服关闭状态的会话可以关闭');
-  }
-  sessions = sessions.map((item) => (item.id === Number(sessionId) ? { ...item, status: 'CLOSED', level: '已完成', evaluationStatus: 'CLOSED' } : item));
-  return delay(sessions.find((item) => item.id === Number(sessionId)));
+  return request(`/api/merchant-cs/sessions/${sessionId}/close`, { method: 'POST' });
 }
 
-export function getTickets() {
-  return USE_REAL_API ? request('/api/merchant-cs/tickets') : delay({ records: tickets, total: tickets.length });
+// ==================== Tickets ====================
+
+export async function getTickets(params = {}) {
+  if (!USE_REAL_API) {
+    const current = tickets;
+    const filtered = !params.status
+      ? current
+      : current.filter(t => t.status === params.status);
+    const records = filtered.slice(((params.page || 1) - 1) * (params.size || 20), (params.page || 1) * (params.size || 20));
+    return delay({ records, total: filtered.length });
+  }
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.type) query.set('type', params.type);
+  if (params.keyword) query.set('keyword', params.keyword);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/tickets?${query.toString()}`);
 }
 
 export async function getTicket(ticketId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/tickets/${ticketId}`);
+  if (!USE_REAL_API) {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket) throw new Error('工单不存在');
+    return delay(ticket);
   }
-  return delay(tickets.find((item) => item.id === Number(ticketId)));
+  return request(`/api/merchant-cs/tickets/${ticketId}`);
 }
 
-export function getTicketLogs(ticketId) {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/tickets/${ticketId}/logs`);
+export async function getTicketLogs(ticketId) {
+  if (!USE_REAL_API) {
+    return delay(ticketLogs[ticketId] || []);
   }
-  return delay(ticketLogs[Number(ticketId)] || []);
+  return request(`/api/merchant-cs/tickets/${ticketId}/logs`);
 }
 
-export async function approveTicket(ticketId, auditOpinion = '审核通过') {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/tickets/${ticketId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ auditOpinion })
-    });
+export async function approveTicket(ticketId, auditOpinion) {
+  if (!USE_REAL_API) {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (ticket) {
+      ticket.status = 'APPROVED';
+      ticket.auditOpinion = auditOpinion || '审核通过';
+    }
+    return delay(ticket || null);
   }
-  tickets = tickets.map((item) => (item.id === Number(ticketId) ? { ...item, status: 'APPROVED' } : item));
-  return delay(tickets.find((item) => item.id === Number(ticketId)));
+  return request(`/api/merchant-cs/tickets/${ticketId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ auditOpinion })
+  });
 }
 
-export async function rejectTicket(ticketId, rejectReason = '资料不足') {
-  if (USE_REAL_API) {
-    return request(`/api/merchant-cs/tickets/${ticketId}/reject`, {
-      method: 'POST',
-      body: JSON.stringify({ rejectReason })
-    });
+export async function rejectTicket(ticketId, rejectReason) {
+  if (!USE_REAL_API) {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (ticket) {
+      ticket.status = 'REJECTED';
+      ticket.rejectReason = rejectReason || '资料不足，请补充凭证';
+    }
+    return delay(ticket || null);
   }
-  tickets = tickets.map((item) => (item.id === Number(ticketId) ? { ...item, status: 'REJECTED' } : item));
-  return delay(tickets.find((item) => item.id === Number(ticketId)));
+  return request(`/api/merchant-cs/tickets/${ticketId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ rejectReason })
+  });
+}
+
+// ==================== Orders ====================
+
+export async function getOrders(params = {}) {
+  if (!USE_REAL_API) {
+    return delay({ records: [], total: 0 });
+  }
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.keyword) query.set('keyword', params.keyword);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/orders?${query.toString()}`);
+}
+
+export async function getOrder(orderId) {
+  if (!USE_REAL_API) {
+    return delay({});
+  }
+  return request(`/api/merchant-cs/orders/${orderId}`);
+}
+
+export async function shipOrder(orderId) {
+  if (!USE_REAL_API) {
+    return delay({});
+  }
+  return request(`/api/merchant-cs/orders/${orderId}/ship`, { method: 'POST' });
+}
+
+// ==================== Notices ====================
+
+export async function getNotices(params = {}) {
+  if (!USE_REAL_API) {
+    return delay({ records: [], total: 0 });
+  }
+  const query = new URLSearchParams();
+  if (params.readStatus) query.set('readStatus', params.readStatus);
+  if (params.level) query.set('level', params.level);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/notices?${query.toString()}`);
+}
+
+export async function markNoticeRead(noticeId) {
+  if (!USE_REAL_API) {
+    return delay({ id: noticeId, readStatus: 'READ' });
+  }
+  return request(`/api/merchant-cs/notices/${noticeId}/read`, { method: 'PUT' });
+}
+
+// ==================== Products ====================
+
+export async function getProducts(params = {}) {
+  if (!USE_REAL_API) {
+    return delay({ records: [], total: 0 });
+  }
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.keyword) query.set('keyword', params.keyword);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/products?${query.toString()}`);
+}
+
+export async function getProduct(productId) {
+  if (!USE_REAL_API) {
+    return delay({});
+  }
+  return request(`/api/merchant-cs/products/${productId}`);
+}
+
+export async function createProduct(productData) {
+  if (!USE_REAL_API) {
+    const newProduct = {
+      id: Date.now(),
+      ...productData,
+      status: 'ON_SALE',
+      createdAt: formatTime(new Date()),
+      updatedAt: formatTime(new Date())
+    };
+    return delay(newProduct);
+  }
+  return request('/api/merchant-cs/products', {
+    method: 'POST',
+    body: JSON.stringify(productData)
+  });
+}
+
+export async function uploadProductImage(file) {
+  if (!USE_REAL_API) {
+    return delay({ url: URL.createObjectURL(file) });
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(buildUrl('/api/upload/image'), {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: formData
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || '图片上传失败');
+  }
+  return payload.data;
+}
+
+export async function updateProduct(productId, productData) {
+  if (!USE_REAL_API) {
+    return delay({ ...productData, id: productId, updatedAt: formatTime(new Date()) });
+  }
+  return request(`/api/merchant-cs/products/${productId}`, {
+    method: 'PUT',
+    body: JSON.stringify(productData)
+  });
+}
+
+export async function updateProductStatus(productId, status) {
+  if (!USE_REAL_API) {
+    return delay({ id: productId, status });
+  }
+  return request(`/api/merchant-cs/products/${productId}/status`, {
+    method: 'PUT',
+    body: JSON.stringify({ status })
+  });
 }

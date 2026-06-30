@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS sys_user
     id              BIGINT       NOT NULL COMMENT '人员ID',
     username        VARCHAR(50)  NOT NULL COMMENT '登录账号',
     password        VARCHAR(100) NOT NULL COMMENT 'BCrypt加密密码',
+    merchant_code   VARCHAR(50)  NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
     real_name       VARCHAR(50)  NOT NULL COMMENT '真实姓名',
     phone           VARCHAR(20)  NULL     COMMENT '联系电话',
     email           VARCHAR(100) NULL     COMMENT '邮箱',
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS sys_user
     create_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_sys_user_username (username)
+    UNIQUE KEY uk_sys_user_merchant_username (merchant_code, username),
+    INDEX idx_sys_user_merchant (merchant_code)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COMMENT = '后台人员表(客服/管理员)';
@@ -93,6 +95,8 @@ CREATE TABLE IF NOT EXISTS product_info
     id           BIGINT        NOT NULL COMMENT '商品ID',
     product_name VARCHAR(200)  NOT NULL COMMENT '商品名称',
     product_code VARCHAR(50)   NULL     COMMENT '商品编码',
+    merchant_id  BIGINT        NULL     COMMENT '所属商家/客服主体ID(sys_user)',
+    merchant_code VARCHAR(50)  NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
     category     VARCHAR(100)  NULL     COMMENT '商品分类',
     description  TEXT          NULL     COMMENT '商品描述',
     main_image   VARCHAR(255)  NULL     COMMENT '主图地址',
@@ -103,6 +107,7 @@ CREATE TABLE IF NOT EXISTS product_info
     create_time  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
+    INDEX idx_product_info_merchant (merchant_code),
     INDEX idx_product_info_category (category)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
@@ -114,6 +119,8 @@ CREATE TABLE IF NOT EXISTS order_info
     id               BIGINT        NOT NULL COMMENT '订单ID',
     order_no         VARCHAR(32)   NOT NULL COMMENT '订单编号',
     user_id          BIGINT        NOT NULL COMMENT '用户ID',
+    merchant_id      BIGINT        NULL     COMMENT '所属商家/客服主体ID(sys_user)',
+    merchant_code    VARCHAR(50)   NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
     total_amount     DECIMAL(10,2) NOT NULL COMMENT '订单总金额',
     pay_amount       DECIMAL(10,2) NOT NULL COMMENT '实付金额',
     status           VARCHAR(20)   NOT NULL DEFAULT 'PAID' COMMENT '状态：PAID已付款/SHIPPED已发货/RECEIVED已收货/AFTERSALE售后中/COMPLETED售后完成/CLOSED已关闭',
@@ -133,6 +140,7 @@ CREATE TABLE IF NOT EXISTS order_info
     PRIMARY KEY (id),
     UNIQUE KEY uk_order_info_no (order_no),
     INDEX idx_order_info_user (user_id),
+    INDEX idx_order_info_merchant (merchant_code),
     INDEX idx_order_info_status (status)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
@@ -166,6 +174,8 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     order_id               BIGINT        NOT NULL COMMENT '订单ID',
     order_no               VARCHAR(32)   NOT NULL COMMENT '订单编号',
     user_id                BIGINT        NOT NULL COMMENT '用户ID',
+    merchant_id            BIGINT        NULL     COMMENT '所属商家/客服主体ID(sys_user)',
+    merchant_code          VARCHAR(50)   NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
     product_name           VARCHAR(200)  NULL     COMMENT '商品名称(快照)',
     after_sale_type        VARCHAR(30)   NULL     COMMENT '售后类型：REFUND_ONLY仅退款/REFUND_RETURN退货退款/EXCHANGE换货/REPAIR维修(由AI推荐或客服确认)',
     reason                 VARCHAR(50)   NOT NULL COMMENT '售后原因：QUALITY质量问题/WRONG_ITEM发错货/SIZE_ISSUE尺码不合适/DAMAGE物流损坏/NOT_MATCH与描述不符/OTHER其他',
@@ -189,6 +199,7 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     UNIQUE KEY uk_after_sales_ticket_no (ticket_no),
     INDEX idx_after_sales_ticket_order (order_id),
     INDEX idx_after_sales_ticket_user (user_id),
+    INDEX idx_after_sales_ticket_merchant (merchant_code),
     INDEX idx_after_sales_ticket_status (status),
     INDEX idx_after_sales_ticket_assignee (assignee_id)
 ) ENGINE = InnoDB
@@ -240,6 +251,8 @@ CREATE TABLE IF NOT EXISTS chat_session
     id              BIGINT       NOT NULL COMMENT '会话ID',
     session_no      VARCHAR(32)  NOT NULL COMMENT '会话编号',
     user_id         BIGINT       NOT NULL COMMENT '用户ID',
+    merchant_id     BIGINT       NULL     COMMENT '所属商家/客服主体ID(sys_user)',
+    merchant_code   VARCHAR(50)  NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
     order_id        BIGINT       NULL     COMMENT '关联订单ID',
     ticket_id       BIGINT       NULL     COMMENT '关联工单ID',
     human_agent_id  BIGINT       NULL     COMMENT '人工客服ID(sys_user)',
@@ -257,6 +270,7 @@ CREATE TABLE IF NOT EXISTS chat_session
     PRIMARY KEY (id),
     UNIQUE KEY uk_chat_session_no (session_no),
     INDEX idx_chat_session_user (user_id),
+    INDEX idx_chat_session_merchant (merchant_code),
     INDEX idx_chat_session_agent (human_agent_id),
     INDEX idx_chat_session_status (status)
 ) ENGINE = InnoDB

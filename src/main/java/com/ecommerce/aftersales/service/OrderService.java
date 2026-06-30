@@ -9,5 +9,5 @@ public interface OrderService {
     List<OrderVO> listByUserId(Long userId);
     OrderVO getById(Long id, Long userId);
     OrderVO create(Long userId, CreateOrderRequest request);
-    void updateStatus(Long id, String status);
+    void updateStatus(Long id, Long userId, String status);
 }

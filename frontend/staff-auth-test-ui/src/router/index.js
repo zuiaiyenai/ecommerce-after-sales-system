@@ -10,6 +10,9 @@ import OrdersView from '../views/OrdersView.vue';
 import OrderDetailView from '../views/OrderDetailView.vue';
 import NoticesView from '../views/NoticesView.vue';
 import ProfileView from '../views/ProfileView.vue';
+import ProductsView from '../views/ProductsView.vue';
+
+const TOKEN_KEY = 'merchant_cs_token';
 
 const routes = [
   { path: '/', redirect: '/dashboard' },
@@ -25,6 +28,7 @@ const routes = [
       { path: 'tickets/:ticketId', name: 'ticketDetail', component: TicketDetailView, meta: { title: '工单详情' } },
       { path: 'orders', name: 'orders', component: OrdersView, meta: { title: '订单核验' } },
       { path: 'orders/:orderId', name: 'orderDetail', component: OrderDetailView, meta: { title: '订单详情' } },
+      { path: 'products', name: 'products', component: ProductsView, meta: { title: '商品管理' } },
       { path: 'notices', name: 'notices', component: NoticesView, meta: { title: '消息通知' } },
       { path: 'profile', name: 'profile', component: ProfileView, meta: { title: '个人中心' } }
     ]
@@ -34,6 +38,20 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes
+});
+
+// Navigation guard: require auth for all routes except login
+router.beforeEach((to, from, next) => {
+  if (to.name === 'login') {
+    next();
+    return;
+  }
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    next('/login');
+    return;
+  }
+  next();
 });
 
 export default router;

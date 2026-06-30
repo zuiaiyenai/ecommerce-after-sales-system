@@ -13,6 +13,7 @@ public final class UserChatDtos {
     public static class CreateSessionRequest {
         private Long afterSaleId;
         private Long orderId;
+        private String merchantCode;
         private String message;
     }
 
@@ -20,6 +21,7 @@ public final class UserChatDtos {
     public static class CreateSessionResponse {
         private Long sessionId;
         private String sessionNo;
+        private String merchantCode;
         private String mode;
         private String status;
         private String welcomeMessage;

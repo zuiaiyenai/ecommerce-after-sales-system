@@ -90,7 +90,8 @@ const reasons = [
 
 onLoad(async (options) => {
   if (options.orderId) {
-    orderId.value = Number(options.orderId)
+    // 用字符串，避免 JS 大数精度丢失（雪花ID 超过 2^53）
+    orderId.value = String(options.orderId)
     try {
       orderData.value = await request({ url: '/orders/' + orderId.value })
     } catch (e) {}
@@ -132,35 +133,94 @@ async function submit() {
     uni.showToast({ title: '请选择售后原因', icon: 'none' })
     return
   }
+  if (!orderId.value || !orderData.value) {
+    uni.showToast({ title: '订单信息缺失，请从订单列表重新进入', icon: 'none' })
+    return
+  }
 
   submitting.value = true
   try {
-    const firstItem = orderData.value && orderData.value.items && orderData.value.items[0]
+    // 不传图片直接提交，跳过上传失败阻塞
+    const firstItem = orderData.value.items && orderData.value.items[0]
+    const refundAmount = orderData.value.payAmount || orderData.value.totalAmount || '0.00'
     const ticketData = {
       orderId: orderId.value,
-      orderNo: orderData.value ? orderData.value.orderNo : '',
+      orderNo: orderData.value.orderNo || '',
       productName: firstItem ? firstItem.productName : '',
+      afterSaleType: selectedReason.value,
       reason: selectedReason.value,
-      description: description.value
+      reasonDetail: selectedReason.value,
+      description: description.value,
+      refundAmount,
+      attachmentUrls: []
     }
-    const result = await request({ url: '/aftersales', method: 'POST', data: ticketData })
 
-    // 更新订单状态为售后中
+    // 尝试上传图片，失败不阻塞提交流程
+    if (images.value && images.value.length > 0) {
+      for (const imgPath of images.value) {
+        try {
+          const url = await uploadImage(imgPath)
+          if (url) ticketData.attachmentUrls.push(url)
+        } catch (e) {
+          // 图片上传失败，继续提交
+        }
+      }
+    }
+
+    const createdTicket = await request({ url: '/aftersales', method: 'POST', data: ticketData })
+
+    // Update order status to AFTERSALE. Do not block navigation if only the status update fails.
     if (orderId.value) {
-      await request({ url: '/orders/' + orderId.value + '/status?status=AFTERSALE', method: 'PUT' })
+      try {
+        await request({ url: '/orders/' + orderId.value + '/status?status=AFTERSALE', method: 'PUT' })
+      } catch (e) {
+        console.error('更新订单售后状态失败', e)
+      }
     }
 
     uni.showToast({ title: '提交成功', icon: 'success' })
 
     setTimeout(() => {
-      // 跳转到订单列表页，让用户看到状态已变更
-      uni.redirectTo({ url: '/pages/orders/list' })
+      if (createdTicket && createdTicket.ticketNo) {
+        uni.redirectTo({ url: '/pages/after-sale/detail?ticketNo=' + encodeURIComponent(createdTicket.ticketNo) })
+        return
+      }
+      uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
     }, 1500)
   } catch (error) {
-    uni.showToast({ title: '提交失败，请重试', icon: 'none' })
+    uni.showToast({ title: error.message || '提交失败，请重试', icon: 'none', duration: 3000 })
   } finally {
     submitting.value = false
   }
+}
+
+function uploadImage(filePath) {
+  return new Promise((resolve, reject) => {
+    const token = uni.getStorageSync('token') || ''
+    uni.uploadFile({
+      url: 'http://127.0.0.1:8080/api/upload/image',
+      filePath: filePath,
+      name: 'file',
+      header: {
+        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+      },
+      success: (res) => {
+        try {
+          const data = JSON.parse(res.data)
+          if (data.code === 200 && data.data && data.data.url) {
+            resolve(data.data.url)
+          } else {
+            reject(new Error(data.message || '上传失败'))
+          }
+        } catch (e) {
+          reject(new Error('上传响应解析失败'))
+        }
+      },
+      fail: (err) => {
+        reject(err)
+      }
+    })
+  })
 }
 </script>
 

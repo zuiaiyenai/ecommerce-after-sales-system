@@ -8,5 +8,5 @@ public interface AfterSalesService {
     List<AfterSalesVO> listByUserId(Long userId);
     AfterSalesVO getById(Long id, Long userId);
     AfterSalesVO getByTicketNo(String ticketNo);
-    AfterSalesVO create(AfterSalesVO afterSalesVO);
+    AfterSalesVO create(Long userId, AfterSalesVO afterSalesVO);
 }

@@ -12,8 +12,8 @@ const route = useRoute();
 const router = useRouter();
 
 const title = computed(() => route.meta.title || '商家客服端');
-const showLogout = computed(() => route.name === 'dashboard');
-const showBack = computed(() => route.name === 'sessionDetail');
+const showLogout = computed(() => true);
+const showBack = computed(() => route.name === 'sessionDetail' || route.name === 'ticketDetail' || route.name === 'orderDetail');
 
 function handleBack() {
   if (window.history.length > 1) {

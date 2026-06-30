@@ -32,6 +32,12 @@ sql/schema.sql
 sql/seed_data.sql
 ```
 
+如果本机已经按旧版脚本建过库，需要先执行一次商家绑定迁移：
+
+```sql
+sql/merchant_binding_migration.sql
+```
+
 本地环境变量可选：
 
 ```bash
@@ -133,15 +139,15 @@ http://127.0.0.1:5173
 当前已打通的核心链路：
 
 ```text
-商家端上传商品 -> product_info
-用户端演示购买 -> order_info / order_item
-用户端申请售后 -> after_sales_ticket
-商家端售后工单 -> 读取 after_sales_ticket
-用户端开启/发送对话 -> chat_session / chat_message
-商家端在线会话 -> 读取 chat_session / chat_message
+商家端登录 -> sys_user.merchant_code
+商家端上传商品 -> product_info.merchant_code
+用户端演示购买 -> order_info / order_item 继承商品 merchant_code
+用户端申请售后 -> after_sales_ticket 继承订单 merchant_code
+用户端开启/发送对话 -> chat_session / chat_message 绑定订单/售后 merchant_code
+商家端在线会话/售后工单/订单/商品 -> 只读取当前商家 merchant_code 的数据
 ```
 
-说明：当前客服端消息接收是接口刷新式联调，不是 WebSocket 实时推送。
+说明：当前客服端消息接收是接口刷新式联调，不是 WebSocket 实时推送；商家隔离已按 `merchantCode` 打通，默认演示商家编码是 `MERCHANT_DEMO`。
 
 ## 主要文档
 

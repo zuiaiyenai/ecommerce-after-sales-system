@@ -2,6 +2,8 @@ package com.ecommerce.aftersales.common;
 
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -11,9 +13,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(BizException.class)
-    public ApiResponse<Void> handleBizException(BizException exception) {
+    public ResponseEntity<ApiResponse<Void>> handleBizException(BizException exception) {
         log.warn("业务异常: code={}, message={}", exception.getCode(), exception.getMessage());
-        return ApiResponse.fail(exception.getCode(), exception.getMessage());
+        HttpStatus status = exception.getCode() != null && exception.getCode() == 401
+                ? HttpStatus.UNAUTHORIZED
+                : HttpStatus.BAD_REQUEST;
+        return ResponseEntity.status(status)
+                .body(ApiResponse.fail(exception.getCode(), exception.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -35,6 +41,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ApiResponse<Void> handleException(Exception exception) {
         log.error("系统异常", exception);
-        return ApiResponse.fail(500, "系统异常: " + exception.getMessage());
+        return ApiResponse.fail(500, "系统异常，请稍后再试");
     }
 }

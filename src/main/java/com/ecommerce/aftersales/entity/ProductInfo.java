@@ -17,6 +17,10 @@ public class ProductInfo {
 
     private String productCode;
 
+    private Long merchantId;
+
+    private String merchantCode;
+
     private String category;
 
     private String description;

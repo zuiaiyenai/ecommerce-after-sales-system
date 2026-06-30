@@ -74,6 +74,14 @@ npm.cmd run dev:mp-weixin
 frontend/uniapp/dist/build/mp-weixin
 ```
 
+也可以直接导入：
+
+```text
+frontend/uniapp
+```
+
+根目录 `project.config.json` 已将 `miniprogramRoot` 指向 `dist/build/mp-weixin/`。
+
 ## 当前已实现功能
 
 - 用户登录/注册/验证码/找回密码

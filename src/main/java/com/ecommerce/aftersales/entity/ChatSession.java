@@ -17,6 +17,10 @@ public class ChatSession {
 
     private Long userId;
 
+    private Long merchantId;
+
+    private String merchantCode;
+
     private Long orderId;
 
     private Long ticketId;

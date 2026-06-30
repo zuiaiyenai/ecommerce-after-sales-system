@@ -49,6 +49,8 @@ public interface MerchantCsService {
 
     OrderDetail getOrder(Long orderId);
 
+    OrderDetail shipOrder(Long orderId);
+
     PageResult<NoticeView> listNotices(long page, long size, String readStatus, String level);
 
     NoticeView markNoticeRead(Long noticeId);

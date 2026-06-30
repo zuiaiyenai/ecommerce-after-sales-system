@@ -45,8 +45,8 @@
         <view class="order-footer">
           <text class="order-total">共{{ order.quantity }}件 合计：<text class="total-price">¥{{ order.totalPrice }}</text></text>
           <view class="order-actions">
+            <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
             <button v-if="order.status === 'RECEIVED' || order.status === 'SHIPPED'" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
-            <button v-if="order.status === 'SHIPPED'" class="action-btn primary" @tap.stop="confirmReceive(order.id)">确认收货</button>
           </view>
         </view>
       </view>
@@ -68,12 +68,14 @@ function getStatusClass(status) {
 }
 
 const tabs = computed(() => {
+  const paid = allOrders.value.filter(o => o.status === 'PAID').length
   const shipped = allOrders.value.filter(o => o.status === 'SHIPPED').length
   const received = allOrders.value.filter(o => o.status === 'RECEIVED').length
   const aftersale = allOrders.value.filter(o => o.status === 'AFTERSALE').length
   return [
     { key: 'all', label: '全部', badge: 0 },
-    { key: 'shipped', label: '已发货', badge: shipped },
+    { key: 'paid', label: '未发货', badge: paid },
+    { key: 'shipped', label: '配送中', badge: shipped },
     { key: 'received', label: '已收货', badge: received },
     { key: 'aftersale', label: '售后中', badge: aftersale }
   ]
@@ -102,6 +104,7 @@ const orders = computed(() => {
 
 const filteredOrders = computed(() => {
   if (activeTab.value === 'all') return orders.value
+  if (activeTab.value === 'aftersale') return orders.value.filter(o => o.status === 'AFTERSALE')
   return orders.value.filter(o => o.status.toLowerCase() === activeTab.value)
 })
 
@@ -137,22 +140,14 @@ function applyAfterSale(id) {
   uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + id })
 }
 
-function confirmReceive(id) {
-  uni.showModal({
-    title: '确认收货',
-    content: '确认已收到商品吗？',
-    success: (res) => {
-      if (res.confirm) {
-        const order = orders.value.find(o => o.id === id)
-        if (order) {
-          order.status = 'RECEIVED'
-          order.statusText = '已完成'
-          order.statusClass = 'done'
-          uni.showToast({ title: '已确认收货', icon: 'success' })
-        }
-      }
-    }
-  })
+async function confirmReceive(id) {
+  try {
+    await request({ url: '/orders/' + id + '/status?status=RECEIVED', method: 'PUT' })
+    await loadOrders()
+    uni.showToast({ title: '已确认收货', icon: 'success' })
+  } catch (e) {
+    uni.showToast({ title: '操作失败，请重试', icon: 'none' })
+  }
 }
 </script>
 

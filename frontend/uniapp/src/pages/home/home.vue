@@ -36,7 +36,7 @@
       </view>
       <view class="divider"></view>
       <view class="order-list">
-        <view v-for="item in orders" :key="item.id" class="order-item">
+        <view v-for="item in orders" :key="item.id" class="order-item" @tap="viewOrderDetail(item.id)">
           <image class="order-icon" :src="item.icon" mode="aspectFill" />
           <view class="order-content">
             <text class="order-title">{{ item.title }}</text>
@@ -155,7 +155,7 @@ function goShop() {
 
 function viewOrderDetail(id) {
   uni.navigateTo({
-    url: '/pages/after-sale/detail?id=' + id
+    url: '/pages/after-sale/detail?orderId=' + id
   })
 }
 

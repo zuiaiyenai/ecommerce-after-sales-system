@@ -42,9 +42,25 @@
       </view>
     </view>
 
-    <!-- 物流进度（正常订单，无售后） -->
+    <!-- 物流模拟（正常订单，无售后） -->
     <view class="card" v-if="!hasAfterSale">
-      <text class="card-title">物流信息</text>
+      <view class="map-title-row">
+        <text class="card-title">物流模拟</text>
+        <text class="map-status">{{ logisticsMap.statusText }}</text>
+      </view>
+      <view class="divider"></view>
+      <map
+        class="logistics-map"
+        :latitude="logisticsMap.latitude"
+        :longitude="logisticsMap.longitude"
+        :scale="logisticsMap.scale"
+        :markers="logisticsMap.markers"
+        :polyline="logisticsMap.polyline"
+      />
+      <view class="map-info-row">
+        <text>{{ logisticsMap.fromText }}</text>
+        <text>{{ logisticsMap.toText }}</text>
+      </view>
       <view class="divider"></view>
       <view v-if="orderInfo.trackingCompany" class="info-row">
         <text class="info-label">快递公司</text>
@@ -117,7 +133,8 @@
     <!-- 底部按钮 -->
     <view class="bottom-bar">
       <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">联系售后客服</button>
-      <button v-else class="btn-primary" @tap="applyAfterSale">申请售后</button>
+      <button v-else-if="orderInfo.status !== 'PAID'" class="btn-primary" @tap="applyAfterSale">申请售后</button>
+      <button v-else class="btn-primary disabled" disabled>未发货暂不可申请售后</button>
     </view>
   </view>
 </template>
@@ -131,6 +148,7 @@ const pageTitle = ref('订单详情')
 const hasAfterSale = ref(false)
 
 const orderInfo = ref({
+  id: '',
   productImage: '',
   productName: '',
   spec: '',
@@ -145,11 +163,14 @@ const orderInfo = ref({
   trackingNo: '',
   payTime: '',
   shipTime: '',
-  receiveTime: ''
+  receiveTime: '',
+  receiverAddress: ''
 })
 
 const afterSaleInfo = ref({
+  id: '',
   ticketNo: '',
+  orderId: '',
   reasonText: '',
   description: '',
   status: '',
@@ -164,6 +185,16 @@ const afterSaleInfo = ref({
 
 const logisticsSteps = ref([])
 const afterSaleSteps = ref([])
+const logisticsMap = ref({
+  latitude: 39.935,
+  longitude: 116.395,
+  scale: 10,
+  statusText: '商家备货中',
+  fromText: '商品发货地：商家仓库',
+  toText: '收货地址：演示地址',
+  markers: [],
+  polyline: []
+})
 
 const reasonMap = {
   'QUALITY': '质量问题',
@@ -181,6 +212,9 @@ onLoad(async (options) => {
   } else if (options.orderId) {
     // 从订单列表进入
     await loadFromOrder(options.orderId)
+  } else if (options.id) {
+    // 兼容旧入口：历史版本首页传的是 id，实际含义是订单ID
+    await loadFromOrder(options.id)
   }
 })
 
@@ -196,7 +230,8 @@ async function loadFromOrder(orderId) {
     try {
       const allTickets = await request({ url: '/aftersales' })
       if (allTickets) {
-        ticket = allTickets.find(t => t.orderId === Number(orderId))
+        // 用字符串比较，避免JS大数精度丢失
+        ticket = allTickets.find(t => String(t.orderId) === String(orderId))
       }
     } catch (e) {}
 
@@ -210,6 +245,7 @@ async function loadFromOrder(orderId) {
       hasAfterSale.value = false
       pageTitle.value = '订单详情'
       buildLogisticsSteps(order)
+      buildLogisticsMap(order)
     }
   } catch (e) {
     console.error('加载订单详情失败', e)
@@ -241,6 +277,7 @@ async function loadFromAfterSale(ticketNo) {
 function fillOrderInfo(order) {
   const item = order.items && order.items[0]
   orderInfo.value = {
+    id: order.id || '',
     productImage: (item && item.productImage) || '',
     productName: (item && item.productName) || '',
     spec: (item && item.productSpec) || '',
@@ -255,13 +292,16 @@ function fillOrderInfo(order) {
     trackingNo: order.trackingNo || '',
     payTime: order.payTime || '',
     shipTime: order.shipTime || '',
-    receiveTime: order.receiveTime || ''
+    receiveTime: order.receiveTime || '',
+    receiverAddress: order.receiverAddress || ''
   }
 }
 
 function fillAfterSaleInfo(ticket) {
   afterSaleInfo.value = {
+    id: ticket.id || '',
     ticketNo: ticket.ticketNo || '',
+    orderId: ticket.orderId || '',
     reasonText: reasonMap[ticket.reason] || ticket.reason || '',
     description: ticket.description || '',
     status: ticket.status || '',
@@ -310,6 +350,58 @@ function buildLogisticsSteps(order) {
       { title: '已发货', desc: '等待物流配送', time: '', done: false, active: false },
       { title: '待签收', desc: '等待确认收货', time: '', done: false, active: false }
     ]
+  }
+}
+
+function buildLogisticsMap(order) {
+  const item = order.items && order.items[0]
+  const seedText = `${order.orderNo || ''}${item ? item.productName : ''}`
+  const seed = Array.from(seedText).reduce((sum, char) => sum + char.charCodeAt(0), 0)
+  const offset = (seed % 12) / 1000
+  const warehouse = {
+    latitude: 39.982 + offset,
+    longitude: 116.305 + offset,
+    title: '商品发货地'
+  }
+  const receiver = {
+    latitude: 39.905 - offset,
+    longitude: 116.455 - offset,
+    title: '收货地址'
+  }
+  const status = order.status || 'PAID'
+  const progress = status === 'PAID' ? 0 : status === 'SHIPPED' ? 0.58 : 1
+  const courier = {
+    latitude: warehouse.latitude + (receiver.latitude - warehouse.latitude) * progress,
+    longitude: warehouse.longitude + (receiver.longitude - warehouse.longitude) * progress,
+    title: status === 'RECEIVED' ? '已签收' : '配送车辆'
+  }
+  const markers = [
+    { id: 1, latitude: warehouse.latitude, longitude: warehouse.longitude, title: '商品发货地', width: 28, height: 28 },
+    { id: 2, latitude: receiver.latitude, longitude: receiver.longitude, title: '收货地址', width: 28, height: 28 }
+  ]
+  if (status !== 'PAID') {
+    markers.push({ id: 3, latitude: courier.latitude, longitude: courier.longitude, title: courier.title, width: 30, height: 30 })
+  }
+  const statusMap = {
+    PAID: '商家备货中',
+    SHIPPED: '配送中',
+    RECEIVED: '已签收',
+    AFTERSALE: '售后处理中'
+  }
+  logisticsMap.value = {
+    latitude: courier.latitude,
+    longitude: courier.longitude,
+    scale: 11,
+    statusText: statusMap[status] || order.statusText || '物流模拟',
+    fromText: `商品发货地：${item ? item.productName : '商家仓库'}`,
+    toText: `收货地址：${order.receiverAddress || '演示收货地址'}`,
+    markers,
+    polyline: [{
+      points: status === 'PAID' ? [warehouse, receiver] : [warehouse, courier, receiver],
+      color: '#c97b5a',
+      width: 5,
+      dottedLine: status === 'PAID'
+    }]
   }
 }
 
@@ -370,13 +462,22 @@ function previewImage(index) {
 
 function contactService() {
   const info = orderInfo.value
+  const afterSaleId = afterSaleInfo.value.id
+  const orderId = afterSaleInfo.value.orderId || info.id
+  const params = [
+    afterSaleId ? 'afterSaleId=' + encodeURIComponent(afterSaleId) : '',
+    orderId ? 'orderId=' + encodeURIComponent(orderId) : '',
+    'productName=' + encodeURIComponent(info.productName || ''),
+    'productIcon=' + encodeURIComponent(info.productImage || ''),
+    'statusText=' + encodeURIComponent(afterSaleInfo.value.statusText || '售后处理中')
+  ].filter(Boolean).join('&')
   uni.navigateTo({
-    url: `/pages/chat/consult?orderId=${info.orderNo}&productName=${info.productName}&productIcon=${info.productImage}&statusText=${afterSaleInfo.value.statusText}`
+    url: `/pages/chat/consult?${params}`
   })
 }
 
 function applyAfterSale() {
-  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.orderNo })
+  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.id })
 }
 </script>
 
@@ -418,6 +519,45 @@ function applyAfterSale() {
 }
 
 .card-title { display: block; font-size: 28rpx; font-weight: 700; color: #1a1a1a; }
+
+.map-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.map-status {
+  padding: 6rpx 14rpx;
+  border-radius: 999rpx;
+  background: #fff5ef;
+  color: #b86a4a;
+  font-size: 22rpx;
+  font-weight: 700;
+}
+
+.logistics-map {
+  width: 100%;
+  height: 360rpx;
+  border-radius: 18rpx;
+  overflow: hidden;
+}
+
+.map-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20rpx;
+  margin-top: 16rpx;
+}
+
+.map-info-row text {
+  flex: 1;
+  min-width: 0;
+  font-size: 22rpx;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .divider {
   height: 1rpx;
@@ -545,5 +685,11 @@ function applyAfterSale() {
   font-weight: 600;
   border: none;
   box-shadow: 0 4rpx 16rpx rgba(201,123,90,0.3);
+}
+
+.btn-primary.disabled {
+  background: #d6d1ca;
+  box-shadow: none;
+  color: #ffffff;
 }
 </style>

@@ -3,10 +3,13 @@ package com.ecommerce.aftersales.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.PageResult;
+import com.ecommerce.aftersales.config.ChatWebSocketHandler;
 import com.ecommerce.aftersales.dto.MerchantCsDtos.*;
+import com.ecommerce.aftersales.dto.WsChatMessage;
 import com.ecommerce.aftersales.entity.*;
 import com.ecommerce.aftersales.mapper.*;
 import com.ecommerce.aftersales.service.MerchantCsService;
+import com.ecommerce.aftersales.service.NotificationService;
 import com.ecommerce.aftersales.util.JwtTokenUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +18,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -32,7 +37,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class MerchantCsServiceImpl implements MerchantCsService {
 
-    private static final Long DEFAULT_STAFF_ID = 1L;
     private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -49,6 +53,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
     private final ObjectMapper objectMapper;
+    private final ChatWebSocketHandler chatWebSocketHandler;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -56,15 +62,16 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (!StringUtils.hasText(request.getAccount()) || !StringUtils.hasText(request.getPassword())) {
             throw new BizException("账号和密码不能为空");
         }
-        SysUser staff = findStaffByAccount(request.getAccount());
-        if (staff == null && "cs_demo".equals(request.getAccount())) {
-            staff = createDemoStaff();
-        }
+        String merchantCode = normalizeMerchantCode(request.getMerchantCode());
+        SysUser staff = findStaffByAccount(request.getAccount(), merchantCode);
         if (staff == null || !passwordEncoder.matches(request.getPassword(), staff.getPassword())) {
             throw new BizException("账号或密码错误");
         }
         if (!Integer.valueOf(1).equals(staff.getStatus())) {
             throw new BizException(403, "客服账号不可用");
+        }
+        if (!StringUtils.hasText(staff.getMerchantCode())) {
+            staff.setMerchantCode(merchantCode);
         }
         staff.setOnlineStatus(1);
         staff.setLastLoginTime(LocalDateTime.now());
@@ -191,6 +198,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (!StringUtils.hasText(request.getContent())) {
             throw new BizException("消息内容不能为空");
         }
+        SysUser staff = ensureStaff();
         ChatMessage message = new ChatMessage();
         message.setSessionId(sessionId);
         message.setRole("ASSISTANT");
@@ -199,10 +207,41 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         chatMessageMapper.insert(message);
         if ("WAITING".equals(session.getStatus())) {
             session.setStatus("ACTIVE");
-            session.setHumanAgentId(DEFAULT_STAFF_ID);
+            session.setHumanAgentId(staff.getId());
             chatSessionMapper.updateById(session);
         }
+        // Broadcast staff message via WebSocket
+        broadcastToSession(sessionId, "ASSISTANT", request.getContent(),
+                StringUtils.hasText(request.getMessageType()) ? request.getMessageType() : "TEXT");
+
+        // Notify user about merchant reply
+        notificationService.createNotification(
+                session.getUserId(),
+                "客服已回复",
+                "客服回复了您的咨询：" + (request.getContent().length() > 50
+                        ? request.getContent().substring(0, 50) + "..."
+                        : request.getContent()),
+                "CHAT",
+                sessionId,
+                "CHAT_SESSION"
+        );
+
         return toMessageView(message);
+    }
+
+    private void broadcastToSession(Long sessionId, String role, String content, String messageType) {
+        try {
+            chatWebSocketHandler.broadcastToSession(sessionId, WsChatMessage.builder()
+                    .action("message")
+                    .sessionId(sessionId)
+                    .role(role)
+                    .content(content)
+                    .messageType(messageType)
+                    .createdAt(LocalDateTime.now().format(DATE_TIME_FORMATTER))
+                    .build());
+        } catch (Exception ignored) {
+            // WebSocket broadcast failure should not break the HTTP response
+        }
     }
 
     @Override
@@ -273,9 +312,18 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         ticket.setStatus("APPROVED");
         ticket.setAuditOpinion(StringUtils.hasText(auditOpinion) ? auditOpinion : "审核通过");
         ticket.setAuditTime(LocalDateTime.now());
-        ticket.setAssigneeId(DEFAULT_STAFF_ID);
+        ticket.setAssigneeId(ensureStaff().getId());
         afterSalesTicketMapper.updateById(ticket);
         addTicketLog(ticket, oldStatus, "APPROVED", "APPROVE", ticket.getAuditOpinion());
+        // Notify user about approval
+        notificationService.createNotification(
+                ticket.getUserId(),
+                "售后工单审核通过",
+                "您的工单 " + ticket.getTicketNo() + " 已审核通过",
+                "AFTER_SALE",
+                ticket.getId(),
+                "TICKET"
+        );
         return toTicketView(ticket);
     }
 
@@ -287,15 +335,26 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         ticket.setStatus("REJECTED");
         ticket.setAuditOpinion(StringUtils.hasText(rejectReason) ? rejectReason : "资料不足，请补充凭证");
         ticket.setAuditTime(LocalDateTime.now());
-        ticket.setAssigneeId(DEFAULT_STAFF_ID);
+        ticket.setAssigneeId(ensureStaff().getId());
         afterSalesTicketMapper.updateById(ticket);
         addTicketLog(ticket, oldStatus, "REJECTED", "REJECT", ticket.getAuditOpinion());
+        // Notify user about rejection
+        notificationService.createNotification(
+                ticket.getUserId(),
+                "售后工单审核驳回",
+                "您的工单 " + ticket.getTicketNo() + " 已被驳回，原因：" + ticket.getAuditOpinion(),
+                "AFTER_SALE",
+                ticket.getId(),
+                "TICKET"
+        );
         return toTicketView(ticket);
     }
 
     @Override
     public PageResult<OrderView> listOrders(long page, long size, String status, String keyword) {
-        List<OrderView> records = orderInfoMapper.selectList(new LambdaQueryWrapper<OrderInfo>().orderByDesc(OrderInfo::getCreateTime))
+        List<OrderView> records = orderInfoMapper.selectList(new LambdaQueryWrapper<OrderInfo>()
+                        .eq(OrderInfo::getMerchantCode, currentMerchantCode())
+                        .orderByDesc(OrderInfo::getCreateTime))
                 .stream()
                 .map(this::toOrderView)
                 .filter(item -> !StringUtils.hasText(status) || status.equals(item.getStatus()))
@@ -311,6 +370,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         User user = userMapper.selectById(order.getUserId());
         detail.setId(order.getId());
         detail.setOrderNo(order.getOrderNo());
+        detail.setMerchantCode(order.getMerchantCode());
         detail.setUser(userDisplayName(user));
         detail.setPhone(maskPhone(order.getReceiverPhone()));
         detail.setAddress(order.getReceiverAddress());
@@ -325,6 +385,33 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         detail.setLogistics(logistics);
         detail.setRelatedTicketId(findTicketByOrderId(order.getId()).map(AfterSalesTicket::getId).orElse(null));
         return detail;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public OrderDetail shipOrder(Long orderId) {
+        OrderInfo order = findOrder(orderId);
+        if (!"PAID".equals(order.getStatus())) {
+            throw new BizException("只有未发货订单可以执行发货");
+        }
+        order.setStatus("SHIPPED");
+        order.setShipTime(LocalDateTime.now());
+        if (!StringUtils.hasText(order.getTrackingCompany())) {
+            order.setTrackingCompany("演示快递");
+        }
+        if (!StringUtils.hasText(order.getTrackingNo())) {
+            order.setTrackingNo("DEMO" + System.currentTimeMillis());
+        }
+        orderInfoMapper.updateById(order);
+        notificationService.createNotification(
+                order.getUserId(),
+                "订单已发货",
+                "您的订单 " + order.getOrderNo() + " 已由商家发货，正在配送中",
+                "ORDER",
+                order.getId(),
+                "ORDER"
+        );
+        return getOrder(orderId);
     }
 
     @Override
@@ -353,7 +440,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
 
     @Override
     public PageResult<ProductView> listProducts(long page, long size, String status, String keyword) {
-        List<ProductView> records = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>().orderByDesc(ProductInfo::getCreateTime))
+        List<ProductView> records = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                        .eq(ProductInfo::getMerchantCode, currentMerchantCode())
+                        .orderByDesc(ProductInfo::getCreateTime))
                 .stream()
                 .map(this::toProductView)
                 .filter(item -> !StringUtils.hasText(status) || status.equals(item.getStatus()))
@@ -372,6 +461,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     public ProductView createProduct(ProductUpsertRequest request) {
         ProductInfo product = new ProductInfo();
         applyProductRequest(product, request);
+        SysUser staff = ensureStaff();
+        product.setMerchantId(staff.getId());
+        product.setMerchantCode(merchantCodeOf(staff));
         product.setDeleted(0);
         productInfoMapper.insert(product);
         return toProductView(product);
@@ -395,26 +487,33 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return toProductView(product);
     }
 
-    private SysUser findStaffByAccount(String account) {
+    private SysUser findStaffByAccount(String account, String merchantCode) {
         return sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, account)
+                .eq(SysUser::getMerchantCode, merchantCode)
                 .last("limit 1"));
     }
 
     private SysUser ensureStaff() {
-        SysUser staff = sysUserMapper.selectById(DEFAULT_STAFF_ID);
-        if (staff != null) {
-            return staff;
+        Long currentStaffId = currentStaffId();
+        if (currentStaffId == null) {
+            throw new BizException(401, "未登录，请先登录");
         }
-        SysUser demo = findStaffByAccount("cs_demo");
-        return demo == null ? createDemoStaff() : demo;
+        SysUser staff = sysUserMapper.selectById(currentStaffId);
+        if (staff == null) {
+            throw new BizException(401, "客服账号不存在或已禁用");
+        }
+        if (!Integer.valueOf(1).equals(staff.getStatus())) {
+            throw new BizException(403, "客服账号已被禁用");
+        }
+        return staff;
     }
 
-    private SysUser createDemoStaff() {
+    private SysUser createDemoStaff(String merchantCode) {
         SysUser staff = new SysUser();
-        staff.setId(DEFAULT_STAFF_ID);
         staff.setUsername("cs_demo");
         staff.setPassword(passwordEncoder.encode("123456"));
+        staff.setMerchantCode(merchantCode);
         staff.setRealName("林真");
         staff.setPhone("13800000001");
         staff.setEmail("cs_demo@example.com");
@@ -431,7 +530,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         StaffProfile profile = new StaffProfile();
         profile.setStaffId(staff.getId());
         profile.setStaffNo("CS" + String.format("%04d", staff.getId()));
-        profile.setMerchantCode(DEFAULT_MERCHANT_CODE);
+        profile.setMerchantCode(merchantCodeOf(staff));
         profile.setAccount(staff.getUsername());
         profile.setRealName(staff.getRealName());
         profile.setPhone(staff.getPhone());
@@ -443,7 +542,10 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     private List<SessionView> allSessions() {
-        return chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>().orderByDesc(ChatSession::getUpdateTime))
+        return chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                        .eq(ChatSession::getMerchantCode, currentMerchantCode())
+                        .eq(ChatSession::getMode, "HUMAN")
+                        .orderByDesc(ChatSession::getUpdateTime))
                 .stream()
                 .map(this::toSessionView)
                 .toList();
@@ -458,6 +560,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         SessionView view = new SessionView();
         view.setId(session.getId());
         view.setSessionNo(session.getSessionNo());
+        view.setMerchantCode(session.getMerchantCode());
         view.setUserId(session.getUserId());
         view.setOrderId(session.getOrderId());
         view.setTicketId(session.getTicketId());
@@ -503,7 +606,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     private List<TicketView> allTickets() {
-        return afterSalesTicketMapper.selectList(new LambdaQueryWrapper<AfterSalesTicket>().orderByDesc(AfterSalesTicket::getCreateTime))
+        return afterSalesTicketMapper.selectList(new LambdaQueryWrapper<AfterSalesTicket>()
+                        .eq(AfterSalesTicket::getMerchantCode, currentMerchantCode())
+                        .orderByDesc(AfterSalesTicket::getCreateTime))
                 .stream()
                 .map(this::toTicketView)
                 .toList();
@@ -513,6 +618,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         TicketView view = new TicketView();
         view.setId(ticket.getId());
         view.setTicketNo(ticket.getTicketNo());
+        view.setMerchantCode(ticket.getMerchantCode());
         view.setOrderId(ticket.getOrderId());
         view.setOrderNo(ticket.getOrderNo());
         view.setUserId(ticket.getUserId());
@@ -553,6 +659,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderView view = new OrderView();
         view.setId(order.getId());
         view.setOrderNo(order.getOrderNo());
+        view.setMerchantCode(order.getMerchantCode());
         view.setUserId(order.getUserId());
         view.setUser(userDisplayName(user));
         view.setPhone(maskPhone(order.getReceiverPhone()));
@@ -595,6 +702,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private ProductView toProductView(ProductInfo product) {
         ProductView view = new ProductView();
         view.setId(product.getId());
+        view.setMerchantCode(product.getMerchantCode());
         view.setProductName(product.getProductName());
         view.setProductCode(product.getProductCode());
         view.setCategory(product.getCategory());
@@ -637,7 +745,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private void addTicketLog(AfterSalesTicket ticket, String oldStatus, String newStatus, String action, String content) {
         TicketLog log = new TicketLog();
         log.setTicketId(ticket.getId());
-        log.setOperatorId(DEFAULT_STAFF_ID);
+        log.setOperatorId(ensureStaff().getId());
         log.setOperatorType("AGENT");
         log.setFromStatus(oldStatus);
         log.setToStatus(newStatus);
@@ -651,6 +759,10 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (session == null) {
             throw new BizException(404, "会话不存在");
         }
+        assertCurrentMerchant(session.getMerchantCode(), "会话不存在");
+        if (!"HUMAN".equals(session.getMode())) {
+            throw new BizException(404, "会话不存在");
+        }
         return session;
     }
 
@@ -659,6 +771,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (ticket == null) {
             throw new BizException(404, "工单不存在");
         }
+        assertCurrentMerchant(ticket.getMerchantCode(), "工单不存在");
         return ticket;
     }
 
@@ -667,6 +780,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (order == null) {
             throw new BizException(404, "订单不存在");
         }
+        assertCurrentMerchant(order.getMerchantCode(), "订单不存在");
         return order;
     }
 
@@ -675,14 +789,46 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (product == null) {
             throw new BizException(404, "商品不存在");
         }
+        assertCurrentMerchant(product.getMerchantCode(), "商品不存在");
         return product;
     }
 
     private Optional<AfterSalesTicket> findTicketByOrderId(Long orderId) {
         return Optional.ofNullable(afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
                 .eq(AfterSalesTicket::getOrderId, orderId)
+                .eq(AfterSalesTicket::getMerchantCode, currentMerchantCode())
                 .orderByDesc(AfterSalesTicket::getCreateTime)
                 .last("limit 1")));
+    }
+
+    private Long currentStaffId() {
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return null;
+        }
+        String authorization = attributes.getRequest().getHeader("Authorization");
+        if (!StringUtils.hasText(authorization) || !authorization.startsWith("Bearer ")) {
+            return null;
+        }
+        return jwtTokenUtil.parseUserIdOrNull(authorization.substring("Bearer ".length()));
+    }
+
+    private String currentMerchantCode() {
+        return merchantCodeOf(ensureStaff());
+    }
+
+    private String merchantCodeOf(SysUser staff) {
+        return normalizeMerchantCode(staff == null ? null : staff.getMerchantCode());
+    }
+
+    private String normalizeMerchantCode(String merchantCode) {
+        return StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+    }
+
+    private void assertCurrentMerchant(String merchantCode, String notFoundMessage) {
+        if (!currentMerchantCode().equals(normalizeMerchantCode(merchantCode))) {
+            throw new BizException(404, notFoundMessage);
+        }
     }
 
     private List<TimelineItem> buildTimeline() {

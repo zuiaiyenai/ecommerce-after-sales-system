@@ -136,6 +136,11 @@ public class MerchantCsController {
         return ApiResponse.success("获取成功", merchantCsService.getOrder(orderId));
     }
 
+    @PostMapping("/orders/{orderId}/ship")
+    public ApiResponse<OrderDetail> shipOrder(@PathVariable Long orderId) {
+        return ApiResponse.success("发货成功", merchantCsService.shipOrder(orderId));
+    }
+
     @GetMapping("/notices")
     public ApiResponse<PageResult<NoticeView>> listNotices(@RequestParam(defaultValue = "1") long page,
                                                            @RequestParam(defaultValue = "10") long size,

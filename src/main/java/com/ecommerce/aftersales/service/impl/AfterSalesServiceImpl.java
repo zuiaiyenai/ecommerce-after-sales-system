@@ -8,6 +8,7 @@ import com.ecommerce.aftersales.entity.ProductInfo;
 import com.ecommerce.aftersales.entity.TicketAttachment;
 import com.ecommerce.aftersales.entity.TicketLog;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
+import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
@@ -20,6 +21,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -33,8 +35,6 @@ public class AfterSalesServiceImpl implements AfterSalesService {
     private final OrderInfoMapper orderInfoMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
-
-    private static final Long DEFAULT_USER_ID = 1L;
 
     @Override
     public List<AfterSalesVO> listByUserId(Long userId) {
@@ -71,22 +71,73 @@ public class AfterSalesServiceImpl implements AfterSalesService {
     }
 
     @Override
-    public AfterSalesVO create(AfterSalesVO afterSalesVO) {
+    public AfterSalesVO create(Long userId, AfterSalesVO afterSalesVO) {
+        OrderInfo order = orderInfoMapper.selectById(afterSalesVO.getOrderId());
+        if (order == null) {
+            throw new BizException(404, "订单不存在");
+        }
         AfterSalesTicket ticket = new AfterSalesTicket();
         // 生成工单号
         ticket.setTicketNo("AS" + System.currentTimeMillis());
-        ticket.setOrderId(afterSalesVO.getOrderId());
-        ticket.setOrderNo(afterSalesVO.getOrderNo());
-        ticket.setUserId(DEFAULT_USER_ID);
+        ticket.setOrderId(order.getId());
+        ticket.setOrderNo(order.getOrderNo());
+        ticket.setUserId(userId);
+        ticket.setMerchantId(order.getMerchantId());
+        ticket.setMerchantCode(order.getMerchantCode());
         ticket.setProductName(afterSalesVO.getProductName());
         ticket.setAfterSaleType(afterSalesVO.getAfterSaleType());
         ticket.setReason(afterSalesVO.getReason());
         ticket.setReasonDetail(afterSalesVO.getReasonDetail());
         ticket.setDescription(afterSalesVO.getDescription());
-        ticket.setStatus("PROCESSING");
+        ticket.setRefundAmount(resolveRefundAmount(afterSalesVO, order));
+        ticket.setStatus("PENDING");
         ticket.setPriority(0);
         afterSalesTicketMapper.insert(ticket);
+
+        // Save attachments
+        if (afterSalesVO.getAttachmentUrls() != null && !afterSalesVO.getAttachmentUrls().isEmpty()) {
+            int sortOrder = 0;
+            for (String url : afterSalesVO.getAttachmentUrls()) {
+                TicketAttachment attachment = new TicketAttachment();
+                attachment.setTicketId(ticket.getId());
+                attachment.setFileUrl(url);
+                attachment.setFileType("IMAGE");
+                attachment.setFileName(extractFilename(url));
+                attachment.setFileSize(0L);
+                attachment.setSortOrder(sortOrder++);
+                ticketAttachmentMapper.insert(attachment);
+            }
+        }
+
         return convertToVO(ticket);
+    }
+
+    private BigDecimal resolveRefundAmount(AfterSalesVO afterSalesVO, OrderInfo order) {
+        BigDecimal orderAmount = firstPositive(order.getPayAmount(), order.getTotalAmount(), BigDecimal.ZERO);
+        BigDecimal refundAmount = afterSalesVO.getRefundAmount();
+        if (refundAmount == null || refundAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            return orderAmount;
+        }
+        if (orderAmount.compareTo(BigDecimal.ZERO) > 0 && refundAmount.compareTo(orderAmount) > 0) {
+            return orderAmount;
+        }
+        return refundAmount;
+    }
+
+    private BigDecimal firstPositive(BigDecimal... values) {
+        for (BigDecimal value : values) {
+            if (value != null && value.compareTo(BigDecimal.ZERO) > 0) {
+                return value;
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private String extractFilename(String url) {
+        if (url == null || !url.contains("/")) {
+            return url;
+        }
+        return url.substring(url.lastIndexOf("/") + 1);
     }
 
     private AfterSalesVO convertToVO(AfterSalesTicket ticket) {
@@ -142,6 +193,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
     private String getStatusText(String status) {
         if (status == null) return "";
         switch (status) {
+            case "PENDING": return "待审核";
             case "PROCESSING": return "处理中";
             case "APPROVED": return "已通过";
             case "REJECTED": return "已拒绝";

@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
+import com.ecommerce.aftersales.common.annotation.CurrentUserId;
 import com.ecommerce.aftersales.service.AfterSalesService;
 import com.ecommerce.aftersales.vo.AfterSalesVO;
 import lombok.RequiredArgsConstructor;
@@ -15,17 +16,14 @@ public class AfterSalesController {
 
     private final AfterSalesService afterSalesService;
 
-    // 开发阶段默认使用 userId=1
-    private static final Long DEFAULT_USER_ID = 1L;
-
     @GetMapping
-    public ApiResponse<List<AfterSalesVO>> listByUserId() {
-        return ApiResponse.success("获取成功", afterSalesService.listByUserId(DEFAULT_USER_ID));
+    public ApiResponse<List<AfterSalesVO>> listByUserId(@CurrentUserId Long userId) {
+        return ApiResponse.success("获取成功", afterSalesService.listByUserId(userId));
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<AfterSalesVO> getById(@PathVariable Long id) {
-        AfterSalesVO afterSales = afterSalesService.getById(id, DEFAULT_USER_ID);
+    public ApiResponse<AfterSalesVO> getById(@PathVariable Long id, @CurrentUserId Long userId) {
+        AfterSalesVO afterSales = afterSalesService.getById(id, userId);
         if (afterSales == null) {
             return ApiResponse.fail(404, "售后工单不存在");
         }
@@ -42,7 +40,7 @@ public class AfterSalesController {
     }
 
     @PostMapping
-    public ApiResponse<AfterSalesVO> create(@RequestBody AfterSalesVO afterSalesVO) {
-        return ApiResponse.success("创建成功", afterSalesService.create(afterSalesVO));
+    public ApiResponse<AfterSalesVO> create(@CurrentUserId Long userId, @RequestBody AfterSalesVO afterSalesVO) {
+        return ApiResponse.success("创建成功", afterSalesService.create(userId, afterSalesVO));
     }
 }

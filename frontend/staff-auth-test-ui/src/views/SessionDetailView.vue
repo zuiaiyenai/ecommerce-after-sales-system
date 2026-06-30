@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, ref, watch } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   closeSession,
@@ -21,6 +21,8 @@ const draft = ref('');
 const sending = ref(false);
 const actionLoading = ref('');
 const activeFilter = ref('ACTIVE');
+let ws = null;
+let wsReconnectTimer = null;
 
 const terminalStatuses = ['RESOLVED', 'CLOSED'];
 const filterOptions = [
@@ -88,6 +90,50 @@ async function loadPage() {
   sessions.value = page.records || [];
   session.value = detail;
   messages.value = messageList;
+  connectWebSocket(route.params.sessionId);
+}
+
+function connectWebSocket(sessionId) {
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  try {
+    ws = new WebSocket('ws://127.0.0.1:8080/api/ws/chat');
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ action: 'subscribe', sessionId: Number(sessionId) }));
+    };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.action === 'message' && msg.role !== 'SERVICE') {
+          messages.value = [...messages.value, {
+            id: Date.now(),
+            sessionId: msg.sessionId,
+            senderRole: msg.role === 'USER' ? 'USER' : 'SERVICE',
+            messageType: msg.messageType,
+            content: msg.content,
+            createdAt: msg.createdAt
+          }];
+        }
+      } catch (e) {
+        // ignore parse errors
+      }
+    };
+    ws.onclose = () => {
+      wsReconnectTimer = setTimeout(() => {
+        if (route.params.sessionId) {
+          connectWebSocket(route.params.sessionId);
+        }
+      }, 3000);
+    };
+  } catch (e) {
+    // WebSocket connection failed, rely on HTTP polling
+  }
 }
 
 async function refreshSession(updated) {
@@ -215,6 +261,16 @@ function fieldValue(value, fallback = '暂无') {
 
 watch(() => route.params.sessionId, loadPage);
 onMounted(loadPage);
+onUnmounted(() => {
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+});
 </script>
 
 <template>

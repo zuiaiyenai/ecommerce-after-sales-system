@@ -66,8 +66,7 @@ async function buy(product) {
         quantity: 1,
         receiverName: '演示用户',
         receiverPhone: '13800138000',
-        receiverAddress: '演示收货地址',
-        status: 'RECEIVED'
+        receiverAddress: '北京市朝阳区演示小区 8 号楼'
       }
     })
     uni.showToast({ title: '购买成功', icon: 'success' })

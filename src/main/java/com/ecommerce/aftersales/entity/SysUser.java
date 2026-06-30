@@ -16,6 +16,8 @@ public class SysUser {
 
     private String password;
 
+    private String merchantCode;
+
     private String realName;
 
     private String phone;

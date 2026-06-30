@@ -69,21 +69,15 @@ public class OrderServiceImpl implements OrderService {
         OrderInfo order = new OrderInfo();
         order.setOrderNo("ORD" + System.currentTimeMillis());
         order.setUserId(userId);
+        order.setMerchantId(product.getMerchantId());
+        order.setMerchantCode(product.getMerchantCode());
         order.setTotalAmount(product.getPrice().multiply(java.math.BigDecimal.valueOf(quantity)));
         order.setPayAmount(order.getTotalAmount());
-        order.setStatus(request.getStatus() == null ? "RECEIVED" : request.getStatus());
+        order.setStatus("PAID");
         order.setReceiverName(request.getReceiverName() == null ? "演示用户" : request.getReceiverName());
         order.setReceiverPhone(request.getReceiverPhone() == null ? "13800138000" : request.getReceiverPhone());
         order.setReceiverAddress(request.getReceiverAddress() == null ? "演示收货地址" : request.getReceiverAddress());
         order.setPayTime(LocalDateTime.now());
-        if ("SHIPPED".equals(order.getStatus()) || "RECEIVED".equals(order.getStatus())) {
-            order.setShipTime(LocalDateTime.now());
-            order.setTrackingCompany("演示快递");
-            order.setTrackingNo("DEMO" + System.currentTimeMillis());
-        }
-        if ("RECEIVED".equals(order.getStatus())) {
-            order.setReceiveTime(LocalDateTime.now());
-        }
         orderInfoMapper.insert(order);
 
         OrderItem item = new OrderItem();
@@ -97,12 +91,34 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public void updateStatus(Long id, String status) {
-        OrderInfo orderInfo = orderInfoMapper.selectById(id);
-        if (orderInfo != null) {
-            orderInfo.setStatus(status);
-            orderInfoMapper.updateById(orderInfo);
+    public void updateStatus(Long id, Long userId, String status) {
+        if (!"RECEIVED".equals(status) && !"AFTERSALE".equals(status)) {
+            throw new BizException(403, "用户端不能执行该订单状态操作");
         }
+        OrderInfo orderInfo = orderInfoMapper.selectOne(new LambdaQueryWrapper<OrderInfo>()
+                .eq(OrderInfo::getId, id)
+                .eq(OrderInfo::getUserId, userId)
+                .last("limit 1"));
+        if (orderInfo == null) {
+            throw new BizException(404, "订单不存在");
+        }
+        if ("RECEIVED".equals(status) && !"SHIPPED".equals(orderInfo.getStatus())) {
+            throw new BizException("只有配送中的订单可以确认收货");
+        }
+        orderInfo.setStatus(status);
+        if ("RECEIVED".equals(status)) {
+            if (orderInfo.getShipTime() == null) {
+                orderInfo.setShipTime(LocalDateTime.now().minusHours(2));
+            }
+            if (orderInfo.getTrackingCompany() == null) {
+                orderInfo.setTrackingCompany("演示快递");
+            }
+            if (orderInfo.getTrackingNo() == null) {
+                orderInfo.setTrackingNo("DEMO" + System.currentTimeMillis());
+            }
+            orderInfo.setReceiveTime(LocalDateTime.now());
+        }
+        orderInfoMapper.updateById(orderInfo);
     }
 
     private OrderVO convertToVO(OrderInfo orderInfo) {
@@ -149,8 +165,8 @@ public class OrderServiceImpl implements OrderService {
     private String getStatusText(String status) {
         if (status == null) return "";
         switch (status) {
-            case "PAID": return "已付款";
-            case "SHIPPED": return "已发货";
+            case "PAID": return "未发货";
+            case "SHIPPED": return "配送中";
             case "RECEIVED": return "已收货";
             case "AFTERSALE": return "售后中";
             case "CLOSED": return "已关闭";

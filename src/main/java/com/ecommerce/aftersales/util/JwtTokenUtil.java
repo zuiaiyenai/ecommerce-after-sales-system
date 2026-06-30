@@ -1,5 +1,8 @@
 package com.ecommerce.aftersales.util;
 
+import com.ecommerce.aftersales.common.BizException;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,5 +34,29 @@ public class JwtTokenUtil {
                 .expiration(Date.from(now.plusSeconds(expireMinutes * 60)))
                 .signWith(secretKey)
                 .compact();
+    }
+
+    public Long parseUserId(String token) {
+        try {
+            String subject = Jwts.parser()
+                    .verifyWith(secretKey)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload()
+                    .getSubject();
+            return Long.valueOf(subject);
+        } catch (ExpiredJwtException e) {
+            throw new BizException(401, "token已过期，请重新登录");
+        } catch (JwtException | IllegalArgumentException e) {
+            throw new BizException(401, "token无效");
+        }
+    }
+
+    public Long parseUserIdOrNull(String token) {
+        try {
+            return parseUserId(token);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

@@ -1,6 +1,6 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
+    <!-- top navigation -->
     <view class="nav-bar">
       <view class="back-btn" @tap="goBack">
         <text class="back-icon">←</text>
@@ -9,7 +9,7 @@
       <view class="nav-right"></view>
     </view>
 
-    <!-- 订单信息卡片 - 仅在有订单时显示 -->
+    <!-- order info card - only when order exists -->
     <view v-if="hasOrder" class="order-card">
       <image class="order-product-img" :src="orderInfo.productIcon" mode="aspectFill" />
       <view class="order-product-info">
@@ -22,7 +22,7 @@
       </view>
     </view>
 
-    <!-- 在线客服提示 -->
+    <!-- online service header -->
     <view class="service-header">
       <view class="service-info">
         <text class="service-name">在线客服</text>
@@ -33,7 +33,7 @@
       </view>
     </view>
 
-    <!-- 对话区域 -->
+    <!-- chat area -->
     <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" scroll-with-animation>
       <view v-for="(msg, index) in messages" :key="index" class="msg-group">
         <text class="msg-time" v-if="msg.time">{{ msg.time }}</text>
@@ -46,7 +46,7 @@
       </view>
     </scroll-view>
 
-    <!-- 快捷操作 - 根据是否有订单显示不同操作 -->
+    <!-- quick actions -->
     <view class="quick-actions">
       <template v-if="hasOrder">
         <view class="action-btn" @tap="quickAction('refund')">
@@ -78,7 +78,7 @@
       </template>
     </view>
 
-    <!-- 输入区域 -->
+    <!-- input area -->
     <view class="input-area">
       <view class="voice-btn">
         <text class="voice-icon">🎤</text>
@@ -98,7 +98,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
 
@@ -107,6 +107,7 @@ const inputText = ref('')
 const scrollTop = ref(0)
 const hasOrder = ref(false)
 const sessionId = ref(null)
+let socketTask = null
 
 const orderInfo = ref({
   productName: '',
@@ -134,19 +135,18 @@ async function loadOrderById(orderId) {
 }
 
 onLoad(async (options) => {
-  const numericOrderId = options.orderId && /^\d+$/.test(String(options.orderId)) ? Number(options.orderId) : null
-  const numericAfterSaleId = options.afterSaleId && /^\d+$/.test(String(options.afterSaleId)) ? Number(options.afterSaleId) : null
+  // 用字符串存储ID，避免JS大数精度丢失
+  const orderId = options.orderId && /^\d+$/.test(String(options.orderId)) ? String(options.orderId) : null
+  const afterSaleId = options.afterSaleId && /^\d+$/.test(String(options.afterSaleId)) ? String(options.afterSaleId) : null
 
-  // 如果传了orderId，从API查找订单信息
-  if (numericOrderId) {
-    const data = await loadOrderById(numericOrderId)
+  if (orderId) {
+    const data = await loadOrderById(orderId)
     if (data) {
       hasOrder.value = true
       orderInfo.value = data
     }
   }
 
-  // 如果传了其他参数（如从售后详情跳转）
   if (!hasOrder.value && options.productName) {
     hasOrder.value = true
     orderInfo.value = {
@@ -159,8 +159,8 @@ onLoad(async (options) => {
   }
 
   await createOrLoadSession({
-    afterSaleId: numericAfterSaleId,
-    orderId: numericOrderId
+    afterSaleId: afterSaleId,
+    orderId: orderId
   })
 })
 
@@ -211,10 +211,50 @@ async function createOrLoadSession(payload) {
     if (messages.value.length === 0 && session.welcomeMessage) {
       addServiceMessage(session.welcomeMessage)
     }
+    wsConnect(session.sessionId)
   } catch (e) {
     addServiceMessage('您好，我是智能客服，请问有什么可以帮您？您可以咨询订单问题、申请售后，或转接人工客服。')
   }
 }
+
+function wsConnect(sid) {
+  if (socketTask) {
+    socketTask.close()
+    socketTask = null
+  }
+  socketTask = uni.connectSocket({
+    url: 'ws://127.0.0.1:8080/api/ws/chat',
+    complete: () => {}
+  })
+  socketTask.onOpen(() => {
+    socketTask.send({
+      data: JSON.stringify({ action: 'subscribe', sessionId: sid })
+    })
+  })
+  socketTask.onMessage((res) => {
+    try {
+      const msg = JSON.parse(res.data)
+      if (msg.action === 'message' && msg.role !== 'USER') {
+        addServiceMessage(msg.content)
+      }
+    } catch (e) {
+      // ignore parse errors
+    }
+  })
+  socketTask.onError((err) => {
+    console.error('WebSocket error', err)
+  })
+  socketTask.onClose(() => {
+    // ignore
+  })
+}
+
+onUnmounted(() => {
+  if (socketTask) {
+    socketTask.close()
+    socketTask = null
+  }
+})
 
 function scrollToBottom() {
   nextTick(() => {
@@ -272,7 +312,6 @@ function quickAction(type) {
   background: #f0eeea;
 }
 
-/* 顶部导航 */
 .nav-bar {
   display: flex;
   align-items: center;
@@ -306,7 +345,6 @@ function quickAction(type) {
   width: 64rpx;
 }
 
-/* 订单信息卡片 */
 .order-card {
   display: flex;
   align-items: center;
@@ -359,7 +397,6 @@ function quickAction(type) {
   font-weight: 600;
 }
 
-/* 客服头部 */
 .service-header {
   display: flex;
   align-items: center;
@@ -396,7 +433,6 @@ function quickAction(type) {
   color: #52c41a;
 }
 
-/* 对话区域 */
 .chat-area {
   flex: 1;
   padding: 20rpx 28rpx;
@@ -454,7 +490,6 @@ function quickAction(type) {
   color: #bbb;
 }
 
-/* 快捷操作 */
 .quick-actions {
   display: flex;
   gap: 16rpx;
@@ -483,7 +518,6 @@ function quickAction(type) {
   font-weight: 500;
 }
 
-/* 输入区域 */
 .input-area {
   display: flex;
   align-items: center;

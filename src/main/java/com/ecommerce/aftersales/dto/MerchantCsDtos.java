@@ -99,6 +99,7 @@ public final class MerchantCsDtos {
     public static class SessionView {
         private Long id;
         private String sessionNo;
+        private String merchantCode;
         private Long userId;
         private Long orderId;
         private Long ticketId;
@@ -153,6 +154,7 @@ public final class MerchantCsDtos {
     public static class TicketView {
         private Long id;
         private String ticketNo;
+        private String merchantCode;
         private Long orderId;
         private String orderNo;
         private Long userId;
@@ -200,6 +202,7 @@ public final class MerchantCsDtos {
     public static class OrderView {
         private Long id;
         private String orderNo;
+        private String merchantCode;
         private Long userId;
         private String user;
         private String phone;
@@ -215,6 +218,7 @@ public final class MerchantCsDtos {
     public static class OrderDetail {
         private Long id;
         private String orderNo;
+        private String merchantCode;
         private String user;
         private String phone;
         private String address;
@@ -255,6 +259,7 @@ public final class MerchantCsDtos {
     @Data
     public static class ProductView {
         private Long id;
+        private String merchantCode;
         private String productName;
         private String productCode;
         private String category;

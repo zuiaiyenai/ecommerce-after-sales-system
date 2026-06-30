@@ -14,9 +14,9 @@ const loading = ref(false);
 const errorMessage = ref('');
 const actionMessage = ref('');
 const form = reactive({
-  account: 'cs_demo',
-  password: '123456',
-  merchantCode: 'MERCHANT_DEMO'
+  account: '',
+  password: '',
+  merchantCode: ''
 });
 
 const networkAvatars = [
@@ -98,7 +98,6 @@ function handleRegister() {
       <div class="login-box-head">
         <span class="eyebrow">Secure Login</span>
         <h2>客服登录</h2>
-        <p>测试账号：cs_demo / 123456</p>
       </div>
 
       <label class="login-field">

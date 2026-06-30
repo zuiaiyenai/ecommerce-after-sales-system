@@ -18,7 +18,7 @@ const statusMap = {
 
 const statusDescMap = {
   PENDING_REVIEW: '等待客服核验凭证，可执行通过或驳回。',
-  PROCESSING: '审核已进入售后处理，继续跟进退款、物流或补发。',
+  PROCESSING: '当前工单仍可执行审核；通过后进入售后处理，驳回后关闭申请。',
   APPROVED: '审核已通过，等待后续售后动作完成。',
   REJECTED: '审核已驳回，本次申请不再进入处理。'
 };
@@ -34,7 +34,7 @@ const priorityMap = {
   NORMAL: '普通优先级'
 };
 
-const reviewable = computed(() => ticket.value?.status === 'PENDING_REVIEW');
+const reviewable = computed(() => ['PENDING_REVIEW', 'PROCESSING'].includes(ticket.value?.status));
 
 async function loadPage() {
   ticket.value = await getTicket(route.params.ticketId);

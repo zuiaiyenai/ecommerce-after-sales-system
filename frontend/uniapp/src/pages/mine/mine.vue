@@ -112,7 +112,8 @@ const navItems = [
 ]
 
 const orderTabs = ref([
-  { key: 'shipped', label: '已发货', icon: '□', badge: 0 },
+  { key: 'paid', label: '未发货', icon: '□', badge: 0 },
+  { key: 'shipped', label: '配送中', icon: '◇', badge: 0 },
   { key: 'received', label: '已收货', icon: '▷', badge: 0 },
   { key: 'aftersale', label: '售后中', icon: '◆', badge: 0 }
 ])
@@ -128,6 +129,7 @@ async function loadBadges() {
       request({ url: '/orders' }),
       request({ url: '/aftersales' })
     ])
+    const paid = (orders || []).filter(o => o.status === 'PAID').length
     const shipped = (orders || []).filter(o => o.status === 'SHIPPED').length
     const received = (orders || []).filter(o => o.status === 'RECEIVED').length
     const aftersale = (afterSales || []).filter(a => a.status === 'PROCESSING').length
@@ -135,9 +137,10 @@ async function loadBadges() {
     // 读取已读记录
     const seen = uni.getStorageSync('badgeSeen') || {}
 
-    orderTabs.value[0].badge = (seen.shipped === shipped) ? 0 : shipped
-    orderTabs.value[1].badge = (seen.received === received) ? 0 : received
-    orderTabs.value[2].badge = (seen.aftersale === aftersale) ? 0 : aftersale
+    orderTabs.value[0].badge = (seen.paid === paid) ? 0 : paid
+    orderTabs.value[1].badge = (seen.shipped === shipped) ? 0 : shipped
+    orderTabs.value[2].badge = (seen.received === received) ? 0 : received
+    orderTabs.value[3].badge = (seen.aftersale === aftersale) ? 0 : aftersale
   } catch (e) {
     console.error('加载角标失败', e)
   }
