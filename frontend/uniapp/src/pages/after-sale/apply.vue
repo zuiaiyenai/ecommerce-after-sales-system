@@ -1,6 +1,5 @@
-﻿<template>
+<template>
   <view class="page">
-    <!-- 顶部导航 -->
     <view class="nav-bar">
       <view class="back-btn" @tap="goBack">
         <text class="back-icon">←</text>
@@ -9,7 +8,6 @@
       <view class="nav-right"></view>
     </view>
 
-    <!-- 售后原因选择 -->
     <view class="card">
       <text class="card-title">售后原因</text>
       <view class="divider"></view>
@@ -23,12 +21,11 @@
         >
           <view class="reason-icon">{{ item.icon }}</view>
           <text class="reason-label">{{ item.label }}</text>
-          <view class="reason-check" v-if="selectedReason === item.value">✓</view>
+          <view v-if="selectedReason === item.value" class="reason-check">✓</view>
         </view>
       </view>
     </view>
 
-    <!-- 中间：问题描述输入 -->
     <view class="card">
       <text class="card-title">问题描述</text>
       <view class="divider"></view>
@@ -43,7 +40,6 @@
       </view>
     </view>
 
-    <!-- 下方：图片上传 -->
     <view class="card">
       <text class="card-title">上传凭证</text>
       <view class="divider"></view>
@@ -52,17 +48,16 @@
           <image :src="img" mode="aspectFill" class="preview-img" @tap="previewImage(index)" />
           <view class="delete-btn" @tap.stop="removeImage(index)">×</view>
         </view>
-        <view class="add-image" @tap="chooseImage" v-if="images.length < 5">
+        <view v-if="images.length < 5" class="add-image" @tap="chooseImage">
           <text class="add-icon">+</text>
           <text class="add-text">添加图片</text>
         </view>
       </view>
-      <text class="image-tip">最多上传5张，支持jpg/png格式</text>
+      <text class="image-tip">最多上传 5 张，支持 jpg/png 格式</text>
     </view>
 
-    <!-- 提交按钮 -->
     <button class="submit-btn" :disabled="!selectedReason || submitting" @tap="submit">
-      {{ submitting ? '提交中...' : '提交申请' }}
+      {{ submitting ? '进入对话中...' : '提交申请' }}
     </button>
   </view>
 </template>
@@ -71,6 +66,8 @@
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
+
+const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
 const selectedReason = ref('')
 const description = ref('')
@@ -88,13 +85,18 @@ const reasons = [
   { value: 'OTHER', label: '其他原因', icon: '…' }
 ]
 
+function getPendingApplyKey(id) {
+  return `${PENDING_APPLY_PREFIX}:${id || 'default'}`
+}
+
 onLoad(async (options) => {
   if (options.orderId) {
-    // 用字符串，避免 JS 大数精度丢失（雪花ID 超过 2^53）
-    orderId.value = String(options.orderId)
+    orderId.value = Number(options.orderId)
     try {
       orderData.value = await request({ url: '/orders/' + orderId.value })
-    } catch (e) {}
+    } catch (error) {
+      orderData.value = null
+    }
   }
 })
 
@@ -112,7 +114,7 @@ function chooseImage() {
     sizeType: ['compressed'],
     sourceType: ['album', 'camera'],
     success: (res) => {
-      images.value = [...images.value, ...res.tempFilePaths]
+      images.value = [...images.value, ...(res.tempFilePaths || [])].slice(0, 5)
     }
   })
 }
@@ -133,94 +135,33 @@ async function submit() {
     uni.showToast({ title: '请选择售后原因', icon: 'none' })
     return
   }
-  if (!orderId.value || !orderData.value) {
-    uni.showToast({ title: '订单信息缺失，请从订单列表重新进入', icon: 'none' })
+  if (!orderData.value || !orderId.value) {
+    uni.showToast({ title: '订单信息加载失败', icon: 'none' })
     return
   }
 
   submitting.value = true
   try {
-    // 不传图片直接提交，跳过上传失败阻塞
-    const firstItem = orderData.value.items && orderData.value.items[0]
-    const refundAmount = orderData.value.payAmount || orderData.value.totalAmount || '0.00'
-    const ticketData = {
+    const reasonLabel = reasons.find((item) => item.value === selectedReason.value)?.label || selectedReason.value
+    const pendingPayload = {
       orderId: orderId.value,
       orderNo: orderData.value.orderNo || '',
-      productName: firstItem ? firstItem.productName : '',
-      afterSaleType: selectedReason.value,
-      reason: selectedReason.value,
-      reasonDetail: selectedReason.value,
-      description: description.value,
-      refundAmount,
-      attachmentUrls: []
+      reasonValue: selectedReason.value,
+      reasonLabel,
+      description: description.value.trim() || reasonLabel,
+      initialMessage: `我想申请售后，原因是${reasonLabel}`,
+      imagePaths: [...images.value],
+      createdAt: Date.now()
     }
 
-    // 尝试上传图片，失败不阻塞提交流程
-    if (images.value && images.value.length > 0) {
-      for (const imgPath of images.value) {
-        try {
-          const url = await uploadImage(imgPath)
-          if (url) ticketData.attachmentUrls.push(url)
-        } catch (e) {
-          // 图片上传失败，继续提交
-        }
-      }
-    }
-
-    const createdTicket = await request({ url: '/aftersales', method: 'POST', data: ticketData })
-
-    // Update order status to AFTERSALE. Do not block navigation if only the status update fails.
-    if (orderId.value) {
-      try {
-        await request({ url: '/orders/' + orderId.value + '/status?status=AFTERSALE', method: 'PUT' })
-      } catch (e) {
-        console.error('更新订单售后状态失败', e)
-      }
-    }
-
-    uni.showToast({ title: '提交成功', icon: 'success' })
-
-    setTimeout(() => {
-      if (createdTicket && createdTicket.ticketNo) {
-        uni.redirectTo({ url: '/pages/after-sale/detail?ticketNo=' + encodeURIComponent(createdTicket.ticketNo) })
-        return
-      }
-      uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
-    }, 1500)
+    uni.setStorageSync(getPendingApplyKey(orderId.value), pendingPayload)
+    uni.redirectTo({
+      url: `/pages/chat/consult?orderId=${orderId.value}&fromApply=1`
+    })
   } catch (error) {
-    uni.showToast({ title: error.message || '提交失败，请重试', icon: 'none', duration: 3000 })
-  } finally {
+    uni.showToast({ title: error.message || '进入对话失败，请重试', icon: 'none' })
     submitting.value = false
   }
-}
-
-function uploadImage(filePath) {
-  return new Promise((resolve, reject) => {
-    const token = uni.getStorageSync('token') || ''
-    uni.uploadFile({
-      url: 'http://127.0.0.1:8080/api/upload/image',
-      filePath: filePath,
-      name: 'file',
-      header: {
-        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
-      },
-      success: (res) => {
-        try {
-          const data = JSON.parse(res.data)
-          if (data.code === 200 && data.data && data.data.url) {
-            resolve(data.data.url)
-          } else {
-            reject(new Error(data.message || '上传失败'))
-          }
-        } catch (e) {
-          reject(new Error('上传响应解析失败'))
-        }
-      },
-      fail: (err) => {
-        reject(err)
-      }
-    })
-  })
 }
 </script>
 
@@ -231,7 +172,6 @@ function uploadImage(filePath) {
   background: #f0eeea;
 }
 
-/* 顶部导航 */
 .nav-bar {
   display: flex;
   align-items: center;
@@ -246,7 +186,7 @@ function uploadImage(filePath) {
   text-align: center;
   border-radius: 16rpx;
   background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
+  border: 1rpx solid rgba(0, 0, 0, 0.04);
 }
 
 .back-icon {
@@ -264,14 +204,13 @@ function uploadImage(filePath) {
   width: 64rpx;
 }
 
-/* 卡片 */
 .card {
   margin-top: 24rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
-  box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+  border: 1rpx solid rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2rpx 16rpx rgba(0, 0, 0, 0.03);
 }
 
 .card-title {
@@ -284,10 +223,9 @@ function uploadImage(filePath) {
 .divider {
   height: 1rpx;
   margin: 20rpx 0;
-  background: linear-gradient(90deg, rgba(0,0,0,0.06), rgba(0,0,0,0.02), rgba(0,0,0,0.06));
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.06));
 }
 
-/* 售后原因 */
 .reason-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -319,7 +257,7 @@ function uploadImage(filePath) {
   color: #1a1a1a;
   font-size: 24rpx;
   font-weight: 800;
-  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.04);
 }
 
 .reason-label {
@@ -344,7 +282,6 @@ function uploadImage(filePath) {
   font-size: 20rpx;
 }
 
-/* 描述输入 */
 .desc-input {
   width: 100%;
   height: 240rpx;
@@ -368,7 +305,6 @@ function uploadImage(filePath) {
   color: #999;
 }
 
-/* 图片上传 */
 .image-grid {
   display: flex;
   flex-wrap: wrap;
@@ -385,7 +321,7 @@ function uploadImage(filePath) {
   width: 100%;
   height: 100%;
   border-radius: 14rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
+  border: 1rpx solid rgba(0, 0, 0, 0.04);
 }
 
 .delete-btn {
@@ -397,7 +333,7 @@ function uploadImage(filePath) {
   line-height: 36rpx;
   text-align: center;
   border-radius: 50%;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.6);
   color: #ffffff;
   font-size: 24rpx;
 }
@@ -411,7 +347,7 @@ function uploadImage(filePath) {
   justify-content: center;
   background: #f5f3ef;
   border-radius: 14rpx;
-  border: 2rpx dashed rgba(0,0,0,0.1);
+  border: 2rpx dashed rgba(0, 0, 0, 0.1);
 }
 
 .add-icon {
@@ -433,7 +369,6 @@ function uploadImage(filePath) {
   color: #999;
 }
 
-/* 提交按钮 */
 .submit-btn {
   margin-top: 32rpx;
   height: 88rpx;
@@ -444,7 +379,7 @@ function uploadImage(filePath) {
   font-size: 30rpx;
   font-weight: 700;
   border: none;
-  box-shadow: 0 4rpx 16rpx rgba(244,90,11,0.3);
+  box-shadow: 0 4rpx 16rpx rgba(244, 90, 11, 0.3);
 }
 
 .submit-btn[disabled] {

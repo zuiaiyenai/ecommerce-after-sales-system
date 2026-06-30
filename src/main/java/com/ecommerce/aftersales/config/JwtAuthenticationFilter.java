@@ -27,6 +27,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             "/api/miniapp/auth/**",
             "/api/products/**",
             "/api/merchant-cs/auth/login",
+            "/api/agent/**",
             "/api/static/**",
             "/api/uploads/**",
             "/api/upload/**"

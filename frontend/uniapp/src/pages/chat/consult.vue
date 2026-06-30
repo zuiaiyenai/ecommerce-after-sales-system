@@ -1,307 +1,482 @@
 <template>
   <view class="page">
-    <!-- top navigation -->
     <view class="nav-bar">
       <view class="back-btn" @tap="goBack">
         <text class="back-icon">←</text>
       </view>
-      <text class="nav-title">智能客服</text>
+      <text class="nav-title">智能售后助手</text>
       <view class="nav-right"></view>
     </view>
 
-    <!-- order info card - only when order exists -->
     <view v-if="hasOrder" class="order-card">
       <image class="order-product-img" :src="orderInfo.productIcon" mode="aspectFill" />
       <view class="order-product-info">
         <text class="order-product">{{ orderInfo.productName }}</text>
         <view class="order-row">
           <text class="order-no">订单号：{{ orderInfo.orderNo }}</text>
-          <text class="copy-icon" @tap="copyOrderNo">📋</text>
+          <text class="copy-icon" @tap="copyOrderNo">复制</text>
           <text class="order-status">{{ orderInfo.statusText }}</text>
         </view>
       </view>
     </view>
 
-    <!-- online service header -->
     <view class="service-header">
       <view class="service-info">
-        <text class="service-name">在线客服</text>
+        <text class="service-name">售后 Agent 在线</text>
         <view class="online-dot">
           <view class="dot"></view>
-          <text class="online-text">在线</text>
+          <text class="online-text">{{ agentStatusText }}</text>
         </view>
       </view>
     </view>
 
-    <!-- chat area -->
     <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" scroll-with-animation>
       <view v-for="(msg, index) in messages" :key="index" class="msg-group">
-        <text class="msg-time" v-if="msg.time">{{ msg.time }}</text>
+        <text v-if="msg.time" class="msg-time">{{ msg.time }}</text>
         <view class="message" :class="msg.role">
           <view class="msg-bubble">
             <text class="msg-text">{{ msg.content }}</text>
+            <text v-if="msg.meta" class="msg-meta">{{ msg.meta }}</text>
           </view>
         </view>
-        <text class="msg-read" v-if="msg.role === 'user'">已读</text>
       </view>
     </scroll-view>
 
-    <!-- quick actions -->
     <view class="quick-actions">
-      <template v-if="hasOrder">
-        <view class="action-btn" @tap="quickAction('refund')">
-          <text class="action-icon">🔄</text>
-          <text class="action-text">退款进度</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('supplement')">
-          <text class="action-icon">📎</text>
-          <text class="action-text">补充凭证</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('human')">
-          <text class="action-icon">👤</text>
-          <text class="action-text">人工帮助</text>
-        </view>
-      </template>
-      <template v-else>
-        <view class="action-btn" @tap="quickAction('query')">
-          <text class="action-icon">🔍</text>
-          <text class="action-text">查询订单</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('aftersale')">
-          <text class="action-icon">🔄</text>
-          <text class="action-text">申请售后</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('human')">
-          <text class="action-icon">👤</text>
-          <text class="action-text">人工帮助</text>
-        </view>
-      </template>
+      <view class="action-btn" @tap="quickAction('refund')">
+        <text class="action-text">退款进度</text>
+      </view>
+      <view class="action-btn" @tap="quickAction('supplement')">
+        <text class="action-text">补充凭证</text>
+      </view>
+      <view class="action-btn" @tap="quickAction('human')">
+        <text class="action-text">人工帮助</text>
+      </view>
     </view>
 
-    <!-- input area -->
-    <view class="input-area">
-      <view class="voice-btn">
-        <text class="voice-icon">🎤</text>
+    <view class="upload-area">
+      <view class="upload-header">
+        <text class="upload-title">凭证图片</text>
+        <text class="upload-tip">最多 3 张，优先做快速分析</text>
       </view>
+      <view class="image-grid">
+        <view v-for="(img, index) in attachments" :key="img" class="image-item">
+          <image :src="img" mode="aspectFill" class="preview-img" @tap="previewImage(index)" />
+          <view class="delete-btn" @tap.stop="removeImage(index)">×</view>
+        </view>
+        <view v-if="attachments.length < 3" class="add-image" @tap="chooseImage">
+          <text class="add-icon">+</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="input-area">
       <input
         v-model="inputText"
         class="chat-input"
-        placeholder="请输入内容"
+        placeholder="请输入您的售后问题"
         confirm-type="send"
         @confirm="sendMessage"
       />
-      <view class="send-btn" :class="{ active: inputText.trim() }" @tap="sendMessage">
-        <text class="send-icon">➤</text>
+      <view class="send-btn" :class="{ active: canSend }" @tap="sendMessage">
+        <text class="send-icon">{{ sending ? '...' : '发送' }}</text>
       </view>
     </view>
   </view>
 </template>
 
 <script setup>
-import { ref, nextTick, onUnmounted } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
+import {
+  buildAttachments,
+  buildChatPayload,
+  buildOrderHint,
+  chat,
+  checkAgentHealth,
+  loadConversationState,
+  reviewImages,
+  saveConversationState
+} from '../../utils/afterSalesAgent'
+
+const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
 const messages = ref([])
 const inputText = ref('')
 const scrollTop = ref(0)
 const hasOrder = ref(false)
+const orderData = ref(null)
+const attachments = ref([])
+const sending = ref(false)
+const agentStatusText = ref('连接中')
 const sessionId = ref(null)
-let socketTask = null
+const humanRequestCount = ref(0)
+const processingPendingApply = ref(false)
+const deferredReviewRunning = ref(false)
 
 const orderInfo = ref({
   productName: '',
-  spec: '',
   orderNo: '',
   productIcon: '',
   statusText: ''
 })
 
-async function loadOrderById(orderId) {
-  try {
-    const order = await request({ url: '/orders/' + orderId })
-    if (!order) return null
-    const item = order.items && order.items[0]
-    return {
-      productName: item ? item.productName : '',
-      spec: item ? item.productSpec : '',
-      orderNo: order.orderNo || '',
-      productIcon: item ? item.productImage : '',
-      statusText: order.statusText || ''
-    }
-  } catch (e) {
-    return null
-  }
+const canSend = computed(() => inputText.value.trim() && !sending.value)
+
+function getNowTime() {
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 }
 
-onLoad(async (options) => {
-  // 用字符串存储ID，避免JS大数精度丢失
-  const orderId = options.orderId && /^\d+$/.test(String(options.orderId)) ? String(options.orderId) : null
-  const afterSaleId = options.afterSaleId && /^\d+$/.test(String(options.afterSaleId)) ? String(options.afterSaleId) : null
+function getConversationKey() {
+  if (orderData.value && orderData.value.orderNo) return orderData.value.orderNo
+  if (orderInfo.value.orderNo) return orderInfo.value.orderNo
+  return 'default'
+}
 
-  if (orderId) {
-    const data = await loadOrderById(orderId)
-    if (data) {
-      hasOrder.value = true
-      orderInfo.value = data
-    }
-  }
+function getPendingApplyKey(orderId) {
+  return `${PENDING_APPLY_PREFIX}:${orderId || 'default'}`
+}
 
-  if (!hasOrder.value && options.productName) {
-    hasOrder.value = true
-    orderInfo.value = {
-      productName: options.productName,
-      spec: options.spec || '',
-      orderNo: options.orderId || '',
-      productIcon: options.productIcon || '',
-      statusText: options.statusText || '售后处理中'
-    }
-  }
-
-  await createOrLoadSession({
-    afterSaleId: afterSaleId,
-    orderId: orderId
+function scrollToBottom() {
+  nextTick(() => {
+    scrollTop.value += 9999
   })
-})
+}
+
+function addMessage(role, content, meta = '') {
+  messages.value.push({
+    role,
+    content,
+    meta,
+    time: getNowTime()
+  })
+  scrollToBottom()
+}
 
 function goBack() {
   uni.navigateBack()
 }
 
 function copyOrderNo() {
+  if (!orderInfo.value.orderNo) return
   uni.setClipboardData({
     data: orderInfo.value.orderNo,
-    success: () => {
-      uni.showToast({ title: '已复制', icon: 'success' })
-    }
+    success: () => uni.showToast({ title: '已复制', icon: 'success' })
   })
 }
 
-function addServiceMessage(content) {
-  const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  messages.value.push({ role: 'service', content, time })
-  scrollToBottom()
+async function loadOrderById(orderId) {
+  const order = await request({ url: '/orders/' + orderId })
+  const item = order && order.items && order.items[0] ? order.items[0] : {}
+  orderData.value = order
+  orderInfo.value = {
+    productName: item.productName || '',
+    orderNo: order.orderNo || '',
+    productIcon: item.productImage || '',
+    statusText: order.statusText || ''
+  }
+  hasOrder.value = Boolean(order)
 }
 
-function addUserMessage(content) {
-  const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  messages.value.push({ role: 'user', content, time })
-  scrollToBottom()
-}
-
-async function createOrLoadSession(payload) {
+async function initAgentStatus() {
   try {
-    const session = await request({
-      url: '/chat/session',
-      method: 'POST',
-      data: payload
-    })
-    sessionId.value = session.sessionId
-    const history = await request({
-      url: '/chat/history?sessionId=' + session.sessionId
-    })
-    const list = history && history.list ? history.list : []
-    messages.value = list.map(item => ({
-      role: item.role,
-      content: item.content,
-      time: item.createTime ? item.createTime.slice(11, 16) : ''
-    }))
-    if (messages.value.length === 0 && session.welcomeMessage) {
-      addServiceMessage(session.welcomeMessage)
-    }
-    wsConnect(session.sessionId)
-  } catch (e) {
-    addServiceMessage('您好，我是智能客服，请问有什么可以帮您？您可以咨询订单问题、申请售后，或转接人工客服。')
+    const result = await checkAgentHealth()
+    agentStatusText.value = result && result.ok ? '服务正常' : '服务异常'
+  } catch (error) {
+    agentStatusText.value = '未连接'
   }
 }
 
-function wsConnect(sid) {
-  if (socketTask) {
-    socketTask.close()
-    socketTask = null
-  }
-  socketTask = uni.connectSocket({
-    url: 'ws://127.0.0.1:8080/api/ws/chat',
-    complete: () => {}
+function restoreConversation() {
+  const saved = loadConversationState(getConversationKey())
+  if (!saved) return false
+  sessionId.value = saved.sessionId || null
+  humanRequestCount.value = saved.humanRequestCount || 0
+  messages.value = Array.isArray(saved.messages) ? saved.messages : []
+  attachments.value = Array.isArray(saved.attachments) ? saved.attachments : []
+  scrollToBottom()
+  return messages.value.length > 0
+}
+
+function persistConversation() {
+  saveConversationState(getConversationKey(), {
+    sessionId: sessionId.value,
+    humanRequestCount: humanRequestCount.value,
+    messages: messages.value,
+    attachments: attachments.value
   })
-  socketTask.onOpen(() => {
-    socketTask.send({
-      data: JSON.stringify({ action: 'subscribe', sessionId: sid })
+}
+
+function buildReplyMeta(result) {
+  const parts = []
+  if (result.suggested_action) parts.push(`建议：${result.suggested_action}`)
+  if (Array.isArray(result.evidence_needed) && result.evidence_needed.length > 0) {
+    parts.push(`还需：${result.evidence_needed.join('、')}`)
+  }
+  if (result.ticket && result.ticket.ticket_id) {
+    parts.push(`工单：${result.ticket.ticket_id}`)
+  }
+  if (result.fallback_need_human) {
+    parts.push('已建议人工介入')
+  }
+  return parts.join(' | ')
+}
+
+async function chooseImage() {
+  uni.chooseImage({
+    count: 3 - attachments.value.length,
+    sizeType: ['compressed'],
+    sourceType: ['album', 'camera'],
+    success: (res) => {
+      attachments.value = [...attachments.value, ...(res.tempFilePaths || [])].slice(0, 3)
+      persistConversation()
+    }
+  })
+}
+
+function removeImage(index) {
+  attachments.value.splice(index, 1)
+  persistConversation()
+}
+
+function previewImage(index) {
+  uni.previewImage({
+    current: index,
+    urls: attachments.value
+  })
+}
+
+async function reviewSelectedImages(order, imagePaths = attachments.value) {
+  if (!imagePaths.length) return null
+  const attachmentPayload = await buildAttachments(imagePaths)
+  const result = await reviewImages({
+    attachments: attachmentPayload,
+    order_hint: buildOrderHint({
+      order_id: order.orderNo,
+      product_name: order.items && order.items[0] ? order.items[0].productName : ''
     })
   })
-  socketTask.onMessage((res) => {
-    try {
-      const msg = JSON.parse(res.data)
-      if (msg.action === 'message' && msg.role !== 'USER') {
-        addServiceMessage(msg.content)
+  return {
+    attachments: attachmentPayload,
+    imageReview: result.image_review || null
+  }
+}
+
+function hasSuccessfulImageReview(imageReview) {
+  return Boolean(imageReview && imageReview.success)
+}
+
+function applyChatResult(result) {
+  if (result && result.persistence && result.persistence.session_id) {
+    sessionId.value = result.persistence.session_id
+  }
+  if (result && result.ticket && result.ticket.ticket_id && orderData.value && orderData.value.orderNo) {
+    uni.setStorageSync(`after_sales_ticket:${orderData.value.orderNo}`, result.ticket)
+  }
+  addMessage('service', result.assistant_reply || '已收到您的问题', buildReplyMeta(result))
+  if (result && result.fallback_need_human) {
+    humanRequestCount.value = Math.max(humanRequestCount.value, 2)
+  }
+  persistConversation()
+}
+
+async function runDeferredImageReview(imagePaths) {
+  if (!orderData.value || !imagePaths.length || deferredReviewRunning.value) return
+
+  deferredReviewRunning.value = true
+  try {
+    const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
+    if (reviewResult && hasSuccessfulImageReview(reviewResult.imageReview) && reviewResult.imageReview.summary) {
+      addMessage('service', `图片补充分析：${reviewResult.imageReview.summary}`)
+    } else if (reviewResult && hasSuccessfulImageReview(reviewResult.imageReview)) {
+      addMessage('service', '图片补充分析已完成，当前没有额外风险提示。')
+    }
+    persistConversation()
+  } catch (error) {
+    persistConversation()
+  } finally {
+    deferredReviewRunning.value = false
+  }
+}
+
+async function sendAgentMessage({
+  text,
+  description = text,
+  imagePaths = attachments.value,
+  selectedOrderExtra = {},
+  allowFallbackToDeferredReview = true
+}) {
+  const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
+  let attachmentPayload = []
+  let imageReview = null
+  let skipImageReview = !hasImages
+
+  if (hasImages && orderData.value) {
+    const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
+    attachmentPayload = reviewResult ? reviewResult.attachments : []
+    imageReview = reviewResult ? reviewResult.imageReview : null
+    if (hasSuccessfulImageReview(imageReview) && imageReview.summary) {
+      addMessage('service', `快速分析：${imageReview.summary}`)
+    } else if (hasSuccessfulImageReview(imageReview)) {
+      addMessage('service', '图片分析已完成，当前没有额外风险提示。')
+    } else {
+      addMessage('service', '已收到图片，我先结合您的描述继续处理。')
+    }
+  }
+
+  try {
+    const result = await chat(
+      buildChatPayload({
+        order: orderData.value,
+        message: text,
+        description,
+        sessionId: sessionId.value,
+        humanRequestCount: humanRequestCount.value,
+        attachments: skipImageReview ? [] : attachmentPayload,
+        imageReview,
+        skipImageReview,
+        selectedOrderExtra
+      })
+    )
+
+    applyChatResult(result)
+    attachments.value = []
+    persistConversation()
+    return result
+  } catch (error) {
+    if (hasImages && allowFallbackToDeferredReview) {
+      addMessage('service', '已收到图片，我先结合您的描述开始处理。')
+      skipImageReview = true
+      const fallbackResult = await chat(
+        buildChatPayload({
+          order: orderData.value,
+          message: text,
+          description,
+          sessionId: sessionId.value,
+          humanRequestCount: humanRequestCount.value,
+          attachments: [],
+          imageReview: null,
+          skipImageReview: true,
+          selectedOrderExtra
+        })
+      )
+      applyChatResult(fallbackResult)
+      attachments.value = []
+      persistConversation()
+      void runDeferredImageReview(imagePaths)
+      return fallbackResult
+    }
+    throw error
+  }
+}
+
+async function consumePendingApply(orderId) {
+  const key = getPendingApplyKey(orderId)
+  const pending = uni.getStorageSync(key)
+  if (!pending || processingPendingApply.value) return
+
+  processingPendingApply.value = true
+  uni.removeStorageSync(key)
+
+  if (messages.value.length === 0) {
+    addMessage('service', '已收到您的售后申请，我先帮您进入对话并开始处理。')
+  }
+
+  addMessage('user', pending.initialMessage)
+  if (pending.description && pending.description !== pending.initialMessage) {
+    addMessage('user', `补充说明：${pending.description}`)
+  }
+  if (Array.isArray(pending.imagePaths) && pending.imagePaths.length > 0) {
+    addMessage('service', '图片已收到，我正在快速分析凭证内容，马上给您回复。')
+  } else {
+    addMessage('service', '我先根据您提交的描述开始处理，有新的分析结果会继续补充。')
+  }
+
+  try {
+    const result = await sendAgentMessage({
+      text: pending.initialMessage,
+      description: pending.description,
+      imagePaths: pending.imagePaths || [],
+      selectedOrderExtra: {
+        hasOpenAfterSales: false,
+        uploadedEvidence: (pending.imagePaths || []).length > 0 ? ['商品照片'] : []
       }
-    } catch (e) {
-      // ignore parse errors
+    })
+
+    if (pending.orderId) {
+      await request({ url: `/orders/${pending.orderId}/status?status=AFTERSALE`, method: 'PUT' })
     }
-  })
-  socketTask.onError((err) => {
-    console.error('WebSocket error', err)
-  })
-  socketTask.onClose(() => {
-    // ignore
-  })
-}
 
-onUnmounted(() => {
-  if (socketTask) {
-    socketTask.close()
-    socketTask = null
+    if (result && result.ticket && result.ticket.ticket_id) {
+      uni.showToast({ title: '已进入售后对话', icon: 'success' })
+    }
+  } catch (error) {
+    addMessage('service', error.message || 'Agent 调用异常，但我已经保留了您的申请，请继续发送消息。')
+    persistConversation()
+  } finally {
+    processingPendingApply.value = false
   }
-})
-
-function scrollToBottom() {
-  nextTick(() => {
-    scrollTop.value = scrollTop.value + 1
-  })
 }
 
 async function sendMessage() {
   const text = inputText.value.trim()
-  if (!text) return
+  if (!text || sending.value) return
 
-  addUserMessage(text)
+  const wantsHuman = /人工|客服|真人/.test(text)
+  if (wantsHuman) {
+    humanRequestCount.value += 1
+  }
+
+  const imagePaths = [...attachments.value]
+  addMessage('user', text)
   inputText.value = ''
+  sending.value = true
+
+  if (imagePaths.length > 0) {
+    addMessage('service', '图片已收到，我正在快速分析凭证内容，马上给您回复。')
+  }
 
   try {
-    if (!sessionId.value) {
-      await createOrLoadSession({})
-    }
-    const result = await request({
-      url: '/chat/send',
-      method: 'POST',
-      data: {
-        sessionId: sessionId.value,
-        message: text,
-        messageType: 'TEXT'
-      }
+    await sendAgentMessage({
+      text,
+      description: text,
+      imagePaths
     })
-    if (result && result.reply) {
-      addServiceMessage(result.reply)
-    }
-  } catch (e) {
-    addServiceMessage('消息暂时发送失败，请稍后重试。')
+  } catch (error) {
+    addMessage('service', error.message || '消息发送失败，请稍后重试')
+  } finally {
+    sending.value = false
   }
 }
 
 function quickAction(type) {
-  const actionMap = {
-    refund: '请帮我查看一下退款进度',
-    supplement: '我需要补充一些凭证图片',
-    human: '请帮我转接人工客服',
-    query: '我想查询我的订单状态',
-    aftersale: '我想申请售后'
+  const map = {
+    refund: '请帮我查看退款进度',
+    supplement: '我想补充售后凭证图片',
+    human: '请帮我转人工客服'
   }
-  const text = actionMap[type]
-  inputText.value = text
+  inputText.value = map[type] || ''
   sendMessage()
 }
+
+onLoad(async (options) => {
+  await initAgentStatus()
+
+  if (options.orderId) {
+    await loadOrderById(Number(options.orderId))
+  }
+
+  const hasSavedConversation = restoreConversation()
+  if (!hasSavedConversation) {
+    addMessage('service', '您好，我是售后 Agent。您可以先描述问题，我会优先结合图片做快速分析，再给您正式回复。')
+  }
+
+  if (options.fromApply === '1' && options.orderId) {
+    await consumePendingApply(Number(options.orderId))
+  }
+})
 </script>
 
 <style scoped>
@@ -318,48 +493,49 @@ function quickAction(type) {
   justify-content: space-between;
   padding: 32rpx 28rpx;
   background: #ffffff;
-  border-bottom: 1rpx solid rgba(0,0,0,0.06);
+  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
+}
+
+.back-btn,
+.nav-right {
+  width: 64rpx;
+  height: 64rpx;
 }
 
 .back-btn {
-  width: 64rpx;
-  height: 64rpx;
   line-height: 64rpx;
   text-align: center;
   border-radius: 16rpx;
   background: #f5f3ef;
 }
 
+.back-icon,
+.nav-title {
+  color: #1a1a1a;
+}
+
 .back-icon {
   font-size: 32rpx;
-  color: #1a1a1a;
 }
 
 .nav-title {
   font-size: 32rpx;
   font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
 }
 
 .order-card {
   display: flex;
   align-items: center;
-  margin: 20rpx 28rpx;
+  margin: 20rpx 28rpx 12rpx;
   padding: 24rpx;
   background: #ffffff;
   border-radius: 16rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
 }
 
 .order-product-img {
   width: 80rpx;
   height: 80rpx;
   border-radius: 12rpx;
-  flex-shrink: 0;
 }
 
 .order-product-info {
@@ -369,8 +545,8 @@ function quickAction(type) {
 
 .order-product {
   display: block;
-  font-size: 26rpx;
-  font-weight: 600;
+  font-size: 28rpx;
+  font-weight: 700;
   color: #1a1a1a;
 }
 
@@ -378,46 +554,46 @@ function quickAction(type) {
   display: flex;
   align-items: center;
   margin-top: 10rpx;
+  gap: 10rpx;
 }
 
-.order-no {
+.order-no,
+.copy-icon,
+.order-status,
+.online-text,
+.msg-time,
+.msg-meta,
+.upload-tip {
   font-size: 22rpx;
-  color: #999;
 }
 
-.copy-icon {
-  margin-left: 8rpx;
-  font-size: 20rpx;
+.order-no,
+.copy-icon,
+.upload-tip {
+  color: #999;
 }
 
 .order-status {
   margin-left: auto;
-  font-size: 22rpx;
   color: #c97b5a;
   font-weight: 600;
 }
 
 .service-header {
-  display: flex;
-  align-items: center;
-  padding: 16rpx 28rpx;
-}
-
-.service-info {
-  margin-left: 14rpx;
+  padding: 8rpx 28rpx 16rpx;
 }
 
 .service-name {
   display: block;
   font-size: 26rpx;
-  font-weight: 600;
+  font-weight: 700;
   color: #1a1a1a;
 }
 
 .online-dot {
   display: flex;
   align-items: center;
-  margin-top: 4rpx;
+  margin-top: 8rpx;
 }
 
 .dot {
@@ -428,15 +604,13 @@ function quickAction(type) {
 }
 
 .online-text {
-  margin-left: 6rpx;
-  font-size: 20rpx;
+  margin-left: 8rpx;
   color: #52c41a;
 }
 
 .chat-area {
   flex: 1;
-  padding: 20rpx 28rpx;
-  overflow-y: auto;
+  padding: 0 28rpx;
 }
 
 .msg-group {
@@ -446,76 +620,136 @@ function quickAction(type) {
 .msg-time {
   display: block;
   text-align: center;
-  font-size: 20rpx;
   color: #bbb;
-  margin-bottom: 16rpx;
+  margin-bottom: 12rpx;
 }
 
 .message {
   display: flex;
-  align-items: flex-start;
 }
 
 .message.user {
-  flex-direction: row-reverse;
+  justify-content: flex-end;
 }
 
 .msg-bubble {
-  max-width: 70%;
+  max-width: 76%;
   padding: 20rpx 24rpx;
   border-radius: 20rpx;
 }
 
 .message.service .msg-bubble {
   background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
 }
 
 .message.user .msg-bubble {
   background: #fff5f0;
-  border: 1rpx solid rgba(244,90,11,0.1);
 }
 
 .msg-text {
+  display: block;
   font-size: 26rpx;
   line-height: 1.6;
   color: #1a1a1a;
 }
 
-.msg-read {
+.msg-meta {
   display: block;
-  text-align: right;
-  margin-top: 8rpx;
-  font-size: 20rpx;
-  color: #bbb;
+  margin-top: 12rpx;
+  color: #8d6e63;
+  line-height: 1.5;
 }
 
 .quick-actions {
   display: flex;
   gap: 16rpx;
-  padding: 16rpx 28rpx;
+  padding: 12rpx 28rpx;
 }
 
 .action-btn {
   flex: 1;
+  height: 64rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8rpx;
-  height: 64rpx;
   background: #ffffff;
   border-radius: 32rpx;
-  border: 1rpx solid rgba(0,0,0,0.06);
-}
-
-.action-icon {
-  font-size: 24rpx;
 }
 
 .action-text {
   font-size: 22rpx;
   color: #1a1a1a;
-  font-weight: 500;
+  font-weight: 600;
+}
+
+.upload-area {
+  margin: 0 28rpx 16rpx;
+  padding: 20rpx 24rpx;
+  background: #ffffff;
+  border-radius: 18rpx;
+}
+
+.upload-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+
+.upload-title {
+  font-size: 24rpx;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.image-grid {
+  display: flex;
+  gap: 16rpx;
+  flex-wrap: wrap;
+}
+
+.image-item,
+.add-image {
+  width: 120rpx;
+  height: 120rpx;
+  position: relative;
+}
+
+.preview-img,
+.add-image {
+  border-radius: 14rpx;
+}
+
+.preview-img {
+  width: 100%;
+  height: 100%;
+}
+
+.delete-btn {
+  position: absolute;
+  top: -12rpx;
+  right: -12rpx;
+  width: 36rpx;
+  height: 36rpx;
+  line-height: 36rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffffff;
+  font-size: 24rpx;
+}
+
+.add-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f3ef;
+  border: 2rpx dashed rgba(0, 0, 0, 0.1);
+}
+
+.add-icon {
+  font-size: 42rpx;
+  color: #999;
 }
 
 .input-area {
@@ -525,20 +759,7 @@ function quickAction(type) {
   padding: 20rpx 28rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background: #ffffff;
-  border-top: 1rpx solid rgba(0,0,0,0.06);
-}
-
-.voice-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: #f5f3ef;
-}
-
-.voice-icon {
-  font-size: 28rpx;
+  border-top: 1rpx solid rgba(0, 0, 0, 0.06);
 }
 
 .chat-input {
@@ -551,13 +772,14 @@ function quickAction(type) {
 }
 
 .send-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 50%;
+  min-width: 120rpx;
+  height: 72rpx;
+  padding: 0 24rpx;
+  border-radius: 36rpx;
   background: #e0e0e0;
-  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .send-btn.active {
@@ -566,6 +788,7 @@ function quickAction(type) {
 
 .send-icon {
   color: #ffffff;
-  font-size: 28rpx;
+  font-size: 24rpx;
+  font-weight: 700;
 }
 </style>
