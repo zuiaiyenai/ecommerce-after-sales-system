@@ -24,6 +24,28 @@ function buildUrl(path) {
   return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+async function parseApiResponse(response) {
+  const text = await response.text();
+  if (!text) {
+    return {
+      success: response.ok,
+      code: response.status,
+      message: response.ok ? '' : `HTTP ${response.status}`,
+      data: null
+    };
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    return {
+      success: false,
+      code: response.status,
+      message: text || error.message || `HTTP ${response.status}`,
+      data: null
+    };
+  }
+}
+
 function saveToken(newToken) {
   token = newToken;
   if (newToken) {
@@ -42,7 +64,7 @@ async function request(path, options = {}) {
     headers,
     ...options
   });
-  const payload = await response.json();
+  const payload = await parseApiResponse(response);
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || '接口请求失败');
   }
@@ -482,7 +504,7 @@ export async function uploadProductImage(file) {
     },
     body: formData
   });
-  const payload = await response.json();
+  const payload = await parseApiResponse(response);
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || '图片上传失败');
   }

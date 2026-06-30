@@ -32,12 +32,12 @@
     <view class="card orders-card">
       <view class="card-header">
         <text class="card-title">最近订单</text>
-        <button class="link-btn" @tap="goOrders">查看全部</button>
+        <button v-if="hasMoreOrders" class="link-btn" @tap="goOrders">查看全部</button>
       </view>
       <view class="divider"></view>
       <view class="order-list">
         <view v-for="item in orders" :key="item.id" class="order-item" @tap="viewOrderDetail(item.id)">
-          <image class="order-icon" :src="item.icon" mode="aspectFill" />
+          <image class="order-icon" :src="normalizeImageUrl(item.icon)" mode="aspectFill" />
           <view class="order-content">
             <text class="order-title">{{ item.title }}</text>
             <text class="order-desc">{{ item.desc }}</text>
@@ -64,13 +64,14 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const userInfo = ref({})
 const activeTab = ref('home')
 const allOrders = ref([])
 const allAfterSales = ref([])
+const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
   { key: 'home', label: '首页', icon: '⌂' },
@@ -89,7 +90,10 @@ const overview = computed(() => {
   const aftersales = allAfterSales.value
   const received = orders.filter(o => o.status === 'RECEIVED').length
   const shipped = orders.filter(o => o.status === 'SHIPPED').length
-  const aftersale = aftersales.filter(a => a.status === 'PROCESSING').length
+  const aftersale = Math.max(
+    orders.filter(o => o.status === 'AFTERSALE').length,
+    aftersales.filter(a => a.status === 'PROCESSING').length
+  )
   const total = orders.length
   return [
     { label: '已收货订单', value: received, percent: total ? Math.round(received / total * 100) : 0 },
@@ -98,20 +102,37 @@ const overview = computed(() => {
   ]
 })
 
-// 从API数据渲染最近订单（取前3条）
+function normalizeList(data) {
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.records)) return data.records
+  if (Array.isArray(data?.list)) return data.list
+  return []
+}
+
+function formatDate(value) {
+  return value ? String(value).slice(0, 10) : ''
+}
+
+function formatAmount(value) {
+  return value || value === 0 ? value : '0.00'
+}
+
+// 从API数据渲染最近订单
 const orders = computed(() => {
-  return allOrders.value.slice(0, 3).map(o => {
+  return allOrders.value.slice(0, RECENT_ORDER_LIMIT).map(o => {
     const item = o.items && o.items[0]
     return {
       id: o.id,
       icon: item ? item.productImage : '',
       title: item ? item.productName : o.orderNo,
-      desc: `${o.createTime.slice(0, 10)} | ¥${o.payAmount}`,
-      status: o.statusText,
+      desc: `${formatDate(o.createTime)} | ¥${formatAmount(o.payAmount)}`,
+      status: o.statusText || o.status,
       statusClass: getStatusClass(o.status)
     }
   })
 })
+
+const hasMoreOrders = computed(() => allOrders.value.length > RECENT_ORDER_LIMIT)
 
 const initial = computed(() => {
   const name = userInfo.value.nickname || '用户'
@@ -120,18 +141,26 @@ const initial = computed(() => {
 
 async function loadData() {
   try {
-    const [ordersData, afterSalesData] = await Promise.all([
-      request({ url: '/orders' }),
-      request({ url: '/aftersales' })
-    ])
-    allOrders.value = ordersData || []
-    allAfterSales.value = afterSalesData || []
+    const ordersData = await request({ url: '/orders' })
+    allOrders.value = normalizeList(ordersData)
   } catch (e) {
-    console.error('加载数据失败', e)
+    console.error('加载订单失败', e)
+  }
+
+  try {
+    const afterSalesData = await request({ url: '/aftersales' })
+    allAfterSales.value = normalizeList(afterSalesData)
+  } catch (e) {
+    console.error('加载售后失败', e)
+    allAfterSales.value = []
   }
 }
 
 onLoad(() => {
+  userInfo.value = uni.getStorageSync('userInfo') || {}
+})
+
+onShow(() => {
   userInfo.value = uni.getStorageSync('userInfo') || {}
   loadData()
 })
@@ -259,13 +288,14 @@ function logout() {
 }
 
 .link-btn {
+  margin: 0 0 0 auto;
   height: 48rpx;
   line-height: 48rpx;
   padding: 0 20rpx;
   border: 1rpx solid rgba(0,0,0,0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #888;
+  color: #1a1a1a;
   font-size: 22rpx;
 }
 

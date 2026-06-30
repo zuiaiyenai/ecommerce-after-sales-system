@@ -15,7 +15,7 @@
       </view>
 
       <view v-for="product in products" :key="product.id" class="product-card">
-        <image class="product-image" :src="product.mainImage" mode="aspectFill" />
+        <image class="product-image" :src="normalizeImageUrl(product.mainImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ product.productName }}</text>
           <text class="product-desc">{{ product.description || product.category }}</text>
@@ -34,7 +34,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const products = ref([])
 const buyingId = ref(null)

@@ -1,4 +1,6 @@
-const BASE_URL = 'http://127.0.0.1:8080/api'
+export const BASE_URL = 'http://127.0.0.1:8080/api'
+
+const API_ORIGIN = BASE_URL.replace(/\/api\/?$/, '')
 
 function getToken() {
   try {
@@ -59,4 +61,23 @@ export function setToken(t) {
 export function clearToken() {
   uni.removeStorageSync('token')
   uni.removeStorageSync('userInfo')
+}
+
+export function normalizeImageUrl(src) {
+  if (!src) return ''
+  const value = String(src).trim()
+  if (!value) return ''
+  if (/^(https?:)?\/\//.test(value) || value.startsWith('data:') || value.startsWith('blob:') || value.startsWith('wxfile://')) {
+    return value
+  }
+  if (value.startsWith('/api/')) {
+    return `${API_ORIGIN}${value}`
+  }
+  if (value.startsWith('/uploads/')) {
+    return `${BASE_URL}${value}`
+  }
+  if (value.startsWith('uploads/')) {
+    return `${BASE_URL}/${value}`
+  }
+  return value
 }

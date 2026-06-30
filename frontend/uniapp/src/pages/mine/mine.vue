@@ -310,13 +310,14 @@ function logout() {
 }
 
 .link-btn {
+  margin: 0 0 0 auto;
   height: 48rpx;
   line-height: 48rpx;
   padding: 0 20rpx;
   border: 1rpx solid rgba(0, 0, 0, 0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #888;
+  color: #1a1a1a;
   font-size: 22rpx;
 }
 

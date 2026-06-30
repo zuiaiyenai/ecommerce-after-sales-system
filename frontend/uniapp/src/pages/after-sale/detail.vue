@@ -14,7 +14,7 @@
       <text class="card-title">商品信息</text>
       <view class="divider"></view>
       <view class="product-row">
-        <image class="product-img" :src="orderInfo.productImage" mode="aspectFill" />
+        <image class="product-img" :src="normalizeImageUrl(orderInfo.productImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ orderInfo.productName }}</text>
           <text class="product-spec">{{ orderInfo.spec }}</text>
@@ -125,7 +125,7 @@
       <view v-if="afterSaleInfo.images && afterSaleInfo.images.length > 0" class="info-row images-row">
         <text class="info-label">凭证图片</text>
         <view class="images-grid">
-          <image v-for="(img, index) in afterSaleInfo.images" :key="index" class="evidence-img" :src="img" mode="aspectFill" @tap="previewImage(index)" />
+          <image v-for="(img, index) in afterSaleInfo.images" :key="index" class="evidence-img" :src="normalizeImageUrl(img)" mode="aspectFill" @tap="previewImage(index)" />
         </view>
       </view>
     </view>
@@ -142,7 +142,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const pageTitle = ref('订单详情')
 const hasAfterSale = ref(false)
@@ -457,7 +457,7 @@ function copyTracking() {
 }
 
 function previewImage(index) {
-  uni.previewImage({ current: index, urls: afterSaleInfo.value.images })
+  uni.previewImage({ current: index, urls: afterSaleInfo.value.images.map(normalizeImageUrl) })
 }
 
 function contactService() {

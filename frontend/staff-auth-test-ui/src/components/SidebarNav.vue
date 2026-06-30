@@ -15,6 +15,14 @@ const props = defineProps({
   todos: {
     type: Array,
     default: () => []
+  },
+  ticketCount: {
+    type: Number,
+    default: 0
+  },
+  noticeCount: {
+    type: Number,
+    default: 0
   }
 });
 
@@ -32,10 +40,10 @@ const navItems = computed(() => [
     icon: 'message',
     count: props.sessions.filter((item) => !terminalSessionStatuses.includes(item.status)).length
   },
-  { to: '/tickets', key: 'tickets', label: '售后工单', icon: 'clipboard', count: props.tickets.length },
+  { to: '/tickets', key: 'tickets', label: '售后工单', icon: 'clipboard', count: props.ticketCount },
   { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
   { to: '/products', key: 'products', label: '商品管理', icon: 'package' },
-  { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.todos.length },
+  { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.noticeCount },
   { to: '/profile', key: 'profile', label: '个人中心', icon: 'user' }
 ]);
 
