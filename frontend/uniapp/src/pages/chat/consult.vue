@@ -11,7 +11,7 @@
 
     <!-- order info card - only when order exists -->
     <view v-if="hasOrder" class="order-card">
-      <image class="order-product-img" :src="orderInfo.productIcon" mode="aspectFill" />
+      <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
       <view class="order-product-info">
         <text class="order-product">{{ orderInfo.productName }}</text>
         <view class="order-row">
@@ -22,13 +22,21 @@
       </view>
     </view>
 
-    <!-- online service header -->
+    <!-- service status header -->
     <view class="service-header">
       <view class="service-info">
-        <text class="service-name">在线客服</text>
-        <view class="online-dot">
-          <view class="dot"></view>
-          <text class="online-text">在线</text>
+        <text class="service-name">智能客服</text>
+        <view class="service-status-list">
+          <view class="online-dot">
+            <view class="dot"></view>
+            <text class="online-text">智能客服 在线</text>
+          </view>
+          <view class="online-dot">
+            <view :class="['dot', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']"></view>
+            <text :class="['online-text', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']">
+              人工客服 {{ humanServiceStatusText }}
+            </text>
+          </view>
         </view>
       </view>
     </view>
@@ -100,13 +108,15 @@
 <script setup>
 import { ref, nextTick, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const messages = ref([])
 const inputText = ref('')
 const scrollTop = ref(0)
 const hasOrder = ref(false)
 const sessionId = ref(null)
+const humanServiceStatus = ref('OFFLINE')
+const humanServiceStatusText = ref('离线')
 let socketTask = null
 
 const orderInfo = ref({
@@ -199,6 +209,7 @@ async function createOrLoadSession(payload) {
       data: payload
     })
     sessionId.value = session.sessionId
+    applyServiceStatus(session)
     const history = await request({
       url: '/chat/history?sessionId=' + session.sessionId
     })
@@ -215,6 +226,12 @@ async function createOrLoadSession(payload) {
   } catch (e) {
     addServiceMessage('您好，我是智能客服，请问有什么可以帮您？您可以咨询订单问题、申请售后，或转接人工客服。')
   }
+}
+
+function applyServiceStatus(data) {
+  const status = data && data.humanStatus ? data.humanStatus : (data && data.humanOnline ? 'ONLINE' : 'OFFLINE')
+  humanServiceStatus.value = status === 'ONLINE' ? 'ONLINE' : 'OFFLINE'
+  humanServiceStatusText.value = humanServiceStatus.value === 'ONLINE' ? '在线' : '离线'
 }
 
 function wsConnect(sid) {
@@ -282,6 +299,7 @@ async function sendMessage() {
         messageType: 'TEXT'
       }
     })
+    applyServiceStatus(result)
     if (result && result.reply) {
       addServiceMessage(result.reply)
     }
@@ -414,10 +432,16 @@ function quickAction(type) {
   color: #1a1a1a;
 }
 
+.service-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  margin-top: 4rpx;
+}
+
 .online-dot {
   display: flex;
   align-items: center;
-  margin-top: 4rpx;
 }
 
 .dot {
@@ -427,10 +451,26 @@ function quickAction(type) {
   background: #52c41a;
 }
 
+.dot.online {
+  background: #52c41a;
+}
+
+.dot.offline {
+  background: #b7b7b7;
+}
+
 .online-text {
   margin-left: 6rpx;
   font-size: 20rpx;
   color: #52c41a;
+}
+
+.online-text.online {
+  color: #52c41a;
+}
+
+.online-text.offline {
+  color: #8c8c8c;
 }
 
 .chat-area {

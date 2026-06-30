@@ -24,12 +24,26 @@ function buildUrl(path) {
   return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-function resolveUploadUrl(payload) {
-  const data = payload?.data ?? payload;
-  if (typeof data === 'string') {
-    return data;
+async function parseApiResponse(response) {
+  const text = await response.text();
+  if (!text) {
+    return {
+      success: response.ok,
+      code: response.status,
+      message: response.ok ? '' : `HTTP ${response.status}`,
+      data: null
+    };
   }
-  return data?.url || data?.fileUrl || data?.path || data?.src || '';
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    return {
+      success: false,
+      code: response.status,
+      message: text || error.message || `HTTP ${response.status}`,
+      data: null
+    };
+  }
 }
 
 function saveToken(newToken) {
@@ -50,7 +64,7 @@ async function request(path, options = {}) {
     headers,
     ...options
   });
-  const payload = await response.json();
+  const payload = await parseApiResponse(response);
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || '接口请求失败');
   }
@@ -490,23 +504,11 @@ export async function uploadProductImage(file) {
     },
     body: formData
   });
-  const text = await response.text();
-  let payload = {};
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      throw new Error(text || '图片上传接口返回格式错误');
-    }
-  }
+  const payload = await parseApiResponse(response);
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || `图片上传失败（HTTP ${response.status}）`);
+    throw new Error(payload.message || '图片上传失败');
   }
-  const url = resolveUploadUrl(payload);
-  if (!url) {
-    throw new Error('图片上传成功，但响应中没有图片地址');
-  }
-  return { ...(payload.data || {}), url };
+  return payload.data;
 }
 
 export async function updateProduct(productId, productData) {

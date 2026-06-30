@@ -259,6 +259,15 @@ function fieldValue(value, fallback = '暂无') {
   return value || fallback;
 }
 
+function displayTime(value, fallback = '') {
+  if (!value) {
+    return fallback;
+  }
+  const text = String(value);
+  const match = text.match(/(\d{2}):(\d{2})(?::\d{2})?/);
+  return match ? `${match[1]}:${match[2]}` : text;
+}
+
 watch(() => route.params.sessionId, loadPage);
 onMounted(loadPage);
 onUnmounted(() => {
@@ -308,7 +317,7 @@ onUnmounted(() => {
             <small>{{ statusLabel(item.status) }} · {{ fieldValue(item.orderNo) }}</small>
           </span>
           <span class="template-conversation-side">
-            <time>{{ item.id === 101 ? '10:24' : item.id === 102 ? '10:21' : '10:15' }}</time>
+            <time>{{ displayTime(item.lastMessageTime) }}</time>
             <i v-if="!terminalStatuses.includes(item.status)" aria-hidden="true"></i>
           </span>
         </button>
@@ -337,7 +346,7 @@ onUnmounted(() => {
           <span class="template-user-avatar mini">{{ senderLabel(message.senderRole).slice(0, 1) }}</span>
           <div class="template-message-content">
             <p>{{ message.content }}</p>
-            <time>{{ message.senderRole === 'SERVICE' ? '10:26' : '10:24' }}</time>
+            <time>{{ displayTime(message.createdAt) }}</time>
           </div>
         </div>
 

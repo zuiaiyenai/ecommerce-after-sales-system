@@ -70,7 +70,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { BASE_URL, request } from '../../utils/request'
 
 const selectedReason = ref('')
 const description = ref('')
@@ -198,7 +198,7 @@ function uploadImage(filePath) {
   return new Promise((resolve, reject) => {
     const token = uni.getStorageSync('token') || ''
     uni.uploadFile({
-      url: 'http://127.0.0.1:8080/api/upload/image',
+      url: `${BASE_URL}/upload/image`,
       filePath: filePath,
       name: 'file',
       header: {

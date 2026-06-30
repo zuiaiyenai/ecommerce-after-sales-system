@@ -31,7 +31,7 @@
         </view>
         <view class="divider"></view>
         <view class="order-body">
-          <image class="product-icon" :src="order.productIcon" mode="aspectFill" />
+          <image class="product-icon" :src="normalizeImageUrl(order.productIcon)" mode="aspectFill" />
           <view class="product-info">
             <text class="product-name">{{ order.productName }}</text>
             <text class="product-spec">{{ order.spec }}</text>
@@ -57,7 +57,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const activeTab = ref('all')
 const allOrders = ref([])
@@ -164,7 +164,7 @@ async function confirmReceive(id) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 32rpx 28rpx;
+  padding: calc(var(--status-bar-height) + 24rpx) 28rpx 24rpx;
   background: #ffffff;
 }
 

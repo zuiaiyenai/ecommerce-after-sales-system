@@ -44,12 +44,6 @@ const statusOptions = [
 
 const categoryOptions = ['服装', '数码', '日用', '鞋靴', '食品', '家居', '其他'];
 
-function apiOrigin() {
-  return (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080')
-    .replace(/\/+$/, '')
-    .replace(/\/api$/, '');
-}
-
 async function loadProducts() {
   loading.value = true;
   try {
@@ -92,8 +86,8 @@ function openEdit(product) {
   form.productCode = product.productCode || '';
   form.category = product.category || '';
   form.description = product.description || '';
-  form.images = syncProductImages(product);
-  form.mainImage = product.mainImage || form.images[0] || '';
+  form.mainImage = product.mainImage || '';
+  form.images = product.images || [];
   form.price = product.price != null ? String(product.price) : '';
   form.status = product.status || 'ON_SALE';
   imageUploading.value = false;
@@ -120,7 +114,6 @@ async function handleSave() {
   formSaving.value = true;
   formError.value = '';
   try {
-    normalizeFormImages();
     const data = {
       productName: form.productName.trim(),
       productCode: form.productCode.trim() || undefined,
@@ -168,7 +161,6 @@ async function handleMainImageChange(event) {
     const result = await uploadProductImage(file);
     form.mainImage = result.url || '';
     form.images = form.mainImage ? [form.mainImage] : [];
-    imageErrors.value = new Set();
     shell?.setAction('商品图片已上传');
   } catch (e) {
     formError.value = e.message || '图片上传失败';
@@ -209,98 +201,26 @@ function priceText(val) {
 
 function imageUrl(src) {
   if (!src) return '';
-  const value = String(src).trim();
-  if (!value) return '';
-  if (/^(https?:)?\/\//.test(value) || value.startsWith('data:') || value.startsWith('blob:')) {
-    return value;
+  if (/^(https?:)?\/\//.test(src) || src.startsWith('data:') || src.startsWith('blob:')) {
+    return src;
   }
-  const origin = apiOrigin();
-  if (value.startsWith('/api/')) {
-    return `${origin}${value}`;
-  }
-  if (value.startsWith('/uploads/') || value.startsWith('/static/')) {
-    return `${origin}/api${value}`;
-  }
-  if (value.startsWith('uploads/') || value.startsWith('static/')) {
-    return `${origin}/api/${value}`;
-  }
-  if (value.startsWith('/')) {
-    return `${origin}${value}`;
-  }
-  return `${origin}/api/${value}`;
+  const configured = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+  const apiBase = configured.endsWith('/api') ? configured : `${configured}/api`;
+  const normalized = src.startsWith('/') ? src : `/${src}`;
+  return normalized.startsWith('/api/') ? `${configured.replace(/\/api$/, '')}${normalized}` : `${apiBase}${normalized}`;
 }
 
-function imageValue(product) {
-  if (!product) return '';
-  if (product.mainImage) {
-    return product.mainImage;
-  }
-  if (Array.isArray(product.images) && product.images.length) {
-    return product.images[0];
-  }
-  if (typeof product.images === 'string' && product.images.trim()) {
-    try {
-      const parsed = JSON.parse(product.images);
-      if (Array.isArray(parsed) && parsed.length) {
-        return parsed[0];
-      }
-    } catch {
-      return product.images;
-    }
-  }
-  return '';
+function imageKey(product) {
+  return `${product.id}:${product.mainImage || ''}`;
 }
 
-function hasProductImage(product) {
-  return Boolean(imageValue(product));
+function hasImageError(product) {
+  return imageErrors.value.has(imageKey(product));
 }
 
-function productImageUrl(product) {
-  return imageUrl(imageValue(product));
-}
-
-function formImageUrl() {
-  return imageUrl(form.mainImage);
-}
-
-function normalizeImageList(images) {
-  if (Array.isArray(images)) {
-    return images;
-  }
-  if (typeof images === 'string' && images.trim()) {
-    try {
-      const parsed = JSON.parse(images);
-      return Array.isArray(parsed) ? parsed : [images];
-    } catch {
-      return [images];
-    }
-  }
-  return [];
-}
-
-function syncProductImages(product) {
-  if (!product) return [];
-  return normalizeImageList(product.images);
-}
-
-function normalizeFormImages() {
-  form.images = normalizeImageList(form.images);
-  if (form.mainImage && !form.images.includes(form.mainImage)) {
-    form.images = [form.mainImage, ...form.images];
-  }
-}
-
-function productImageKey(product) {
-  return `${product.id}:${imageValue(product) || ''}`;
-}
-
-function shouldShowProductImage(product) {
-  return hasProductImage(product) && !imageErrors.value.has(productImageKey(product));
-}
-
-function markProductImageError(product) {
+function markImageError(product) {
   const next = new Set(imageErrors.value);
-  next.add(productImageKey(product));
+  next.add(imageKey(product));
   imageErrors.value = next;
 }
 
@@ -344,11 +264,11 @@ onMounted(loadProducts);
             <td>
               <div class="product-name-cell">
                 <img
-                  v-if="shouldShowProductImage(p)"
+                  v-if="p.mainImage && !hasImageError(p)"
                   class="product-thumb-sm"
-                  :src="productImageUrl(p)"
+                  :src="imageUrl(p.mainImage)"
                   :alt="p.productName"
-                  @error="markProductImageError(p)"
+                  @error="markImageError(p)"
                 />
                 <span v-else class="product-thumb-sm fallback">📦</span>
                 <span>{{ p.productName }}</span>
@@ -415,7 +335,7 @@ onMounted(loadProducts);
             <img
               v-if="form.mainImage"
               class="product-image-preview"
-              :src="formImageUrl()"
+              :src="imageUrl(form.mainImage)"
               alt="商品主图预览"
             />
             <div v-else class="product-image-placeholder">暂无图片</div>

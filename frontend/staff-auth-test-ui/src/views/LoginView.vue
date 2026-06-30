@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login } from '../api/merchantCs';
 import avatarOne from '../assets/support-avatar-1.png';
@@ -13,6 +13,11 @@ const router = useRouter();
 const loading = ref(false);
 const errorMessage = ref('');
 const actionMessage = ref('');
+const showWelcome = ref(false);
+const loginStaffName = ref('');
+const WELCOME_DURATION_MS = 2800;
+let welcomeTimer = null;
+let welcomeFinished = false;
 const form = reactive({
   account: '',
   password: '',
@@ -30,6 +35,32 @@ const networkAvatars = [
 
 const loginButtonText = computed(() => (loading.value ? '正在进入...' : '登录进入工作台'));
 
+function clearWelcomeTimer() {
+  if (welcomeTimer) {
+    window.clearTimeout(welcomeTimer);
+    welcomeTimer = null;
+  }
+}
+
+function enterDashboard() {
+  if (welcomeFinished) {
+    return;
+  }
+  welcomeFinished = true;
+  clearWelcomeTimer();
+  router.push('/dashboard');
+}
+
+function scheduleWelcomeRedirect() {
+  clearWelcomeTimer();
+  welcomeFinished = false;
+  welcomeTimer = window.setTimeout(enterDashboard, WELCOME_DURATION_MS);
+}
+
+function skipWelcome() {
+  enterDashboard();
+}
+
 function showAction(message) {
   actionMessage.value = message;
   window.setTimeout(() => {
@@ -44,10 +75,15 @@ async function handleLogin() {
   errorMessage.value = '';
   actionMessage.value = '';
   try {
-    await login(form);
-    router.push('/dashboard');
+    const result = await login(form);
+    loginStaffName.value = result?.staff?.realName || form.account || '客服';
+    showWelcome.value = true;
+    scheduleWelcomeRedirect();
   } catch (error) {
     errorMessage.value = error.message || '登录失败，请检查账号或密码';
+    showWelcome.value = false;
+    clearWelcomeTimer();
+    welcomeFinished = false;
   } finally {
     loading.value = false;
   }
@@ -62,10 +98,14 @@ function handleRegister() {
   errorMessage.value = '';
   showAction('注册申请入口已保留，后续接入商家客服开户注册流程');
 }
+
+onBeforeUnmount(() => {
+  clearWelcomeTimer();
+});
 </script>
 
 <template>
-  <main class="login-view">
+  <main :class="['login-view', { 'welcome-active': showWelcome }]">
     <section class="login-stage" aria-label="商家客服端欢迎区">
       <div class="support-network" aria-hidden="true">
         <div class="network-glow glow-one"></div>
@@ -134,5 +174,15 @@ function handleRegister() {
         <button type="button" class="login-register-button" @click="handleRegister">注册</button>
       </div>
     </form>
+
+    <div v-if="showWelcome" class="welcome-overlay" aria-live="polite">
+      <button type="button" class="welcome-skip" @click="skipWelcome">跳过动画</button>
+      <div class="welcome-card">
+        <div class="welcome-avatar">CS</div>
+        <p>Welcome Back</p>
+        <h2>欢迎回来，{{ loginStaffName }}</h2>
+      </div>
+      <span class="welcome-sweep"></span>
+    </div>
   </main>
 </template>

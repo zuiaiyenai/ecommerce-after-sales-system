@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, provide, ref } from 'vue';
+import { computed, onMounted, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   getCurrentStaff,
@@ -9,6 +9,7 @@ import {
   logout,
   updateWorkStatus
 } from '../api/merchantCs';
+import { noticeRules } from '../data/staticData';
 import SidebarNav from './SidebarNav.vue';
 import TopBar from './TopBar.vue';
 
@@ -21,8 +22,17 @@ const staff = ref(null);
 const todos = ref([]);
 const sessions = ref([]);
 const tickets = ref([]);
+const pendingTicketCount = ref(0);
+const THEME_KEY = 'merchant_cs_theme';
+const savedTheme = localStorage.getItem(THEME_KEY);
+const themeMode = ref(
+  savedTheme || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+);
+let themeAnimationTimer = 0;
 
 const isOnline = computed(() => staff.value?.onlineStatus === 'ONLINE');
+const isDarkTheme = computed(() => themeMode.value === 'dark');
+const noticeCount = computed(() => noticeRules.length + todos.value.length);
 const fullHeightRoutes = ['dashboard', 'tickets', 'sessions', 'orders', 'notices'];
 const isFullHeightPage = computed(() => fullHeightRoutes.includes(route.name));
 
@@ -39,16 +49,18 @@ async function loadShellData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [profile, todoData, sessionPage, ticketPage] = await Promise.all([
+    const [profile, todoData, sessionPage, ticketPage, pendingTicketPage] = await Promise.all([
       getCurrentStaff(),
       getDashboardTodos(),
       getSessions(),
-      getTickets()
+      getTickets(),
+      getTickets({ status: 'PENDING_REVIEW', size: 1 })
     ]);
     staff.value = profile;
     todos.value = todoData;
     sessions.value = sessionPage.records;
     tickets.value = ticketPage.records;
+    pendingTicketCount.value = pendingTicketPage.total ?? pendingTicketPage.records?.length ?? 0;
   } catch (error) {
     errorMessage.value = error.message || '基础数据加载失败';
   } finally {
@@ -76,11 +88,32 @@ async function handleLogout() {
   router.push('/login');
 }
 
+function toggleTheme() {
+  themeMode.value = isDarkTheme.value ? 'light' : 'dark';
+}
+
+watch(
+  themeMode,
+  (mode) => {
+    const root = document.documentElement;
+    window.clearTimeout(themeAnimationTimer);
+    root.classList.add('theme-changing');
+    root.dataset.theme = mode;
+    localStorage.setItem(THEME_KEY, mode);
+    themeAnimationTimer = window.setTimeout(() => {
+      root.classList.remove('theme-changing');
+    }, 520);
+  },
+  { immediate: true }
+);
+
 provide('merchantCsShell', {
   staff,
   todos,
   sessions,
   tickets,
+  themeMode,
+  toggleTheme,
   setAction,
   refreshShell: loadShellData
 });
@@ -95,11 +128,19 @@ onMounted(loadShellData);
       :sessions="sessions"
       :tickets="tickets"
       :todos="todos"
+      :ticket-count="pendingTicketCount"
+      :notice-count="noticeCount"
       @toggle-status="handleToggleStatus"
     />
 
     <section :class="['page-area', { 'page-area-full': isFullHeightPage }]">
-      <TopBar :loading="loading" @refresh="loadShellData" @logout="handleLogout" />
+      <TopBar
+        :loading="loading"
+        :theme-mode="themeMode"
+        @refresh="loadShellData"
+        @logout="handleLogout"
+        @toggle-theme="toggleTheme"
+      />
       <div v-if="errorMessage" class="status-banner error">{{ errorMessage }}</div>
       <div v-else-if="actionMessage" class="status-banner success">{{ actionMessage }}</div>
       <RouterView />

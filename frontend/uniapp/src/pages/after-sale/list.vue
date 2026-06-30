@@ -30,7 +30,7 @@
         </view>
         <view class="divider"></view>
         <view class="card-body">
-          <image class="product-icon" :src="item.productIcon" mode="aspectFill" />
+          <image class="product-icon" :src="normalizeImageUrl(item.productIcon)" mode="aspectFill" />
           <view class="product-info">
             <text class="product-name">{{ item.productName }}</text>
             <text class="product-reason">原因：{{ item.reason }}</text>
@@ -61,7 +61,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const activeTab = ref('all')
 const allAfterSales = ref([])
