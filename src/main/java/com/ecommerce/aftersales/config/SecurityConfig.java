@@ -38,6 +38,7 @@ public class SecurityConfig {
                         .requestMatchers("/merchant-cs/auth/login").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/static/**").permitAll()
+                        .requestMatchers("/upload/**").permitAll()
                         .requestMatchers("/uploads/**").permitAll()
                         .anyRequest().authenticated()
                 )

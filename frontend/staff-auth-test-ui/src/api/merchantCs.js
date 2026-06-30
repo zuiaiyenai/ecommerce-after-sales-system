@@ -490,9 +490,17 @@ export async function uploadProductImage(file) {
     },
     body: formData
   });
-  const payload = await response.json();
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(text || '图片上传接口返回格式错误');
+    }
+  }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || '图片上传失败');
+    throw new Error(payload.message || `图片上传失败（HTTP ${response.status}）`);
   }
   const url = resolveUploadUrl(payload);
   if (!url) {
