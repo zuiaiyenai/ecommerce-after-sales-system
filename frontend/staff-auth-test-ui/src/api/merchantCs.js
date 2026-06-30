@@ -24,6 +24,14 @@ function buildUrl(path) {
   return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+function resolveUploadUrl(payload) {
+  const data = payload?.data ?? payload;
+  if (typeof data === 'string') {
+    return data;
+  }
+  return data?.url || data?.fileUrl || data?.path || data?.src || '';
+}
+
 function saveToken(newToken) {
   token = newToken;
   if (newToken) {
@@ -486,7 +494,11 @@ export async function uploadProductImage(file) {
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || '图片上传失败');
   }
-  return payload.data;
+  const url = resolveUploadUrl(payload);
+  if (!url) {
+    throw new Error('图片上传成功，但响应中没有图片地址');
+  }
+  return { ...(payload.data || {}), url };
 }
 
 export async function updateProduct(productId, productData) {
