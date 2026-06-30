@@ -32,11 +32,7 @@ sql/schema.sql
 sql/seed_data.sql
 ```
 
-如果本机已经按旧版脚本建过库，需要先执行一次商家绑定迁移：
-
-```sql
-sql/merchant_binding_migration.sql
-```
+`schema.sql` 是最终 MySQL 建表脚本，`seed_data.sql` 包含默认商家客服账号和商品目录数据。旧版本地库建议直接重建，避免字段和索引残留不一致。
 
 本地环境变量可选：
 

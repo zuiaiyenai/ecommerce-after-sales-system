@@ -1,12 +1,22 @@
 -- ============================================================
--- 种子数据 —— 仅商品目录，无测试账号/订单/工单
--- 账号通过小程序注册创建，客服通过后台手动添加
+-- 种子数据 —— 商品目录 + 默认商家客服账号
+-- 执行顺序：先执行 schema.sql，再执行本文件
 -- ============================================================
 
 USE ecommerce_aftersales;
 
 -- ============================================================
--- 商品数据（6 个商品，供小程序商城使用）
+-- 默认商家客服账号
+-- 登录账号：cs_demo
+-- 登录密码：123456
+-- 商家编码：MERCHANT_DEMO
+-- ============================================================
+
+INSERT INTO sys_user (id, username, password, real_name, phone, email, role_type, status, online_status, max_sessions, merchant_code) VALUES
+(1, 'cs_demo', '$2a$10$N.zmdr9k7uOCQb376NoUnuTJ8iAt6Z5EHsM8lE9lBOsl7iKTVKIUi', '林真', '13800000001', 'cs_demo@example.com', 'AGENT', 1, 1, 8, 'MERCHANT_DEMO');
+
+-- ============================================================
+-- 商品数据（5 个商品，供小程序商城使用）
 -- ============================================================
 
 INSERT INTO product_info (id, product_name, product_code, category, description, main_image, images, price, status, merchant_code) VALUES
