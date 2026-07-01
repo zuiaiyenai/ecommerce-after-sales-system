@@ -10,4 +10,5 @@ frontend/uniapp/.vite/
 frontend/uniapp/unpackage/
 frontend/staff-auth-test-ui/node_modules/
 frontend/staff-auth-test-ui/dist/
+uploads/
 *.log
