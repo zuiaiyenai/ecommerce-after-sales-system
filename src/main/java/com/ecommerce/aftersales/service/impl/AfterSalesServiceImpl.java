@@ -195,8 +195,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         switch (status) {
             case "PENDING": return "待审核";
             case "PROCESSING": return "处理中";
-            case "APPROVED": return "已通过";
-            case "REJECTED": return "已拒绝";
+            case "REJECTED": return "已驳回";
             case "COMPLETED": return "已完成";
             default: return status;
         }

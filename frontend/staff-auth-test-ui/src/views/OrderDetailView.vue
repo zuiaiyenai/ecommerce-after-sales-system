@@ -78,7 +78,7 @@ onMounted(loadOrder);
           :disabled="!order.relatedTicketId"
           @click="router.push(`/tickets/${order.relatedTicketId}`)"
         >
-          查看关联工单
+          查看关联申请
         </button>
         <button type="button" class="ghost-mini" @click="router.push('/sessions')">发起客服会话</button>
       </div>

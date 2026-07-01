@@ -45,6 +45,8 @@ public interface MerchantCsService {
 
     TicketView rejectTicket(Long ticketId, String rejectReason);
 
+    TicketView completeTicket(Long ticketId, String completeNote);
+
     PageResult<OrderView> listOrders(long page, long size, String status, String keyword);
 
     OrderDetail getOrder(Long orderId);

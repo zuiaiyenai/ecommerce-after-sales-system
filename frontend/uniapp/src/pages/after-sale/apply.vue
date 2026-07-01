@@ -91,7 +91,8 @@ function getPendingApplyKey(id) {
 
 onLoad(async (options) => {
   if (options.orderId) {
-    orderId.value = Number(options.orderId)
+    // 后端订单 ID 是雪花 Long，必须按字符串传递，避免 JS Number 精度丢失。
+    orderId.value = String(options.orderId)
     try {
       orderData.value = await request({ url: '/orders/' + orderId.value })
     } catch (error) {

@@ -396,7 +396,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="ghost-mini"
-            :disabled="!['AWAITING_EVALUATION', 'READY_TO_CLOSE'].includes(session?.status) || isActionBusy"
+            :disabled="session?.status !== 'AWAITING_EVALUATION' || isActionBusy"
             @click="handleSubmitEvaluation"
           >
             模拟用户评价

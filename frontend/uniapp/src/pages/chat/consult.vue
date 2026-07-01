@@ -57,7 +57,7 @@
     <view class="upload-area">
       <view class="upload-header">
         <text class="upload-title">凭证图片</text>
-        <text class="upload-tip">最多 3 张，优先做快速分析</text>
+        <text class="upload-tip">最多 3 张，随问题一并提交</text>
       </view>
       <view class="image-grid">
         <view v-for="(img, index) in attachments" :key="img" class="image-item">
@@ -114,6 +114,7 @@ const sessionId = ref(null)
 const humanRequestCount = ref(0)
 const processingPendingApply = ref(false)
 const deferredReviewRunning = ref(false)
+const lastImageReview = ref(null)
 
 const orderInfo = ref({
   productName: '',
@@ -122,7 +123,7 @@ const orderInfo = ref({
   statusText: ''
 })
 
-const canSend = computed(() => inputText.value.trim() && !sending.value)
+const canSend = computed(() => (inputText.value.trim() || attachments.value.length > 0) && !sending.value)
 
 function getNowTime() {
   const now = new Date()
@@ -167,8 +168,27 @@ function copyOrderNo() {
   })
 }
 
-async function loadOrderById(orderId) {
-  const order = await request({ url: '/orders/' + orderId })
+function buildFallbackOrder(options = {}) {
+  const item = {
+    productName: decodeURIComponent(options.productName || ''),
+    productImage: decodeURIComponent(options.productIcon || ''),
+    productSpec: decodeURIComponent(options.productSpec || ''),
+    price: options.amount || '0.00',
+    quantity: 1
+  }
+  const orderNo = decodeURIComponent(options.orderNo || '')
+  if (!orderNo && !item.productName) return null
+  return {
+    id: options.orderId || '',
+    orderNo,
+    payAmount: options.amount || item.price || '0.00',
+    status: decodeURIComponent(options.status || 'AFTERSALE'),
+    statusText: decodeURIComponent(options.statusText || '售后中'),
+    items: [item]
+  }
+}
+
+function applyOrderToView(order) {
   const item = order && order.items && order.items[0] ? order.items[0] : {}
   orderData.value = order
   orderInfo.value = {
@@ -178,6 +198,28 @@ async function loadOrderById(orderId) {
     statusText: order.statusText || ''
   }
   hasOrder.value = Boolean(order)
+}
+
+async function loadOrderById(orderId, fallbackOptions = {}) {
+  const expectedOrderNo = decodeURIComponent(fallbackOptions.orderNo || '')
+  try {
+    const order = await request({ url: '/orders/' + orderId })
+    if (expectedOrderNo && order && order.orderNo && String(order.orderNo) !== expectedOrderNo) {
+      const fallbackOrder = buildFallbackOrder({ ...fallbackOptions, orderId })
+      if (fallbackOrder) {
+        applyOrderToView(fallbackOrder)
+        return
+      }
+    }
+    applyOrderToView(order)
+  } catch (error) {
+    const fallbackOrder = buildFallbackOrder({ ...fallbackOptions, orderId })
+    if (fallbackOrder) {
+      applyOrderToView(fallbackOrder)
+      return
+    }
+    throw error
+  }
 }
 
 async function initAgentStatus() {
@@ -196,6 +238,7 @@ function restoreConversation() {
   humanRequestCount.value = saved.humanRequestCount || 0
   messages.value = Array.isArray(saved.messages) ? saved.messages : []
   attachments.value = Array.isArray(saved.attachments) ? saved.attachments : []
+  lastImageReview.value = saved.lastImageReview || null
   scrollToBottom()
   return messages.value.length > 0
 }
@@ -205,7 +248,8 @@ function persistConversation() {
     sessionId: sessionId.value,
     humanRequestCount: humanRequestCount.value,
     messages: messages.value,
-    attachments: attachments.value
+    attachments: attachments.value,
+    lastImageReview: lastImageReview.value
   })
 }
 
@@ -268,6 +312,22 @@ function hasSuccessfulImageReview(imageReview) {
   return Boolean(imageReview && imageReview.success)
 }
 
+function evidenceFromImageReview(imageReview) {
+  if (!imageReview || !imageReview.success) return []
+  const evidence = []
+  if (imageReview.has_damage_area) evidence.push('破损照片')
+  if (imageReview.has_outer_package) evidence.push('外包装照片')
+  if (imageReview.has_logistics_label) evidence.push('物流面单照片')
+  return evidence
+}
+
+function buildRecentHistoryPayload() {
+  return messages.value.slice(-8).map((message) => ({
+    role: message.role === 'service' ? 'assistant' : message.role,
+    content: message.content || ''
+  })).filter((message) => message.role && message.content)
+}
+
 function applyChatResult(result) {
   if (result && result.persistence && result.persistence.session_id) {
     sessionId.value = result.persistence.session_id
@@ -288,10 +348,8 @@ async function runDeferredImageReview(imagePaths) {
   deferredReviewRunning.value = true
   try {
     const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
-    if (reviewResult && hasSuccessfulImageReview(reviewResult.imageReview) && reviewResult.imageReview.summary) {
-      addMessage('service', `图片补充分析：${reviewResult.imageReview.summary}`)
-    } else if (reviewResult && hasSuccessfulImageReview(reviewResult.imageReview)) {
-      addMessage('service', '图片补充分析已完成，当前没有额外风险提示。')
+    if (reviewResult && hasSuccessfulImageReview(reviewResult.imageReview)) {
+      lastImageReview.value = reviewResult.imageReview
     }
     persistConversation()
   } catch (error) {
@@ -317,13 +375,12 @@ async function sendAgentMessage({
     const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
     attachmentPayload = reviewResult ? reviewResult.attachments : []
     imageReview = reviewResult ? reviewResult.imageReview : null
-    if (hasSuccessfulImageReview(imageReview) && imageReview.summary) {
-      addMessage('service', `快速分析：${imageReview.summary}`)
-    } else if (hasSuccessfulImageReview(imageReview)) {
-      addMessage('service', '图片分析已完成，当前没有额外风险提示。')
-    } else {
-      addMessage('service', '已收到图片，我先结合您的描述继续处理。')
+    if (hasSuccessfulImageReview(imageReview)) {
+      lastImageReview.value = imageReview
     }
+  } else if (lastImageReview.value) {
+    // 用户先发图、后补充文字时，把上一轮图片审核结果继续带给 Agent。
+    imageReview = lastImageReview.value
   }
 
   try {
@@ -337,7 +394,11 @@ async function sendAgentMessage({
         attachments: skipImageReview ? [] : attachmentPayload,
         imageReview,
         skipImageReview,
-        selectedOrderExtra
+        recentHistory: buildRecentHistoryPayload(),
+        selectedOrderExtra: {
+          ...selectedOrderExtra,
+          uploadedEvidence: selectedOrderExtra.uploadedEvidence || evidenceFromImageReview(imageReview)
+        }
       })
     )
 
@@ -359,7 +420,11 @@ async function sendAgentMessage({
           attachments: [],
           imageReview: null,
           skipImageReview: true,
-          selectedOrderExtra
+          recentHistory: buildRecentHistoryPayload(),
+          selectedOrderExtra: {
+            ...selectedOrderExtra,
+            uploadedEvidence: selectedOrderExtra.uploadedEvidence || evidenceFromImageReview(lastImageReview.value)
+          }
         })
       )
       applyChatResult(fallbackResult)
@@ -389,7 +454,7 @@ async function consumePendingApply(orderId) {
     addMessage('user', `补充说明：${pending.description}`)
   }
   if (Array.isArray(pending.imagePaths) && pending.imagePaths.length > 0) {
-    addMessage('service', '图片已收到，我正在快速分析凭证内容，马上给您回复。')
+    addMessage('service', '图片已收到，正在提交给售后 Agent 处理。')
   } else {
     addMessage('service', '我先根据您提交的描述开始处理，有新的分析结果会继续补充。')
   }
@@ -421,8 +486,9 @@ async function consumePendingApply(orderId) {
 }
 
 async function sendMessage() {
-  const text = inputText.value.trim()
-  if (!text || sending.value) return
+  const typedText = inputText.value.trim()
+  if ((!typedText && attachments.value.length === 0) || sending.value) return
+  const text = typedText || '我上传了售后凭证图片，请先分析。'
 
   const wantsHuman = /人工|客服|真人/.test(text)
   if (wantsHuman) {
@@ -430,12 +496,14 @@ async function sendMessage() {
   }
 
   const imagePaths = [...attachments.value]
-  addMessage('user', text)
+  if (typedText) {
+    addMessage('user', text)
+  }
   inputText.value = ''
   sending.value = true
 
   if (imagePaths.length > 0) {
-    addMessage('service', '图片已收到，我正在快速分析凭证内容，马上给您回复。')
+    addMessage('service', '图片已收到，正在提交给售后 Agent 处理。')
   }
 
   try {
@@ -465,16 +533,16 @@ onLoad(async (options) => {
   await initAgentStatus()
 
   if (options.orderId) {
-    await loadOrderById(Number(options.orderId))
+    await loadOrderById(options.orderId, options)
   }
 
   const hasSavedConversation = restoreConversation()
   if (!hasSavedConversation) {
-    addMessage('service', '您好，我是售后 Agent。您可以先描述问题，我会优先结合图片做快速分析，再给您正式回复。')
+    addMessage('service', '您好，我是售后 Agent。您可以描述问题并补充图片，我会结合订单和材料给您回复。')
   }
 
   if (options.fromApply === '1' && options.orderId) {
-    await consumePendingApply(Number(options.orderId))
+    await consumePendingApply(options.orderId)
   }
 })
 </script>

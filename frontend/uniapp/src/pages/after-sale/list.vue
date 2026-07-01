@@ -40,8 +40,7 @@
         <view class="card-footer">
           <text class="card-time">{{ item.createTime }}</text>
           <view class="card-actions">
-            <button v-if="item.status === 'PROCESSING'" class="action-btn primary" @tap.stop="goChat(item.id)">联系客服</button>
-            <button v-if="item.status === 'APPROVED'" class="action-btn primary" @tap.stop="goChat(item.id)">查看详情</button>
+            <button v-if="item.status === 'PENDING' || item.status === 'PROCESSING'" class="action-btn primary" @tap.stop="goChat(item.id)">联系客服</button>
             <button class="action-btn" @tap.stop="goDetail(item.afterSaleNo)">查看详情</button>
           </view>
         </view>
@@ -67,15 +66,15 @@ const activeTab = ref('all')
 const allAfterSales = ref([])
 
 function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
+  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PENDING: 'pending', PROCESSING: 'processing', REJECTED: 'rejected', COMPLETED: 'completed' }
   return map[status] || ''
 }
 
 const tabs = [
   { key: 'all', label: '全部' },
+  { key: 'pending', label: '待审核' },
   { key: 'processing', label: '处理中' },
-  { key: 'approved', label: '已通过' },
-  { key: 'rejected', label: '已拒绝' },
+  { key: 'rejected', label: '已驳回' },
   { key: 'completed', label: '已完成' }
 ]
 

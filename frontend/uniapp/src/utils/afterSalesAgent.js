@@ -142,7 +142,8 @@ export function buildChatPayload({
   imageReview = null,
   skipImageReview = false,
   itemOpened = null,
-  selectedOrderExtra = {}
+  selectedOrderExtra = {},
+  recentHistory = []
 }) {
   const selectedOrder = order ? buildSelectedOrder(order, selectedOrderExtra) : null
   const payload = {
@@ -152,7 +153,8 @@ export function buildChatPayload({
     description,
     human_request_count: humanRequestCount,
     skip_image_review: skipImageReview,
-    attachments
+    attachments,
+    recent_history: recentHistory
   }
   if (selectedOrder) {
     payload.selected_order = selectedOrder

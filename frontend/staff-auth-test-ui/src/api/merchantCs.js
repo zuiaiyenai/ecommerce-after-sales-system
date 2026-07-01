@@ -187,7 +187,7 @@ export async function getDashboardOverview() {
       greeting: `早上好，${staffProfile.realName || '客服'}`,
       metrics: [
         { title: '待接入会话', value: sessions.filter(s => !['RESOLVED', 'CLOSED'].includes(s.status)).length, trend: '+0', accent: 'orange' },
-        { title: '待审核工单', value: tickets.filter(t => t.status === 'PENDING_REVIEW').length, trend: '+0', accent: 'slate' },
+        { title: '待审核申请', value: tickets.filter(t => t.status === 'PENDING_REVIEW').length, trend: '+0', accent: 'slate' },
         { title: '待处理', value: 0, trend: '+0', accent: 'green' }
       ]
     });
@@ -347,7 +347,7 @@ export async function getTickets(params = {}) {
 export async function getTicket(ticketId) {
   if (!USE_REAL_API) {
     const ticket = tickets.find(t => t.id === ticketId);
-    if (!ticket) throw new Error('工单不存在');
+    if (!ticket) throw new Error('售后申请不存在');
     return delay(ticket);
   }
   return request(`/api/merchant-cs/tickets/${ticketId}`);
@@ -364,8 +364,8 @@ export async function approveTicket(ticketId, auditOpinion) {
   if (!USE_REAL_API) {
     const ticket = tickets.find(t => t.id === ticketId);
     if (ticket) {
-      ticket.status = 'APPROVED';
-      ticket.auditOpinion = auditOpinion || '审核通过';
+      ticket.status = 'PROCESSING';
+      ticket.auditOpinion = auditOpinion || '审核通过，进入处理中';
     }
     return delay(ticket || null);
   }
@@ -387,6 +387,22 @@ export async function rejectTicket(ticketId, rejectReason) {
   return request(`/api/merchant-cs/tickets/${ticketId}/reject`, {
     method: 'POST',
     body: JSON.stringify({ rejectReason })
+  });
+}
+
+export async function completeTicket(ticketId, completeNote) {
+  if (!USE_REAL_API) {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (ticket) {
+      ticket.status = 'COMPLETED';
+      ticket.auditOpinion = completeNote || '处理完成';
+      ticket.completeTime = formatTime(new Date());
+    }
+    return delay(ticket || null);
+  }
+  return request(`/api/merchant-cs/tickets/${ticketId}/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ completeNote })
   });
 }
 

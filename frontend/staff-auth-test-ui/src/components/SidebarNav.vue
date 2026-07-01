@@ -32,7 +32,7 @@ const navItems = computed(() => [
     icon: 'message',
     count: props.sessions.filter((item) => !terminalSessionStatuses.includes(item.status)).length
   },
-  { to: '/tickets', key: 'tickets', label: '售后工单', icon: 'clipboard', count: props.tickets.length },
+  { to: '/tickets', key: 'tickets', label: '售后申请', icon: 'clipboard', count: props.tickets.length },
   { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
   { to: '/products', key: 'products', label: '商品管理', icon: 'package' },
   { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.todos.length },

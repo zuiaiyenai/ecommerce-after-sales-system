@@ -1479,7 +1479,7 @@ button:disabled {
   background: #eaf4ff;
 }
 
-.ticket-status.approved {
+.ticket-status.completed {
   color: #24784a;
   background: #e8f7ef;
 }

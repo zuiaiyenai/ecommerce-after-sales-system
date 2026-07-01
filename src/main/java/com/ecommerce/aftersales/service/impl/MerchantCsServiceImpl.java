@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
 public class MerchantCsServiceImpl implements MerchantCsService {
 
     private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
+    private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final SysUserMapper sysUserMapper;
@@ -117,7 +118,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         overview.setAiEnabled(true);
         overview.setMetrics(List.of(
                 metric("待接入会话", waitingSessions, "+0", "orange"),
-                metric("待审核工单", pendingTickets, "+0", "slate"),
+                metric("待审核申请", pendingTickets, "+0", "slate"),
                 metric("超时预警", warningTickets, "+0", "green")
         ));
         overview.setTimeline(buildTimeline());
@@ -130,7 +131,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         for (TicketView ticket : allTickets().stream().filter(item -> "PENDING_REVIEW".equals(item.getStatus())).limit(5).toList()) {
             TodoItem item = new TodoItem();
             item.setId(ticket.getId());
-            item.setTitle("售后工单 #" + ticket.getTicketNo());
+            item.setTitle("售后申请 #" + ticket.getTicketNo());
             item.setTag(ticket.getAfterSalesType());
             item.setAmount(Optional.ofNullable(ticket.getApplyRefundAmount()).orElse("0.00") + " 元");
             item.setPriority(ticket.getPriority());
@@ -248,10 +249,23 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView requestSessionEvaluation(Long sessionId) {
         ChatSession session = findSession(sessionId);
-        session.setStatus("ACTIVE");
+        if (!"PROCESSING".equals(toMerchantSessionStatus(session))) {
+            throw new BizException("只有处理中会话才能发送评价请求");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        session.setStatus("AWAITING_EVALUATION");
         session.setResolved(0);
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
         addSystemMessage(sessionId, "已发送服务评价邀请，等待用户评价。");
+        notificationService.createNotification(
+                session.getUserId(),
+                "请评价本次客服服务",
+                "您的售后问题已处理完成，请对本次客服服务进行评价。",
+                "CHAT",
+                sessionId,
+                "CHAT_SESSION"
+        );
         return toSessionView(session);
     }
 
@@ -259,10 +273,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView submitSessionEvaluation(Long sessionId, EvaluationRequest request) {
         ChatSession session = findSession(sessionId);
+        if (!"AWAITING_EVALUATION".equals(session.getStatus())) {
+            throw new BizException("当前会话不在待评价状态");
+        }
+        LocalDateTime now = LocalDateTime.now();
         session.setResolved(1);
         session.setSatisfaction(request.getRating() == null ? 5 : request.getRating());
-        session.setStatus("CLOSED");
-        session.setCloseTime(LocalDateTime.now());
+        session.setStatus("READY_TO_CLOSE");
+        session.setCloseTime(now);
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
         addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价");
         return toSessionView(session);
@@ -272,9 +291,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView closeSession(Long sessionId) {
         ChatSession session = findSession(sessionId);
+        if (!canCloseSession(session)) {
+            throw new BizException("只有用户已评价或评价已超时的会话才能关闭");
+        }
+        LocalDateTime now = LocalDateTime.now();
         session.setStatus("CLOSED");
-        session.setCloseTime(LocalDateTime.now());
+        session.setCloseTime(now);
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
+        addSystemMessage(sessionId, "会话已由客服关闭。");
         return toSessionView(session);
     }
 
@@ -308,18 +333,21 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public TicketView approveTicket(Long ticketId, String auditOpinion) {
         AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PENDING".equals(ticket.getStatus()) && !"PENDING_REVIEW".equals(ticket.getStatus())) {
+            throw new BizException("只有待审核状态的申请才能审核通过");
+        }
         String oldStatus = ticket.getStatus();
-        ticket.setStatus("APPROVED");
-        ticket.setAuditOpinion(StringUtils.hasText(auditOpinion) ? auditOpinion : "审核通过");
+        ticket.setStatus("PROCESSING");
+        ticket.setAuditOpinion(StringUtils.hasText(auditOpinion) ? auditOpinion : "审核通过，进入处理中");
         ticket.setAuditTime(LocalDateTime.now());
         ticket.setAssigneeId(ensureStaff().getId());
         afterSalesTicketMapper.updateById(ticket);
-        addTicketLog(ticket, oldStatus, "APPROVED", "APPROVE", ticket.getAuditOpinion());
+        addTicketLog(ticket, oldStatus, "PROCESSING", "APPROVE", ticket.getAuditOpinion());
         // Notify user about approval
         notificationService.createNotification(
                 ticket.getUserId(),
-                "售后工单审核通过",
-                "您的工单 " + ticket.getTicketNo() + " 已审核通过",
+                "售后申请审核通过",
+                "您的售后申请 " + ticket.getTicketNo() + " 已审核通过，当前处理中",
                 "AFTER_SALE",
                 ticket.getId(),
                 "TICKET"
@@ -331,6 +359,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public TicketView rejectTicket(Long ticketId, String rejectReason) {
         AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PENDING".equals(ticket.getStatus()) && !"PENDING_REVIEW".equals(ticket.getStatus())) {
+            throw new BizException("只有待审核状态的申请才能驳回");
+        }
         String oldStatus = ticket.getStatus();
         ticket.setStatus("REJECTED");
         ticket.setAuditOpinion(StringUtils.hasText(rejectReason) ? rejectReason : "资料不足，请补充凭证");
@@ -341,8 +372,35 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         // Notify user about rejection
         notificationService.createNotification(
                 ticket.getUserId(),
-                "售后工单审核驳回",
-                "您的工单 " + ticket.getTicketNo() + " 已被驳回，原因：" + ticket.getAuditOpinion(),
+                "售后申请已驳回",
+                "您的售后申请 " + ticket.getTicketNo() + " 已被驳回，原因：" + ticket.getAuditOpinion(),
+                "AFTER_SALE",
+                ticket.getId(),
+                "TICKET"
+        );
+        return toTicketView(ticket);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketView completeTicket(Long ticketId, String completeNote) {
+        AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PROCESSING".equals(ticket.getStatus())) {
+            throw new BizException("只有处理中状态的申请才能标记为已完成");
+        }
+        String oldStatus = ticket.getStatus();
+        ticket.setStatus("COMPLETED");
+        ticket.setCompleteTime(LocalDateTime.now());
+        ticket.setAuditOpinion(StringUtils.hasText(completeNote) ? completeNote : "处理完成");
+        ticket.setAssigneeId(ensureStaff().getId());
+        afterSalesTicketMapper.updateById(ticket);
+        addTicketLog(ticket, oldStatus, "COMPLETED", "COMPLETE", ticket.getAuditOpinion());
+        markRelatedSessionsReadyForEvaluation(ticket);
+        // Notify user about completion
+        notificationService.createNotification(
+                ticket.getUserId(),
+                "售后申请已处理完成",
+                "您的售后申请 " + ticket.getTicketNo() + " 已处理完成",
                 "AFTER_SALE",
                 ticket.getId(),
                 "TICKET"
@@ -581,7 +639,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setAiSummary(session.getUserQuery());
         view.setStatus(toMerchantSessionStatus(session));
         view.setRating(session.getSatisfaction());
-        view.setEvaluationStatus(session.getSatisfaction() == null ? null : "SUBMITTED");
+        view.setEvaluationRequestedAt("AWAITING_EVALUATION".equals(session.getStatus()) ? format(session.getUpdateTime()) : null);
+        view.setEvaluationStatus(evaluationStatus(session));
         view.setEvaluatedAt(session.getSatisfaction() == null ? null : format(session.getCloseTime()));
         return view;
     }
@@ -622,12 +681,12 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setOrderId(ticket.getOrderId());
         view.setOrderNo(ticket.getOrderNo());
         view.setUserId(ticket.getUserId());
-        view.setTitle(Optional.ofNullable(ticket.getProductName()).orElse("售后工单"));
+        view.setTitle(Optional.ofNullable(ticket.getProductName()).orElse("售后申请"));
         view.setStatus(toMerchantTicketStatus(ticket.getStatus()));
         view.setAfterSalesType(toMerchantAfterSalesType(Optional.ofNullable(ticket.getAfterSaleType()).orElse(ticket.getAiRecommendType())));
         view.setReasonType(ticket.getReason());
         view.setApplyRefundAmount(money(ticket.getRefundAmount()));
-        view.setApprovedRefundAmount("APPROVED".equals(ticket.getStatus()) || "COMPLETED".equals(ticket.getStatus()) ? money(ticket.getRefundAmount()) : null);
+        view.setApprovedRefundAmount("PROCESSING".equals(ticket.getStatus()) || "COMPLETED".equals(ticket.getStatus()) ? money(ticket.getRefundAmount()) : null);
         view.setRefundStatus("COMPLETED".equals(ticket.getStatus()) ? "SUCCESS" : "PENDING");
         view.setPriority(toPriorityText(ticket.getPriority()));
         view.setResponsibility("MERCHANT");
@@ -742,6 +801,21 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         chatMessageMapper.insert(message);
     }
 
+    private void markRelatedSessionsReadyForEvaluation(AfterSalesTicket ticket) {
+        List<ChatSession> sessions = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getMerchantCode, currentMerchantCode())
+                .eq(ChatSession::getMode, "HUMAN")
+                .eq(ChatSession::getTicketId, ticket.getId())
+                .ne(ChatSession::getStatus, "CLOSED"));
+        for (ChatSession session : sessions) {
+            session.setStatus("PROCESSING");
+            session.setResolved(0);
+            session.setHumanAgentId(ensureStaff().getId());
+            chatSessionMapper.updateById(session);
+            addSystemMessage(session.getId(), "售后处理已完成，客服可以发送服务评价请求。");
+        }
+    }
+
     private void addTicketLog(AfterSalesTicket ticket, String oldStatus, String newStatus, String action, String content) {
         TicketLog log = new TicketLog();
         log.setTicketId(ticket.getId());
@@ -769,9 +843,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private AfterSalesTicket findTicket(Long ticketId) {
         AfterSalesTicket ticket = afterSalesTicketMapper.selectById(ticketId);
         if (ticket == null) {
-            throw new BizException(404, "工单不存在");
+            throw new BizException(404, "售后申请不存在");
         }
-        assertCurrentMerchant(ticket.getMerchantCode(), "工单不存在");
+        assertCurrentMerchant(ticket.getMerchantCode(), "售后申请不存在");
         return ticket;
     }
 
@@ -836,7 +910,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         allTickets().stream().limit(3).forEach(ticket -> {
             TimelineItem item = new TimelineItem();
             item.setTime(Optional.ofNullable(ticket.getAuditTime()).orElse(""));
-            item.setTitle("工单 " + ticket.getTicketNo() + " 当前状态：" + ticket.getStatus());
+            item.setTitle("申请 " + ticket.getTicketNo() + " 当前状态：" + ticket.getStatus());
             item.setType("HIGH".equals(ticket.getPriority()) ? "warn" : "normal");
             items.add(item);
         });
@@ -930,14 +1004,48 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     private String toMerchantSessionStatus(ChatSession session) {
+        if ("CLOSED".equals(session.getStatus())) {
+            return "CLOSED";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session)) {
+            return "READY_TO_CLOSE";
+        }
+        if ("READY_TO_CLOSE".equals(session.getStatus())) {
+            return "READY_TO_CLOSE";
+        }
         if (Integer.valueOf(1).equals(session.getResolved())) {
-            return "RESOLVED";
+            return "READY_TO_CLOSE";
         }
         return switch (Optional.ofNullable(session.getStatus()).orElse("ACTIVE")) {
             case "WAITING" -> "WAITING";
+            case "AWAITING_EVALUATION" -> "AWAITING_EVALUATION";
             case "CLOSED" -> "CLOSED";
             default -> "PROCESSING";
         };
+    }
+
+    private boolean canCloseSession(ChatSession session) {
+        return "READY_TO_CLOSE".equals(session.getStatus())
+                || Integer.valueOf(1).equals(session.getResolved())
+                || ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session));
+    }
+
+    private boolean isEvaluationExpired(ChatSession session) {
+        return session.getUpdateTime() != null
+                && Duration.between(session.getUpdateTime(), LocalDateTime.now()).compareTo(EVALUATION_TIMEOUT) >= 0;
+    }
+
+    private String evaluationStatus(ChatSession session) {
+        if (session.getSatisfaction() != null) {
+            return "SUBMITTED";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session)) {
+            return "TIMEOUT";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus())) {
+            return "PENDING";
+        }
+        return null;
     }
 
     private String toMerchantTicketStatus(String status) {

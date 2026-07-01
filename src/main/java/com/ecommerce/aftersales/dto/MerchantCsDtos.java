@@ -199,6 +199,11 @@ public final class MerchantCsDtos {
     }
 
     @Data
+    public static class TicketCompleteRequest {
+        private String completeNote;
+    }
+
+    @Data
     public static class OrderView {
         private Long id;
         private String orderNo;

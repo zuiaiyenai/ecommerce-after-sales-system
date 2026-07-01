@@ -132,7 +132,7 @@
 
     <!-- 底部按钮 -->
     <view class="bottom-bar">
-      <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">联系售后客服</button>
+      <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">进入客服咨询</button>
       <button v-else-if="orderInfo.status !== 'PAID'" class="btn-primary" @tap="applyAfterSale">申请售后</button>
       <button v-else class="btn-primary disabled" disabled>未发货暂不可申请售后</button>
     </view>
@@ -205,6 +205,8 @@ const reasonMap = {
   'OTHER': '其他原因'
 }
 
+const afterSaleOrderStatuses = ['AFTERSALE', 'PENDING', 'PROCESSING', 'REJECTED', 'COMPLETED']
+
 onLoad(async (options) => {
   if (options.ticketNo) {
     // 从售后列表进入
@@ -235,11 +237,15 @@ async function loadFromOrder(orderId) {
       }
     } catch (e) {}
 
-    if (ticket) {
+    if (ticket || orderHasAfterSale(order)) {
       // 有售后
       hasAfterSale.value = true
       pageTitle.value = '售后详情'
-      fillAfterSaleInfo(ticket)
+      if (ticket) {
+        fillAfterSaleInfo(ticket)
+      } else {
+        fillAfterSaleInfoFromOrder(order)
+      }
     } else {
       // 无售后，显示物流
       hasAfterSale.value = false
@@ -250,6 +256,15 @@ async function loadFromOrder(orderId) {
   } catch (e) {
     console.error('加载订单详情失败', e)
   }
+}
+
+function orderHasAfterSale(order) {
+  const status = String(order.status || '').toUpperCase()
+  const statusText = String(order.statusText || '')
+  return afterSaleOrderStatuses.includes(status)
+    || Boolean(order.hasOpenAfterSales)
+    || Boolean(order.afterSalesStatus)
+    || statusText.includes('售后')
 }
 
 // 从售后列表进入
@@ -314,6 +329,25 @@ function fillAfterSaleInfo(ticket) {
     images: ticket.attachmentUrls || []
   }
   buildAfterSaleSteps(ticket)
+}
+
+function fillAfterSaleInfoFromOrder(order) {
+  afterSaleInfo.value = {
+    id: '',
+    ticketNo: '',
+    orderId: order.id || '',
+    reasonText: '已发起售后',
+    description: '该订单已有售后记录，可继续进入客服咨询跟进处理。',
+    status: 'PENDING',
+    statusText: order.statusText || '售后处理中',
+    auditOpinion: '售后申请已受理，可进入客服咨询继续补充信息。',
+    auditTime: '',
+    completeTime: '',
+    createTime: order.updateTime || order.createTime || '',
+    refundAmount: null,
+    images: []
+  }
+  buildAfterSaleSteps(afterSaleInfo.value)
 }
 
 function buildLogisticsSteps(order) {
@@ -411,13 +445,13 @@ function buildAfterSaleSteps(ticket) {
   const completeTime = ticket.completeTime ? ticket.completeTime.slice(5, 16) : ''
 
   const statusSteps = {
-    PROCESSING: [
+    PENDING: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
       { title: '审核中', desc: ticket.auditOpinion || '预计1-3个工作日审核', time: '', done: false, active: true },
       { title: '处理中', desc: '等待处理结果', time: '', done: false, active: false },
       { title: '已完成', desc: '售后已完结', time: '', done: false, active: false }
     ],
-    APPROVED: [
+    PROCESSING: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
       { title: '审核通过', desc: ticket.auditOpinion || '已通过审核', time: auditTime, done: true, active: false },
       { title: '处理中', desc: '退款/换货处理中', time: '', done: false, active: true },
@@ -425,7 +459,7 @@ function buildAfterSaleSteps(ticket) {
     ],
     REJECTED: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
-      { title: '已拒绝', desc: ticket.auditOpinion || '审核未通过', time: auditTime, done: true, active: false },
+      { title: '已驳回', desc: ticket.auditOpinion || '审核未通过', time: auditTime, done: true, active: false },
       { title: '已关闭', desc: '售后已关闭', time: '', done: true, active: false }
     ],
     COMPLETED: [
@@ -435,7 +469,7 @@ function buildAfterSaleSteps(ticket) {
       { title: '已完成', desc: ticket.refundAmount ? '退款¥' + ticket.refundAmount + '已到账' : '售后已完结', time: completeTime, done: true, active: false }
     ]
   }
-  afterSaleSteps.value = statusSteps[ticket.status] || statusSteps.PROCESSING
+  afterSaleSteps.value = statusSteps[ticket.status] || statusSteps.PENDING
 }
 
 function goBack() {
@@ -467,8 +501,12 @@ function contactService() {
   const params = [
     afterSaleId ? 'afterSaleId=' + encodeURIComponent(afterSaleId) : '',
     orderId ? 'orderId=' + encodeURIComponent(orderId) : '',
+    'orderNo=' + encodeURIComponent(info.orderNo || ''),
     'productName=' + encodeURIComponent(info.productName || ''),
     'productIcon=' + encodeURIComponent(info.productImage || ''),
+    'productSpec=' + encodeURIComponent(info.spec || ''),
+    'amount=' + encodeURIComponent(info.totalPrice || info.price || ''),
+    'status=' + encodeURIComponent(info.status || ''),
     'statusText=' + encodeURIComponent(afterSaleInfo.value.statusText || '售后处理中')
   ].filter(Boolean).join('&')
   uni.navigateTo({
@@ -477,6 +515,10 @@ function contactService() {
 }
 
 function applyAfterSale() {
+  if (hasAfterSale.value || afterSaleOrderStatuses.includes(String(orderInfo.value.status || '').toUpperCase())) {
+    contactService()
+    return
+  }
   uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.id })
 }
 </script>

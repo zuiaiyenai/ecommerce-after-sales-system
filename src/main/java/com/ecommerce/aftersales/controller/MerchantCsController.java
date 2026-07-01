@@ -123,6 +123,12 @@ public class MerchantCsController {
         return ApiResponse.success("驳回成功", merchantCsService.rejectTicket(ticketId, request.getRejectReason()));
     }
 
+    @PostMapping("/tickets/{ticketId}/complete")
+    public ApiResponse<TicketView> completeTicket(@PathVariable Long ticketId,
+                                                  @RequestBody TicketCompleteRequest request) {
+        return ApiResponse.success("处理完成", merchantCsService.completeTicket(ticketId, request.getCompleteNote()));
+    }
+
     @GetMapping("/orders")
     public ApiResponse<PageResult<OrderView>> listOrders(@RequestParam(defaultValue = "1") long page,
                                                          @RequestParam(defaultValue = "10") long size,

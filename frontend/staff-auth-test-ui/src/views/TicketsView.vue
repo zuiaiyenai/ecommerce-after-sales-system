@@ -1,32 +1,33 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { approveTicket, getTickets, rejectTicket } from '../api/merchantCs';
+import { approveTicket, completeTicket, getTickets, rejectTicket } from '../api/merchantCs';
 
 const router = useRouter();
 const shell = inject('merchantCsShell', null);
 const tickets = ref([]);
 const activeFilter = ref('ALL');
+const actionLoading = ref('');
 
 const filterOptions = [
   { key: 'ALL', label: '全部' },
   { key: 'PENDING_REVIEW', label: '待审核' },
   { key: 'PROCESSING', label: '处理中' },
-  { key: 'APPROVED', label: '已通过' },
+  { key: 'COMPLETED', label: '已完成' },
   { key: 'REJECTED', label: '已驳回' }
 ];
 
 const statusMap = {
   PENDING_REVIEW: '待审核',
   PROCESSING: '处理中',
-  APPROVED: '已通过',
+  COMPLETED: '已完成',
   REJECTED: '已驳回'
 };
 
 const statusDescMap = {
-  PENDING_REVIEW: '等待客服核验凭证，可执行通过或驳回。',
-  PROCESSING: '审核已进入售后处理，继续跟进退款、物流或补发。',
-  APPROVED: '审核已通过，等待后续售后动作完成。',
+  PENDING_REVIEW: '等待客服审核售后申请，可通过或驳回。',
+  PROCESSING: '已审核通过，正在处理退款/换货/补发等售后操作。',
+  COMPLETED: '售后处理已完成，退款已到账或商品已发出。',
   REJECTED: '审核已驳回，本次申请不再进入处理。'
 };
 
@@ -62,10 +63,10 @@ const stats = computed(() => [
     filter: 'PROCESSING'
   },
   {
-    label: '高优先级',
-    value: tickets.value.filter((ticket) => ticket.priority === 'HIGH').length,
+    label: '已完成',
+    value: tickets.value.filter((ticket) => ticket.status === 'COMPLETED').length,
     tone: 'green',
-    filter: 'ALL'
+    filter: 'COMPLETED'
   }
 ]);
 
@@ -75,27 +76,63 @@ async function loadPage() {
 }
 
 async function handleApprove(ticketId) {
-  if (!isReviewable(tickets.value.find((item) => item.id === ticketId))) {
+  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.id === ticketId))) {
     return;
   }
-  const updated = await approveTicket(ticketId);
-  tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
-  shell?.setAction('工单审核已通过');
-  shell?.refreshShell();
+  actionLoading.value = `approve:${ticketId}`;
+  try {
+    const updated = await approveTicket(ticketId);
+    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    shell?.setAction('售后申请审核已通过，进入处理中');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '审核通过失败');
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
 async function handleReject(ticketId) {
-  if (!isReviewable(tickets.value.find((item) => item.id === ticketId))) {
+  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.id === ticketId))) {
     return;
   }
-  const updated = await rejectTicket(ticketId);
-  tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
-  shell?.setAction('工单已驳回');
-  shell?.refreshShell();
+  actionLoading.value = `reject:${ticketId}`;
+  try {
+    const updated = await rejectTicket(ticketId);
+    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    shell?.setAction('售后申请已驳回');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '驳回申请失败');
+  } finally {
+    actionLoading.value = '';
+  }
+}
+
+async function handleComplete(ticketId) {
+  const ticket = tickets.value.find((item) => item.id === ticketId);
+  if (actionLoading.value || ticket?.status !== 'PROCESSING') {
+    return;
+  }
+  actionLoading.value = `complete:${ticketId}`;
+  try {
+    const updated = await completeTicket(ticketId);
+    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    shell?.setAction('售后处理已完成');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '处理完成失败');
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
 function isReviewable(ticket) {
   return ticket?.status === 'PENDING_REVIEW';
+}
+
+function isCompletable(ticket) {
+  return ticket?.status === 'PROCESSING';
 }
 
 function statusLabel(status) {
@@ -115,8 +152,8 @@ function priorityLabel(priority) {
 }
 
 function statusTone(status) {
-  if (status === 'APPROVED') {
-    return 'approved';
+  if (status === 'COMPLETED') {
+    return 'completed';
   }
   if (status === 'REJECTED') {
     return 'rejected';
@@ -136,13 +173,13 @@ onMounted(loadPage);
       <div class="ticket-queue-head">
         <div>
           <span class="eyebrow">售后审核</span>
-          <h2>工单审核工作台</h2>
+          <h2>审核工作台</h2>
           <p>按审核状态、退款金额和优先级快速处理售后申请。</p>
         </div>
-        <button type="button" class="primary-action compact" @click="loadPage">刷新工单</button>
+        <button type="button" class="primary-action compact" @click="loadPage">刷新列表</button>
       </div>
 
-      <div class="ticket-stat-grid" aria-label="工单统计">
+      <div class="ticket-stat-grid" aria-label="申请统计">
         <button
           v-for="item in stats"
           :key="item.label"
@@ -155,7 +192,7 @@ onMounted(loadPage);
         </button>
       </div>
 
-      <div class="ticket-filter-row" aria-label="工单筛选">
+      <div class="ticket-filter-row" aria-label="申请筛选">
         <button
           v-for="option in filterOptions"
           :key="option.key"
@@ -174,7 +211,7 @@ onMounted(loadPage);
         <p>
           {{
             activeFilter === 'ALL'
-              ? '待审核表示等待客服判断；处理中表示已进入退款、物流或补发跟进。'
+              ? '待审核表示等待客服判断；处理中表示已进入退款、物流或补发跟进；已完成表示售后已完结。'
               : statusDesc(activeFilter)
           }}
         </p>
@@ -202,14 +239,23 @@ onMounted(loadPage);
             <span>{{ priorityLabel(ticket.priority) }}</span>
           </span>
           <span v-if="isReviewable(ticket)" class="ticket-actions">
-            <button type="button" class="ghost-mini" @click.stop="handleApprove(ticket.id)">通过</button>
-            <button type="button" class="ghost-mini danger" @click.stop="handleReject(ticket.id)">驳回</button>
+            <button type="button" class="ghost-mini" :disabled="Boolean(actionLoading)" @click.stop="handleApprove(ticket.id)">
+              {{ actionLoading === `approve:${ticket.id}` ? '处理中' : '通过' }}
+            </button>
+            <button type="button" class="ghost-mini danger" :disabled="Boolean(actionLoading)" @click.stop="handleReject(ticket.id)">
+              {{ actionLoading === `reject:${ticket.id}` ? '处理中' : '驳回' }}
+            </button>
+          </span>
+          <span v-if="isCompletable(ticket)" class="ticket-actions">
+            <button type="button" class="ghost-mini complete" :disabled="Boolean(actionLoading)" @click.stop="handleComplete(ticket.id)">
+              {{ actionLoading === `complete:${ticket.id}` ? '处理中' : '处理完成' }}
+            </button>
           </span>
         </div>
 
         <div v-if="visibleTickets.length === 0" class="empty-state ticket-empty">
-          <h2>当前筛选下没有工单</h2>
-          <p>切换筛选条件或刷新工单后再查看。</p>
+          <h2>当前筛选下没有售后申请</h2>
+          <p>切换筛选条件或刷新列表后再查看。</p>
         </div>
       </div>
     </article>

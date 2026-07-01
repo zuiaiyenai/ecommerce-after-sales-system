@@ -30,7 +30,7 @@ public class AgentGatewayProperties {
     /**
      * Script path relative to project root.
      */
-    private String scriptPath = "python_agent/web_demo.py";
+    private String scriptPath = "python_agent/api_server.py";
 
     /**
      * Project working directory for the Python agent process.

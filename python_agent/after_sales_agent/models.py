@@ -146,6 +146,11 @@ class AfterSalesRequest:
     attachments: tuple[Attachment, ...] = ()
     visual_evidence: tuple[str, ...] = ()
     visual_review_failed: bool = False
+    llm_intent: Optional[Intent] = None
+    llm_scene: Optional[AfterSalesScene] = None
+    llm_confidence: float = 0.0
+    normalized_issue: Optional[str] = None
+    quality_description_detailed: Optional[bool] = None
     requested_at: datetime = field(default_factory=datetime.now)
 
 

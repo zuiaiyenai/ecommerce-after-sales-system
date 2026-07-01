@@ -89,7 +89,7 @@ function handleRegister() {
 
         <div class="network-copy">
           <h1>商家客服工作台</h1>
-          <p>集中处理用户咨询、售后工单与服务记录</p>
+          <p>集中处理用户咨询、售后申请与服务记录</p>
         </div>
       </div>
     </section>
