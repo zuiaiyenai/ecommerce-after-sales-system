@@ -1,14 +1,5 @@
 <template>
   <view class="page">
-    <!-- top navigation -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">智能客服</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- order info card - only when order exists -->
     <view v-if="hasOrder" class="order-card">
       <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
@@ -22,23 +13,11 @@
       </view>
     </view>
 
-    <!-- service status header -->
-    <view class="service-header">
-      <view class="service-info">
-        <text class="service-name">智能客服</text>
-        <view class="service-status-list">
-          <view class="online-dot">
-            <view class="dot"></view>
-            <text class="online-text">智能客服 在线</text>
-          </view>
-          <view class="online-dot">
-            <view :class="['dot', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']"></view>
-            <text :class="['online-text', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']">
-              人工客服 {{ humanServiceStatusText }}
-            </text>
-          </view>
-        </view>
-      </view>
+    <view v-if="chatMode === 'HUMAN'" class="human-status">
+      <view :class="['status-dot', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']"></view>
+      <text :class="['status-text', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']">
+        人工{{ humanServiceStatusText }}
+      </text>
     </view>
 
     <!-- chat area -->
@@ -47,10 +26,19 @@
         <text class="msg-time" v-if="msg.time">{{ msg.time }}</text>
         <view class="message" :class="msg.role">
           <view class="msg-bubble">
-            <text class="msg-text">{{ msg.content }}</text>
+            <image
+              v-if="msg.messageType === 'IMAGE'"
+              class="msg-image"
+              :src="normalizeImageUrl(msg.content)"
+              mode="aspectFill"
+              @tap="previewMessageImage(msg.content)"
+            />
+            <text v-else class="msg-text">{{ msg.content }}</text>
           </view>
         </view>
-        <text class="msg-read" v-if="msg.role === 'user'">已读</text>
+        <text class="msg-read" :class="{ unread: !msg.read }" v-if="msg.role === 'user'">
+          {{ msg.read ? '已读' : '未读' }}
+        </text>
       </view>
     </scroll-view>
 
@@ -62,7 +50,7 @@
           <text class="action-text">退款进度</text>
         </view>
         <view class="action-btn" @tap="quickAction('supplement')">
-          <text class="action-icon">📎</text>
+          <image class="action-image-icon" src="/static/images/icon-supplement-voucher.png" mode="aspectFit" />
           <text class="action-text">补充凭证</text>
         </view>
         <view class="action-btn" @tap="quickAction('human')">
@@ -88,8 +76,8 @@
 
     <!-- input area -->
     <view class="input-area">
-      <view class="voice-btn">
-        <text class="voice-icon">🎤</text>
+      <view class="attach-btn" :class="{ uploading: attachmentUploading }" @tap="chooseAttachment">
+        <text class="attach-icon">{{ attachmentUploading ? '…' : '+' }}</text>
       </view>
       <input
         v-model="inputText"
@@ -108,13 +96,15 @@
 <script setup>
 import { ref, nextTick, onUnmounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { BASE_URL, request, normalizeImageUrl } from '../../utils/request'
 
 const messages = ref([])
 const inputText = ref('')
+const attachmentUploading = ref(false)
 const scrollTop = ref(0)
 const hasOrder = ref(false)
 const sessionId = ref(null)
+const chatMode = ref('AI')
 const humanServiceStatus = ref('OFFLINE')
 const humanServiceStatusText = ref('离线')
 let socketTask = null
@@ -145,6 +135,8 @@ async function loadOrderById(orderId) {
 }
 
 onLoad(async (options) => {
+  uni.setNavigationBarTitle({ title: '智能客服' })
+
   // 用字符串存储ID，避免JS大数精度丢失
   const orderId = options.orderId && /^\d+$/.test(String(options.orderId)) ? String(options.orderId) : null
   const afterSaleId = options.afterSaleId && /^\d+$/.test(String(options.afterSaleId)) ? String(options.afterSaleId) : null
@@ -174,10 +166,6 @@ onLoad(async (options) => {
   })
 })
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function copyOrderNo() {
   uni.setClipboardData({
     data: orderInfo.value.orderNo,
@@ -187,18 +175,20 @@ function copyOrderNo() {
   })
 }
 
-function addServiceMessage(content) {
+function addServiceMessage(content, messageType = 'TEXT') {
   const now = new Date()
   const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  messages.value.push({ role: 'service', content, time })
+  messages.value.push({ role: 'service', content, messageType, time })
   scrollToBottom()
 }
 
-function addUserMessage(content) {
+function addUserMessage(content, messageType = 'TEXT') {
   const now = new Date()
   const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  messages.value.push({ role: 'user', content, time })
+  const clientId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  messages.value.push({ clientId, role: 'user', content, messageType, time, read: false })
   scrollToBottom()
+  return clientId
 }
 
 async function createOrLoadSession(payload) {
@@ -215,12 +205,17 @@ async function createOrLoadSession(payload) {
     })
     const list = history && history.list ? history.list : []
     messages.value = list.map(item => ({
+      id: item.id,
       role: item.role,
       content: item.content,
+      messageType: item.messageType || 'TEXT',
+      read: Boolean(item.read),
       time: item.createTime ? item.createTime.slice(11, 16) : ''
     }))
     if (messages.value.length === 0 && session.welcomeMessage) {
       addServiceMessage(session.welcomeMessage)
+    } else {
+      scrollToBottom()
     }
     wsConnect(session.sessionId)
   } catch (e) {
@@ -229,6 +224,10 @@ async function createOrLoadSession(payload) {
 }
 
 function applyServiceStatus(data) {
+  chatMode.value = data && data.mode ? data.mode : (chatMode.value || 'AI')
+  if (chatMode.value !== 'HUMAN') {
+    return
+  }
   const status = data && data.humanStatus ? data.humanStatus : (data && data.humanOnline ? 'ONLINE' : 'OFFLINE')
   humanServiceStatus.value = status === 'ONLINE' ? 'ONLINE' : 'OFFLINE'
   humanServiceStatusText.value = humanServiceStatus.value === 'ONLINE' ? '在线' : '离线'
@@ -240,7 +239,7 @@ function wsConnect(sid) {
     socketTask = null
   }
   socketTask = uni.connectSocket({
-    url: 'ws://127.0.0.1:8080/api/ws/chat',
+    url: getChatWsUrl(),
     complete: () => {}
   })
   socketTask.onOpen(() => {
@@ -252,7 +251,10 @@ function wsConnect(sid) {
     try {
       const msg = JSON.parse(res.data)
       if (msg.action === 'message' && msg.role !== 'USER') {
-        addServiceMessage(msg.content)
+        addServiceMessage(msg.content, msg.messageType || 'TEXT')
+        markMessagesRead(msg.lastReadMessageId)
+      } else if (msg.action === 'read') {
+        markMessagesRead(msg.lastReadMessageId)
       }
     } catch (e) {
       // ignore parse errors
@@ -266,6 +268,22 @@ function wsConnect(sid) {
   })
 }
 
+function getChatWsUrl() {
+  return BASE_URL.replace(/^http/, 'ws').replace(/\/api\/?$/, '/api/ws/chat')
+}
+
+function markMessagesRead(lastReadMessageId) {
+  messages.value = messages.value.map(item => {
+    if (item.role !== 'user') {
+      return item
+    }
+    if (!item.id || !lastReadMessageId || Number(item.id) <= Number(lastReadMessageId)) {
+      return { ...item, read: true }
+    }
+    return item
+  })
+}
+
 onUnmounted(() => {
   if (socketTask) {
     socketTask.close()
@@ -275,7 +293,7 @@ onUnmounted(() => {
 
 function scrollToBottom() {
   nextTick(() => {
-    scrollTop.value = scrollTop.value + 1
+    scrollTop.value = 1000000 + messages.value.length * 1000
   })
 }
 
@@ -283,9 +301,12 @@ async function sendMessage() {
   const text = inputText.value.trim()
   if (!text) return
 
-  addUserMessage(text)
   inputText.value = ''
+  await sendChatMessage(text, 'TEXT')
+}
 
+async function sendChatMessage(content, messageType = 'TEXT') {
+  const clientId = addUserMessage(content, messageType)
   try {
     if (!sessionId.value) {
       await createOrLoadSession({})
@@ -295,10 +316,11 @@ async function sendMessage() {
       method: 'POST',
       data: {
         sessionId: sessionId.value,
-        message: text,
-        messageType: 'TEXT'
+        message: content,
+        messageType
       }
     })
+    bindLocalMessageId(clientId, result && result.messageId)
     applyServiceStatus(result)
     if (result && result.reply) {
       addServiceMessage(result.reply)
@@ -308,10 +330,21 @@ async function sendMessage() {
   }
 }
 
+function bindLocalMessageId(clientId, messageId) {
+  if (!messageId) return
+  messages.value = messages.value.map(item => (
+    item.clientId === clientId ? { ...item, id: messageId } : item
+  ))
+}
+
 function quickAction(type) {
+  if (type === 'supplement') {
+    chooseAttachment()
+    return
+  }
+
   const actionMap = {
     refund: '请帮我查看一下退款进度',
-    supplement: '我需要补充一些凭证图片',
     human: '请帮我转接人工客服',
     query: '我想查询我的订单状态',
     aftersale: '我想申请售后'
@@ -319,6 +352,79 @@ function quickAction(type) {
   const text = actionMap[type]
   inputText.value = text
   sendMessage()
+}
+
+function chooseAttachment() {
+  if (attachmentUploading.value) return
+
+  uni.chooseImage({
+    count: 1,
+    sizeType: ['compressed'],
+    sourceType: ['album', 'camera'],
+    success: async (res) => {
+      const filePath = res.tempFilePaths && res.tempFilePaths[0]
+      if (!filePath) return
+      await sendAttachmentMessage(filePath)
+    }
+  })
+}
+
+async function sendAttachmentMessage(filePath) {
+  attachmentUploading.value = true
+  try {
+    const url = await uploadAttachment(filePath)
+    await sendChatMessage(url, 'IMAGE')
+  } catch (e) {
+    uni.showToast({
+      title: e.message || '附件上传失败',
+      icon: 'none'
+    })
+  } finally {
+    attachmentUploading.value = false
+  }
+}
+
+function uploadAttachment(filePath) {
+  return new Promise((resolve, reject) => {
+    const token = uni.getStorageSync('token') || ''
+    uni.uploadFile({
+      url: `${BASE_URL}/upload/image`,
+      filePath,
+      name: 'file',
+      header: {
+        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+      },
+      success: (res) => {
+        try {
+          const body = JSON.parse(res.data)
+          if (body.code === 200 && body.data && body.data.url) {
+            resolve(body.data.url)
+            return
+          }
+          reject(new Error(body.message || '上传失败'))
+        } catch (e) {
+          reject(new Error('上传响应解析失败'))
+        }
+      },
+      fail: () => {
+        reject(new Error('上传失败，请稍后重试'))
+      }
+    })
+  })
+}
+
+function previewMessageImage(src) {
+  const current = normalizeImageUrl(src)
+  const urls = messages.value
+    .filter(item => item.messageType === 'IMAGE')
+    .map(item => normalizeImageUrl(item.content))
+    .filter(Boolean)
+
+  if (!current) return
+  uni.previewImage({
+    current,
+    urls: urls.length ? urls : [current]
+  })
 }
 </script>
 
@@ -330,157 +436,115 @@ function quickAction(type) {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-  border-bottom: 1rpx solid rgba(0,0,0,0.06);
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
 .order-card {
   display: flex;
   align-items: center;
-  margin: 20rpx 28rpx;
-  padding: 24rpx;
+  margin: 20rpx 24rpx 12rpx;
+  padding: 20rpx;
   background: #ffffff;
   border-radius: 16rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
 }
 
 .order-product-img {
-  width: 80rpx;
-  height: 80rpx;
+  width: 76rpx;
+  height: 76rpx;
   border-radius: 12rpx;
   flex-shrink: 0;
 }
 
 .order-product-info {
   flex: 1;
-  margin-left: 20rpx;
+  min-width: 0;
+  margin-left: 18rpx;
 }
 
 .order-product {
   display: block;
-  font-size: 26rpx;
+  font-size: 28rpx;
   font-weight: 600;
   color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-row {
   display: flex;
   align-items: center;
-  margin-top: 10rpx;
+  gap: 8rpx;
+  margin-top: 8rpx;
 }
 
 .order-no {
+  flex: 1;
+  min-width: 0;
   font-size: 22rpx;
   color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .copy-icon {
-  margin-left: 8rpx;
   font-size: 20rpx;
+  flex-shrink: 0;
 }
 
 .order-status {
-  margin-left: auto;
+  flex-shrink: 0;
   font-size: 22rpx;
   color: #c97b5a;
   font-weight: 600;
 }
 
-.service-header {
+.human-status {
   display: flex;
   align-items: center;
-  padding: 16rpx 28rpx;
+  justify-content: flex-end;
+  gap: 6rpx;
+  margin: 0 28rpx 6rpx;
+  min-height: 28rpx;
 }
 
-.service-info {
-  margin-left: 14rpx;
-}
-
-.service-name {
-  display: block;
-  font-size: 26rpx;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-
-.service-status-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4rpx;
-  margin-top: 4rpx;
-}
-
-.online-dot {
-  display: flex;
-  align-items: center;
-}
-
-.dot {
+.status-dot {
   width: 12rpx;
   height: 12rpx;
   border-radius: 50%;
-  background: #52c41a;
-}
-
-.dot.online {
-  background: #52c41a;
-}
-
-.dot.offline {
   background: #b7b7b7;
 }
 
-.online-text {
-  margin-left: 6rpx;
+.status-dot.online {
+  background: #52c41a;
+}
+
+.status-dot.offline {
+  background: #b7b7b7;
+}
+
+.status-text {
   font-size: 20rpx;
+  color: #8c8c8c;
+}
+
+.status-text.online {
   color: #52c41a;
 }
 
-.online-text.online {
-  color: #52c41a;
-}
-
-.online-text.offline {
+.status-text.offline {
   color: #8c8c8c;
 }
 
 .chat-area {
   flex: 1;
-  padding: 20rpx 28rpx;
+  padding: 8rpx 0 20rpx;
   overflow-y: auto;
 }
 
 .msg-group {
-  margin-bottom: 24rpx;
+  margin-bottom: 18rpx;
+  padding: 0 24rpx;
+  box-sizing: border-box;
 }
 
 .msg-time {
@@ -488,12 +552,14 @@ function quickAction(type) {
   text-align: center;
   font-size: 20rpx;
   color: #bbb;
-  margin-bottom: 16rpx;
+  margin: 4rpx 0 10rpx;
 }
 
 .message {
   display: flex;
   align-items: flex-start;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .message.user {
@@ -501,39 +567,55 @@ function quickAction(type) {
 }
 
 .msg-bubble {
-  max-width: 70%;
-  padding: 20rpx 24rpx;
-  border-radius: 20rpx;
+  max-width: 76%;
+  padding: 18rpx 22rpx;
+  border-radius: 18rpx;
 }
 
 .message.service .msg-bubble {
   background: #ffffff;
   border: 1rpx solid rgba(0,0,0,0.04);
+  border-top-left-radius: 6rpx;
 }
 
 .message.user .msg-bubble {
   background: #fff5f0;
   border: 1rpx solid rgba(244,90,11,0.1);
+  border-top-right-radius: 6rpx;
 }
 
 .msg-text {
   font-size: 26rpx;
-  line-height: 1.6;
+  line-height: 1.55;
   color: #1a1a1a;
+}
+
+.msg-image {
+  display: block;
+  width: 240rpx;
+  height: 240rpx;
+  border-radius: 12rpx;
+  background: #f5f3ef;
 }
 
 .msg-read {
   display: block;
   text-align: right;
-  margin-top: 8rpx;
+  margin-top: 4rpx;
+  padding-right: 4rpx;
   font-size: 20rpx;
   color: #bbb;
 }
 
+.msg-read.unread {
+  color: #c97b5a;
+}
+
 .quick-actions {
   display: flex;
-  gap: 16rpx;
-  padding: 16rpx 28rpx;
+  gap: 14rpx;
+  padding: 12rpx 24rpx;
+  background: rgba(240,238,234,0.96);
 }
 
 .action-btn {
@@ -542,14 +624,20 @@ function quickAction(type) {
   align-items: center;
   justify-content: center;
   gap: 8rpx;
-  height: 64rpx;
+  height: 58rpx;
   background: #ffffff;
-  border-radius: 32rpx;
+  border-radius: 30rpx;
   border: 1rpx solid rgba(0,0,0,0.06);
 }
 
 .action-icon {
   font-size: 24rpx;
+}
+
+.action-image-icon {
+  width: 24rpx;
+  height: 24rpx;
+  flex-shrink: 0;
 }
 
 .action-text {
@@ -561,29 +649,38 @@ function quickAction(type) {
 .input-area {
   display: flex;
   align-items: center;
-  gap: 16rpx;
-  padding: 20rpx 28rpx;
-  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+  gap: 14rpx;
+  padding: 16rpx 24rpx;
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #ffffff;
   border-top: 1rpx solid rgba(0,0,0,0.06);
 }
 
-.voice-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
+.attach-btn {
+  width: 60rpx;
+  height: 60rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   border-radius: 50%;
+  background: transparent;
+}
+
+.attach-btn.uploading {
   background: #f5f3ef;
 }
 
-.voice-icon {
-  font-size: 28rpx;
+.attach-icon {
+  font-size: 44rpx;
+  font-weight: 300;
+  color: #666666;
+  line-height: 1;
 }
 
 .chat-input {
   flex: 1;
-  height: 72rpx;
+  height: 68rpx;
   padding: 0 24rpx;
   background: #f5f3ef;
   border-radius: 36rpx;
@@ -591,9 +688,9 @@ function quickAction(type) {
 }
 
 .send-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
+  width: 60rpx;
+  height: 60rpx;
+  line-height: 60rpx;
   text-align: center;
   border-radius: 50%;
   background: #e0e0e0;

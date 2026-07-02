@@ -35,6 +35,8 @@ async function loadPage() {
     performance.value = performanceData;
     sessions.value = sessionPage.records;
     tickets.value = ticketPage.records;
+  } catch (error) {
+    shell?.setAction(error.message || '首页数据加载失败');
   } finally {
     loading.value = false;
   }

@@ -1,14 +1,5 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">编辑资料</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 头像 -->
     <view class="card">
       <view class="avatar-section" @tap="changeAvatar">
@@ -66,10 +57,6 @@ onMounted(() => {
   form.avatarUrl = userInfo.avatarUrl || ''
 })
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function maskPhone(phone) {
   if (!phone || phone.length < 7) return '未绑定'
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`
@@ -112,41 +99,9 @@ function saveProfile() {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
 /* 卡片 */
 .card {
-  margin-top: 24rpx;
+  margin-top: 8rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;

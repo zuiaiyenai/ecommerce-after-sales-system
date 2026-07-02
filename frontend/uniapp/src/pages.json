@@ -35,7 +35,7 @@
     {
       "path": "pages/after-sale/detail",
       "style": {
-        "navigationBarTitleText": "订单售后",
+        "navigationBarTitleText": "订单详情",
         "navigationBarBackgroundColor": "#ffffff",
         "navigationBarTextStyle": "black"
       }

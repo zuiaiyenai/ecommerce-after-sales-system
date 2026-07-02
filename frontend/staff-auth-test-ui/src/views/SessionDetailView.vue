@@ -5,6 +5,7 @@ import {
   closeSession,
   getSession,
   getSessionMessages,
+  getProducts,
   getSessions,
   requestSessionEvaluation,
   sendSessionMessage,
@@ -21,8 +22,11 @@ const draft = ref('');
 const sending = ref(false);
 const actionLoading = ref('');
 const activeFilter = ref('ACTIVE');
+const productImageError = ref(false);
+const catalogProduct = ref(null);
 let ws = null;
 let wsReconnectTimer = null;
+let refreshTimer = null;
 
 const terminalStatuses = ['RESOLVED', 'CLOSED'];
 const filterOptions = [
@@ -80,8 +84,14 @@ const evaluationHint = computed(() => {
 
 const userScore = computed(() => (`${session.value?.emotion || ''}`.includes('预警') ? '4.2' : '4.8'));
 const isActionBusy = computed(() => Boolean(actionLoading.value));
+const productTitle = computed(() => fieldValue(session.value?.product || session.value?.productName, '商品'));
+const productCardImageUrl = computed(() => imageUrl(session.value?.productImage || catalogProduct.value?.mainImage));
+const productFallbackLabel = computed(() => productTitle.value.slice(0, 4));
+const productCardPrice = computed(() => session.value?.productPrice || catalogProduct.value?.price || '299.00');
 
 async function loadPage() {
+  productImageError.value = false;
+  catalogProduct.value = null;
   const [page, detail, messageList] = await Promise.all([
     getSessions(),
     getSession(route.params.sessionId),
@@ -90,7 +100,36 @@ async function loadPage() {
   sessions.value = page.records || [];
   session.value = detail;
   messages.value = messageList;
+  await loadCatalogProduct(detail);
   connectWebSocket(route.params.sessionId);
+}
+
+async function refreshLiveData() {
+  if (!route.params.sessionId) {
+    return;
+  }
+  const [page, detail, messageList] = await Promise.all([
+    getSessions(),
+    getSession(route.params.sessionId),
+    getSessionMessages(route.params.sessionId)
+  ]);
+  sessions.value = page.records || [];
+  session.value = detail;
+  messages.value = messageList;
+}
+
+async function loadCatalogProduct(detail) {
+  const name = detail?.product || detail?.productName;
+  if (detail?.productImage || !name) {
+    return;
+  }
+  try {
+    const page = await getProducts({ keyword: name, page: 1, size: 20 });
+    const products = page.records || [];
+    catalogProduct.value = products.find((item) => item.productName === name) || products[0] || null;
+  } catch (error) {
+    catalogProduct.value = null;
+  }
 }
 
 function connectWebSocket(sessionId) {
@@ -119,6 +158,7 @@ function connectWebSocket(sessionId) {
             content: msg.content,
             createdAt: msg.createdAt
           }];
+          refreshLiveData();
         }
       } catch (e) {
         // ignore parse errors
@@ -268,8 +308,22 @@ function displayTime(value, fallback = '') {
   return match ? `${match[1]}:${match[2]}` : text;
 }
 
+function imageUrl(src) {
+  if (!src) return '';
+  if (/^(https?:)?\/\//.test(src) || src.startsWith('data:') || src.startsWith('blob:')) {
+    return src;
+  }
+  const configured = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+  const apiBase = configured.endsWith('/api') ? configured : `${configured}/api`;
+  const normalized = src.startsWith('/') ? src : `/${src}`;
+  return normalized.startsWith('/api/') ? `${configured.replace(/\/api$/, '')}${normalized}` : `${apiBase}${normalized}`;
+}
+
 watch(() => route.params.sessionId, loadPage);
-onMounted(loadPage);
+onMounted(() => {
+  loadPage();
+  refreshTimer = window.setInterval(refreshLiveData, 5000);
+});
 onUnmounted(() => {
   if (ws) {
     ws.close();
@@ -278,6 +332,10 @@ onUnmounted(() => {
   if (wsReconnectTimer) {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
+  }
+  if (refreshTimer) {
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
   }
 });
 </script>
@@ -334,7 +392,7 @@ onUnmounted(() => {
           <p>会员等级：V3　联系方式：138****5678</p>
         </div>
         <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
-        <button type="button" class="template-order-button" @click="router.push(`/orders/${session?.orderNo}`)">查看订单</button>
+        <button type="button" class="template-order-button" @click="router.push(`/orders/${session?.orderId}`)">查看订单</button>
       </header>
 
       <div class="template-message-stream">
@@ -351,11 +409,19 @@ onUnmounted(() => {
         </div>
 
         <section class="template-product-card">
-          <div class="product-thumb">耳机</div>
+          <div class="product-thumb">
+            <img
+              v-if="productCardImageUrl && !productImageError"
+              :src="productCardImageUrl"
+              :alt="productTitle"
+              @error="productImageError = true"
+            />
+            <span v-else>{{ productFallbackLabel }}</span>
+          </div>
           <div>
-            <strong>{{ fieldValue(session?.product || session?.productName, '轻音降噪耳机 Pro') }}</strong>
+            <strong>{{ productTitle }}</strong>
             <span>颜色：奶白色</span>
-            <em>¥299.00　×1</em>
+            <em>¥{{ productCardPrice }}　×{{ session?.productQuantity || 1 }}</em>
           </div>
           <div class="product-status">
             <strong>售后中</strong>

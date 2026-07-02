@@ -1,14 +1,5 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">收货地址</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 地址列表 -->
     <scroll-view class="list-area" scroll-y>
       <view v-if="addresses.length === 0" class="empty">
@@ -92,10 +83,6 @@ const form = reactive({
   detail: '',
   isDefault: false
 })
-
-function goBack() {
-  uni.navigateBack()
-}
 
 function closeForm() {
   showForm.value = false
@@ -185,48 +172,20 @@ function setDefault(id) {
 
 <style scoped>
 .page {
+  width: 100%;
   min-height: 100vh;
   background: #f0eeea;
   display: flex;
   flex-direction: column;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
+  box-sizing: border-box;
 }
 
 /* 列表 */
 .list-area {
+  width: 100%;
   flex: 1;
   padding: 20rpx 28rpx;
+  box-sizing: border-box;
 }
 
 .empty {
@@ -248,12 +207,14 @@ function setDefault(id) {
 
 /* 地址卡片 */
 .address-card {
+  width: 100%;
   margin-bottom: 20rpx;
   padding: 24rpx;
   background: #ffffff;
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+  box-sizing: border-box;
 }
 
 .addr-header {
@@ -335,13 +296,16 @@ function setDefault(id) {
 
 /* 底部 */
 .bottom-bar {
+  width: 100%;
   padding: 20rpx 28rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background: #ffffff;
   border-top: 1rpx solid rgba(0,0,0,0.06);
+  box-sizing: border-box;
 }
 
 .add-btn {
+  width: 100%;
   height: 88rpx;
   line-height: 88rpx;
   background: linear-gradient(135deg, #c97b5a, #b86a4a);
@@ -371,6 +335,7 @@ function setDefault(id) {
   padding: 32rpx;
   background: #ffffff;
   border-radius: 24rpx 24rpx 0 0;
+  box-sizing: border-box;
 }
 
 .modal-title {

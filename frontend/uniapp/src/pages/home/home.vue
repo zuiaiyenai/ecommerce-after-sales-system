@@ -55,7 +55,9 @@
     <!-- 底部导航 -->
     <view class="bottom-nav">
       <view v-for="item in navItems" :key="item.key" class="nav-item" :class="{ active: activeTab === item.key }" @tap="switchTab(item.key)">
-        <text class="nav-icon">{{ item.icon }}</text>
+        <view class="nav-icon">
+          <image class="nav-icon-img" :src="item.icon" mode="aspectFit" />
+        </view>
         <text class="nav-label">{{ item.label }}</text>
       </view>
     </view>
@@ -74,9 +76,9 @@ const allAfterSales = ref([])
 const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
-  { key: 'home', label: '首页', icon: '⌂' },
-  { key: 'chat', label: '咨询', icon: '◇' },
-  { key: 'mine', label: '我的', icon: '◒' }
+  { key: 'home', label: '首页', icon: '/static/images/mine/nav-home.png' },
+  { key: 'chat', label: '咨询', icon: '/static/images/mine/nav-chat.png' },
+  { key: 'mine', label: '我的', icon: '/static/images/mine/nav-mine.png' }
 ]
 
 function getStatusClass(status) {
@@ -449,12 +451,23 @@ function logout() {
 }
 
 .nav-icon {
-  font-size: 36rpx;
-  color: #999;
+  position: relative;
+  width: 40rpx;
+  height: 40rpx;
+  overflow: hidden;
 }
 
-.nav-item.active .nav-icon {
-  color: #c97b5a;
+.nav-icon-img {
+  position: absolute;
+  left: -28rpx;
+  top: -28rpx;
+  width: 96rpx;
+  height: 96rpx;
+  filter: grayscale(1) saturate(0) opacity(0.62);
+}
+
+.nav-item.active .nav-icon-img {
+  filter: none;
 }
 
 .nav-label {

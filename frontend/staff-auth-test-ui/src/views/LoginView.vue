@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login } from '../api/merchantCs';
+import WelcomeAnimation from '../components/WelcomeAnimation.vue';
 import avatarOne from '../assets/support-avatar-1.png';
 import avatarTwo from '../assets/support-avatar-2.png';
 import avatarThree from '../assets/support-avatar-3.png';
@@ -15,9 +16,9 @@ const errorMessage = ref('');
 const actionMessage = ref('');
 const showWelcome = ref(false);
 const loginStaffName = ref('');
-const WELCOME_DURATION_MS = 2800;
-let welcomeTimer = null;
+const WELCOME_DURATION_MS = 5000;
 let welcomeFinished = false;
+
 const form = reactive({
   account: '',
   password: '',
@@ -35,26 +36,12 @@ const networkAvatars = [
 
 const loginButtonText = computed(() => (loading.value ? '正在进入...' : '登录进入工作台'));
 
-function clearWelcomeTimer() {
-  if (welcomeTimer) {
-    window.clearTimeout(welcomeTimer);
-    welcomeTimer = null;
-  }
-}
-
 function enterDashboard() {
   if (welcomeFinished) {
     return;
   }
   welcomeFinished = true;
-  clearWelcomeTimer();
   router.push('/dashboard');
-}
-
-function scheduleWelcomeRedirect() {
-  clearWelcomeTimer();
-  welcomeFinished = false;
-  welcomeTimer = window.setTimeout(enterDashboard, WELCOME_DURATION_MS);
 }
 
 function skipWelcome() {
@@ -77,12 +64,11 @@ async function handleLogin() {
   try {
     const result = await login(form);
     loginStaffName.value = result?.staff?.realName || form.account || '客服';
+    welcomeFinished = false;
     showWelcome.value = true;
-    scheduleWelcomeRedirect();
   } catch (error) {
     errorMessage.value = error.message || '登录失败，请检查账号或密码';
     showWelcome.value = false;
-    clearWelcomeTimer();
     welcomeFinished = false;
   } finally {
     loading.value = false;
@@ -98,10 +84,6 @@ function handleRegister() {
   errorMessage.value = '';
   showAction('注册申请入口已保留，后续接入商家客服开户注册流程');
 }
-
-onBeforeUnmount(() => {
-  clearWelcomeTimer();
-});
 </script>
 
 <template>
@@ -175,14 +157,11 @@ onBeforeUnmount(() => {
       </div>
     </form>
 
-    <div v-if="showWelcome" class="welcome-overlay" aria-live="polite">
-      <button type="button" class="welcome-skip" @click="skipWelcome">跳过动画</button>
-      <div class="welcome-card">
-        <div class="welcome-avatar">CS</div>
-        <p>Welcome Back</p>
-        <h2>欢迎回来，{{ loginStaffName }}</h2>
-      </div>
-      <span class="welcome-sweep"></span>
-    </div>
+    <WelcomeAnimation
+      v-if="showWelcome"
+      :duration-ms="WELCOME_DURATION_MS"
+      @skip="skipWelcome"
+      @finished="enterDashboard"
+    />
   </main>
 </template>

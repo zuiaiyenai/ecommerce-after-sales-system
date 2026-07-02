@@ -1,14 +1,5 @@
 ﻿<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">{{ pageTitle }}</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 商品信息 -->
     <view class="card">
       <text class="card-title">商品信息</text>
@@ -144,7 +135,6 @@ import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request, normalizeImageUrl } from '../../utils/request'
 
-const pageTitle = ref('订单详情')
 const hasAfterSale = ref(false)
 
 const orderInfo = ref({
@@ -206,6 +196,8 @@ const reasonMap = {
 }
 
 onLoad(async (options) => {
+  setPageTitle('订单详情')
+
   if (options.ticketNo) {
     // 从售后列表进入
     await loadFromAfterSale(options.ticketNo)
@@ -238,12 +230,12 @@ async function loadFromOrder(orderId) {
     if (ticket) {
       // 有售后
       hasAfterSale.value = true
-      pageTitle.value = '售后详情'
+      setPageTitle('售后详情')
       fillAfterSaleInfo(ticket)
     } else {
       // 无售后，显示物流
       hasAfterSale.value = false
-      pageTitle.value = '订单详情'
+      setPageTitle('订单详情')
       buildLogisticsSteps(order)
       buildLogisticsMap(order)
     }
@@ -259,7 +251,7 @@ async function loadFromAfterSale(ticketNo) {
     if (!ticket) return
 
     hasAfterSale.value = true
-    pageTitle.value = '售后详情'
+    setPageTitle('售后详情')
     fillAfterSaleInfo(ticket)
 
     // 加载关联订单信息
@@ -438,10 +430,6 @@ function buildAfterSaleSteps(ticket) {
   afterSaleSteps.value = statusSteps[ticket.status] || statusSteps.PROCESSING
 }
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function copyOrderNo() {
   uni.setClipboardData({
     data: orderInfo.value.orderNo,
@@ -458,6 +446,10 @@ function copyTracking() {
 
 function previewImage(index) {
   uni.previewImage({ current: index, urls: afterSaleInfo.value.images.map(normalizeImageUrl) })
+}
+
+function setPageTitle(title) {
+  uni.setNavigationBarTitle({ title })
 }
 
 function contactService() {
@@ -488,29 +480,7 @@ function applyAfterSale() {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon { font-size: 32rpx; color: #1a1a1a; }
-.nav-title { font-size: 32rpx; font-weight: 800; color: #1a1a1a; }
-.nav-right { width: 64rpx; }
-
 .card {
-  margin-top: 24rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;

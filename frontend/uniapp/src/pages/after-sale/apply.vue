@@ -1,14 +1,5 @@
 ﻿<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">申请售后</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 售后原因选择 -->
     <view class="card">
       <text class="card-title">售后原因</text>
@@ -97,10 +88,6 @@ onLoad(async (options) => {
     } catch (e) {}
   }
 })
-
-function goBack() {
-  uni.navigateBack()
-}
 
 function selectReason(value) {
   selectedReason.value = value
@@ -231,42 +218,9 @@ function uploadImage(filePath) {
   background: #f0eeea;
 }
 
-/* 顶部导航 */
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
 /* 卡片 */
 .card {
-  margin-top: 24rpx;
+  margin-top: 20rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;
