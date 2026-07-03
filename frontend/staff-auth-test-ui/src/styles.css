@@ -2,6 +2,7 @@
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #1e2228;
   background: #eef3f8;
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -16,6 +17,23 @@
   --green: #37a667;
   --blue: #3178c6;
   --danger: #c94232;
+}
+
+html[data-theme="dark"] {
+  color: #e7edf6;
+  background: #0e131b;
+  color-scheme: dark;
+  --bg: #101722;
+  --panel: #182130;
+  --soft: #202b3a;
+  --line: #2c3a4c;
+  --muted: #9aa8ba;
+  --text: #e7edf6;
+  --accent: #ff8a3d;
+  --dark: #0f1723;
+  --green: #5fca8e;
+  --blue: #73a9f0;
+  --danger: #ff7b6d;
 }
 
 * {
@@ -53,6 +71,40 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.52;
+}
+
+html[data-theme="dark"] body {
+  background: linear-gradient(135deg, #0b1018, #151d29);
+}
+
+html.theme-changing,
+html.theme-changing body,
+html.theme-changing .app-shell,
+html.theme-changing .sidebar,
+html.theme-changing .page-area,
+html.theme-changing .wide-panel,
+html.theme-changing .side-panel,
+html.theme-changing .empty-state,
+html.theme-changing .metric-card,
+html.theme-changing .module-card,
+html.theme-changing .panel-card,
+html.theme-changing .chat-panel,
+html.theme-changing .agent-card,
+html.theme-changing .focus-card,
+html.theme-changing .data-row,
+html.theme-changing .ghost-action,
+html.theme-changing .ghost-mini,
+html.theme-changing .primary-action,
+html.theme-changing .theme-toggle,
+html.theme-changing input,
+html.theme-changing textarea {
+  transition:
+    background-color 460ms ease,
+    background 460ms ease,
+    border-color 460ms ease,
+    color 460ms ease,
+    box-shadow 460ms ease,
+    opacity 460ms ease;
 }
 
 .app-shell {
@@ -3323,6 +3375,18 @@ body:has(.login-view) {
   min-width: 0;
 }
 
+.login-view.welcome-active .login-stage,
+.login-view.welcome-active .login-box {
+  transform: scale(1.03);
+  opacity: 0.28;
+  filter: blur(8px);
+  transition: transform 520ms ease, opacity 520ms ease, filter 520ms ease;
+}
+
+.login-view.welcome-active .login-box {
+  pointer-events: none;
+}
+
 @keyframes loginBackgroundDrift {
   from {
     background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
@@ -3423,6 +3487,157 @@ body:has(.login-view) {
 .data-row:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 24px rgba(31, 38, 48, 0.08);
+}
+
+.theme-toggle {
+  position: relative;
+  width: 126px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 14px;
+  color: var(--text);
+  background:
+    linear-gradient(135deg, rgba(243, 106, 16, 0.12), transparent 54%),
+    var(--panel);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.theme-toggle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  z-index: -1;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(243, 106, 16, 0.18);
+  box-shadow: 0 6px 16px rgba(243, 106, 16, 0.2);
+  transform: translateY(-50%);
+  transition:
+    transform 420ms cubic-bezier(0.2, 0.85, 0.25, 1.15),
+    background 360ms ease,
+    box-shadow 360ms ease;
+}
+
+.theme-toggle svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  position: relative;
+  z-index: 1;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.theme-toggle span {
+  position: relative;
+  z-index: 1;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.theme-toggle-dark::before {
+  transform: translate(82px, -50%);
+  background: rgba(115, 169, 240, 0.22);
+  box-shadow: 0 6px 18px rgba(115, 169, 240, 0.22);
+}
+
+html[data-theme="dark"] .app-shell {
+  background:
+    radial-gradient(circle at 72% 8%, rgba(255, 138, 61, 0.08), transparent 28%),
+    var(--bg);
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .wide-panel,
+html[data-theme="dark"] .side-panel,
+html[data-theme="dark"] .empty-state,
+html[data-theme="dark"] .login-box,
+html[data-theme="dark"] .metric-card,
+html[data-theme="dark"] .module-card,
+html[data-theme="dark"] .panel-card,
+html[data-theme="dark"] .chat-panel,
+html[data-theme="dark"] .profile-panel,
+html[data-theme="dark"] .profile-duty-panel,
+html[data-theme="dark"] .template-assist-card,
+html[data-theme="dark"] .session-list-template .wide-panel,
+html[data-theme="dark"] .review-card,
+html[data-theme="dark"] .review-modal {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.2);
+}
+
+html[data-theme="dark"] .hero-panel,
+html[data-theme="dark"] .profile-hero {
+  background:
+    linear-gradient(135deg, rgba(255, 138, 61, 0.14), transparent 44%),
+    linear-gradient(90deg, rgba(115, 169, 240, 0.12), transparent 64%),
+    var(--panel);
+}
+
+html[data-theme="dark"] .agent-card,
+html[data-theme="dark"] .focus-card,
+html[data-theme="dark"] .performance-bar-row,
+html[data-theme="dark"] .data-row,
+html[data-theme="dark"] .info-grid div,
+html[data-theme="dark"] .profile-card,
+html[data-theme="dark"] .profile-info-list div,
+html[data-theme="dark"] .profile-duty-summary div,
+html[data-theme="dark"] .profile-metric,
+html[data-theme="dark"] .session-card,
+html[data-theme="dark"] .template-recommend,
+html[data-theme="dark"] .template-reply-composer,
+html[data-theme="dark"] .session-list-template .session-card,
+html[data-theme="dark"] .review-detail-panel {
+  border-color: var(--line);
+  background: #111a27;
+}
+
+html[data-theme="dark"] .nav-item:hover,
+html[data-theme="dark"] .nav-item.active,
+html[data-theme="dark"] .profile-status-tabs button.active,
+html[data-theme="dark"] .session-list-template .session-card:hover {
+  background: var(--soft);
+}
+
+html[data-theme="dark"] .nav-item.active,
+html[data-theme="dark"] .link-copy:hover strong {
+  color: #ffad73;
+}
+
+html[data-theme="dark"] .ghost-action,
+html[data-theme="dark"] .ghost-mini,
+html[data-theme="dark"] .theme-toggle,
+html[data-theme="dark"] .profile-status-tabs button,
+html[data-theme="dark"] .template-quick-grid button,
+html[data-theme="dark"] .template-side-actions button {
+  border-color: var(--line);
+  color: var(--text);
+  background: #121b28;
+}
+
+html[data-theme="dark"] .primary-action,
+html[data-theme="dark"] .hero-number {
+  background: linear-gradient(135deg, #ff8a3d, #b95118);
+}
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] .template-reply-composer textarea {
+  color: var(--text);
+  background: transparent;
 }
 
 @media (max-width: 1260px) {
@@ -3568,5 +3783,52 @@ body:has(.login-view) {
 
   .login-box h2 {
     font-size: 26px;
+  }
+}
+
+html.welcome-route-transition::view-transition-old(root) {
+  animation: welcomeRouteOut 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+html.welcome-route-transition::view-transition-new(root) {
+  animation: welcomeRouteIn 820ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes welcomeRouteOut {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(1.012);
+  }
+}
+
+@keyframes welcomeRouteIn {
+  0% {
+    opacity: 0;
+    filter: blur(12px);
+    transform: scale(0.988);
+  }
+
+  38% {
+    opacity: 0.58;
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.welcome-route-transition::view-transition-old(root),
+  html.welcome-route-transition::view-transition-new(root) {
+    animation-duration: 1ms;
   }
 }

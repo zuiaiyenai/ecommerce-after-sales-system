@@ -79,8 +79,8 @@ class VisionReviewService:
             error_text = str(exc)
             model_missing = "model" in error_text.lower() and "not found" in error_text.lower()
             timeout_like = any(keyword in error_text.lower() for keyword in ("timed out", "timeout", "超时"))
-            missing_visual_evidence = ("视觉模型不可用",) if model_missing else ("图片分析结果待补充",)
-            summary = "图片审核模型暂时不可用，已跳过视觉审核。" if model_missing else "图片分析暂时异常，我会先根据您的描述继续处理，稍后补充图片分析结果。"
+            missing_visual_evidence = ("图片校验未完成",) if model_missing else ("图片分析结果待补充",)
+            summary = "图片暂时无法完成校验，先根据用户描述继续处理。" if model_missing else "图片分析暂时异常，先根据用户描述继续处理。"
             mode = "vision_unavailable" if model_missing else "vision_timeout_or_error"
             return ImageReviewResult(
                 success=False,

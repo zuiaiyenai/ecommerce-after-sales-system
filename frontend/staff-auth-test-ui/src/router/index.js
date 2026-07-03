@@ -11,6 +11,7 @@ import OrderDetailView from '../views/OrderDetailView.vue';
 import NoticesView from '../views/NoticesView.vue';
 import ProfileView from '../views/ProfileView.vue';
 import ProductsView from '../views/ProductsView.vue';
+import ReviewsView from '../views/ReviewsView.vue';
 
 const TOKEN_KEY = 'merchant_cs_token';
 
@@ -29,6 +30,7 @@ const routes = [
       { path: 'orders', name: 'orders', component: OrdersView, meta: { title: '订单核验' } },
       { path: 'orders/:orderId', name: 'orderDetail', component: OrderDetailView, meta: { title: '订单详情' } },
       { path: 'products', name: 'products', component: ProductsView, meta: { title: '商品管理' } },
+      { path: 'reviews', name: 'reviews', component: ReviewsView, meta: { title: '用户评价' } },
       { path: 'notices', name: 'notices', component: NoticesView, meta: { title: '消息通知' } },
       { path: 'profile', name: 'profile', component: ProfileView, meta: { title: '个人中心' } }
     ]

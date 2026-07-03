@@ -14,6 +14,7 @@ class PersistenceResult:
     session_no: str
     user_message_id: int
     assistant_message_id: int
+    ticket_no: str | None = None
     ticket_log_id: int | None = None
     notice_id: int | None = None
 
@@ -43,7 +44,22 @@ class ConversationPersistenceService:
             except (TypeError, ValueError):
                 return None
         ticket_id = None
-        if order_db_id and result.fallback_result.need_human:
+        if order_db_id and result.fallback_result.ticket is not None:
+            ticket = result.fallback_result.ticket
+            ticket_id = self.repository.find_or_create_agent_ticket(
+                order_db_id=order_db_id,
+                order_no=context.selected_order.order_id,
+                user_id=user_id,
+                product_name=context.selected_order.items[0].product_name
+                if context.selected_order.items
+                else "售后商品",
+                refund_amount=context.selected_order.amount,
+                description=self._handoff_problem_description(context, result),
+                ticket=ticket,
+                confidence=self._conversation_confidence(result),
+                audit_note=result.fallback_result.audit_note,
+            )
+        elif order_db_id and result.fallback_result.need_human:
             ticket_id = self.repository.find_or_create_handoff_ticket(
                 order_db_id=order_db_id,
                 order_no=context.selected_order.order_id,
@@ -57,6 +73,7 @@ class ConversationPersistenceService:
             )
         elif order_db_id:
             ticket_id = self.repository.resolve_recent_ticket_id(order_db_id)
+        ticket_no = self.repository.resolve_ticket_no(ticket_id)
 
         session = self.repository.find_or_create_session(
             user_id=user_id,
@@ -108,6 +125,7 @@ class ConversationPersistenceService:
         )
 
         if result.fallback_result.need_human:
+            handoff_message = "AI 已建议转人工，等待客服接入。"
             self.repository.mark_session_waiting_human(
                 session_id=session["id"],
                 ticket_id=ticket_id,
@@ -122,9 +140,15 @@ class ConversationPersistenceService:
                 session_id=session["id"],
                 sender_id=0,
                 sender_role="SYSTEM",
-                content="AI 已建议转人工，等待客服接入。",
+                content=handoff_message,
                 ai_intent=result.intent,
                 emotion_label="NEUTRAL",
+            )
+            self.repository.update_session_snapshot(
+                session_id=session["id"],
+                last_message_content=handoff_message,
+                ai_summary=self._build_human_session_summary(context, result),
+                increase_user_unread=True,
             )
 
         ticket_log_id = None
@@ -135,7 +159,7 @@ class ConversationPersistenceService:
                 operator_id=0,
                 operator_role="AI",
                 old_status=None,
-                new_status=result.fallback_result.current_status.value.upper(),
+                new_status=self._ticket_log_status(result),
                 action_type="TRANSFER" if result.fallback_result.need_human else "AI_REPLY",
                 action_desc=self._build_ticket_log_desc(context, result),
             )
@@ -154,6 +178,7 @@ class ConversationPersistenceService:
             session_no=session["session_no"],
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            ticket_no=ticket_no,
             ticket_log_id=ticket_log_id,
             notice_id=notice_id,
         )
@@ -195,6 +220,28 @@ class ConversationPersistenceService:
         if result.fallback_result.progress_hint:
             parts.append(result.fallback_result.progress_hint)
         return "；".join(part.strip() for part in parts if part and part.strip())[:1000]
+
+    @staticmethod
+    def _conversation_confidence(result: LLMConversationResult) -> float:
+        understanding = None
+        if isinstance(result.raw, dict):
+            understanding = result.raw.get("conversation_understanding")
+        if isinstance(understanding, dict):
+            try:
+                return float(understanding.get("confidence") or 0.8)
+            except (TypeError, ValueError):
+                return 0.8
+        return 0.8
+
+    @staticmethod
+    def _ticket_log_status(result: LLMConversationResult) -> str:
+        ticket = result.fallback_result.ticket
+        if ticket is not None:
+            if ticket.status.value == "auto_approved":
+                return "PROCESSING"
+            if ticket.status.value == "pending_review":
+                return "PENDING"
+        return result.fallback_result.current_status.value.upper()
 
     @staticmethod
     def _build_human_session_summary(context: ConversationContext, result: LLMConversationResult) -> str:

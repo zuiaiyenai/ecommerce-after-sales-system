@@ -160,6 +160,14 @@ public class MerchantCsController {
         return ApiResponse.success("标记成功", merchantCsService.markNoticeRead(noticeId));
     }
 
+    @GetMapping("/reviews")
+    public ApiResponse<PageResult<ReviewView>> listReviews(@RequestParam(defaultValue = "1") long page,
+                                                           @RequestParam(defaultValue = "10") long size,
+                                                           @RequestParam(required = false) String score,
+                                                           @RequestParam(required = false) String keyword) {
+        return ApiResponse.success("获取成功", merchantCsService.listReviews(page, size, score, keyword));
+    }
+
     @GetMapping("/products")
     public ApiResponse<PageResult<ProductView>> listProducts(@RequestParam(defaultValue = "1") long page,
                                                              @RequestParam(defaultValue = "10") long size,

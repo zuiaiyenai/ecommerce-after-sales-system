@@ -71,7 +71,7 @@ public class AgentGatewayDtos {
     @Data
     public static class ChatRequest {
         private String order_id;
-        private Integer session_id;
+        private Long session_id;
 
         @NotBlank(message = "message不能为空")
         private String message;
@@ -100,10 +100,11 @@ public class AgentGatewayDtos {
 
     @Data
     public static class PersistenceDto {
-        private Integer session_id;
+        private Long session_id;
         private String session_no;
         private Long user_message_id;
         private Long assistant_message_id;
+        private String ticket_no;
         private Long ticket_log_id;
         private Long notice_id;
     }

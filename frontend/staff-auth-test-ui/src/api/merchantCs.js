@@ -24,6 +24,21 @@ function buildUrl(path) {
   return `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+export function resolveAssetUrl(url) {
+  if (!url) {
+    return '';
+  }
+  if (/^(https?:)?\/\//.test(url) || url.startsWith('data:') || url.startsWith('blob:')) {
+    return url;
+  }
+  // Paths returned by the backend's static resource handlers (context-path: /api)
+  // need the /api prefix to resolve correctly
+  if (url.startsWith('/uploads/') || url.startsWith('/static/')) {
+    return buildUrl(`/api${url}`);
+  }
+  return buildUrl(url);
+}
+
 function resolveUploadUrl(payload) {
   const data = payload?.data ?? payload;
   if (typeof data === 'string') {
@@ -453,6 +468,20 @@ export async function markNoticeRead(noticeId) {
     return delay({ id: noticeId, readStatus: 'READ' });
   }
   return request(`/api/merchant-cs/notices/${noticeId}/read`, { method: 'PUT' });
+}
+
+// ==================== Reviews ====================
+
+export async function getReviews(params = {}) {
+  if (!USE_REAL_API) {
+    return delay({ records: [], total: 0 });
+  }
+  const query = new URLSearchParams();
+  if (params.score) query.set('score', params.score);
+  if (params.keyword) query.set('keyword', params.keyword);
+  query.set('page', params.page || 1);
+  query.set('size', params.size || 20);
+  return request(`/api/merchant-cs/reviews?${query.toString()}`);
 }
 
 // ==================== Products ====================

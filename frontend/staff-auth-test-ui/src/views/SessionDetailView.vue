@@ -24,7 +24,7 @@ const activeFilter = ref('ACTIVE');
 let ws = null;
 let wsReconnectTimer = null;
 
-const terminalStatuses = ['RESOLVED', 'CLOSED'];
+const terminalStatuses = ['RESOLVED'];
 const filterOptions = [
   { key: 'ACTIVE', label: '活跃' },
   { key: 'PROCESSING', label: '进行中' },
@@ -36,7 +36,7 @@ const filterOptions = [
 const quickReplies = ['退款流程', '退款时效', '退货说明', '发货时间', '优惠券使用', '商品保修'];
 
 const visibleSessions = computed(() => {
-  return sessions.value.filter((item) => {
+  return sessions.value.filter((item) => item.status !== 'CLOSED').filter((item) => {
     if (activeFilter.value === 'ACTIVE') {
       return !terminalStatuses.includes(item.status);
     }
@@ -61,7 +61,7 @@ const recommendedReply = computed(() => {
 const evaluationHint = computed(() => {
   const status = session.value?.status;
   if (status === 'PROCESSING') {
-    return '问题处理完成后，可以发送评价请求。';
+    return '问题处理完成后会自动邀请用户评价，也可以在这里手动补发。';
   }
   if (status === 'AWAITING_EVALUATION') {
     return `评价请求已发送，30 分钟内未评价将转为待客服关闭。发送时间：${session.value?.evaluationRequestedAt || '暂无'}`;
@@ -73,7 +73,7 @@ const evaluationHint = computed(() => {
     return `用户已完成评价，会话自动进入已完成。评分：${session.value?.rating || 5} 星`;
   }
   if (status === 'CLOSED') {
-    return '该会话已由客服关闭。';
+    return '该会话已从列表移除，历史内容仍会保留。';
   }
   return '当前会话仍在接入或处理中。';
 });
@@ -190,9 +190,9 @@ async function handleClose() {
   try {
     const updated = await closeSession(route.params.sessionId);
     await refreshSession(updated);
-    shell?.setAction('会话已由客服关闭');
+    shell?.setAction('会话已移除');
   } catch (error) {
-    shell?.setAction(error.message || '只有待客服关闭状态可以关闭');
+    shell?.setAction(error.message || '移除失败');
   } finally {
     actionLoading.value = '';
   }
@@ -384,6 +384,10 @@ onUnmounted(() => {
           <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
         </div>
         <p>{{ evaluationHint }}</p>
+        <p v-if="session?.rating" class="evaluation-real-result">
+          真实评分：{{ session.rating }} 星
+          <span v-if="session.evaluationContent">｜{{ session.evaluationContent }}</span>
+        </p>
         <div class="evaluation-action-grid">
           <button
             type="button"
@@ -395,19 +399,11 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="ghost-mini"
-            :disabled="session?.status !== 'AWAITING_EVALUATION' || isActionBusy"
-            @click="handleSubmitEvaluation"
-          >
-            模拟用户评价
-          </button>
-          <button
-            type="button"
             class="ghost-mini danger"
-            :disabled="session?.status !== 'READY_TO_CLOSE' || isActionBusy"
+            :disabled="session?.status === 'CLOSED' || isActionBusy"
             @click="handleClose"
           >
-            {{ actionLoading === 'close' ? '关闭中' : '关闭会话' }}
+            {{ actionLoading === 'close' ? '处理中' : '×' }}
           </button>
         </div>
       </section>

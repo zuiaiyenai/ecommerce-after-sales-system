@@ -33,7 +33,7 @@ def is_visual_review_failed(
         return True
     if not image_review.has_damage_area and not image_review.has_outer_package and not image_review.has_logistics_label:
         return True
-    failure_markers = {"视觉模型不可用", "图片分析结果待补充"}
+    failure_markers = {"图片校验未完成", "视觉模型不可用", "图片分析结果待补充"}
     return any(item in failure_markers for item in image_review.missing_visual_evidence)
 
 

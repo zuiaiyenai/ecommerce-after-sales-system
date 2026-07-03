@@ -57,6 +57,8 @@ public interface MerchantCsService {
 
     NoticeView markNoticeRead(Long noticeId);
 
+    PageResult<ReviewView> listReviews(long page, long size, String score, String keyword);
+
     PageResult<ProductView> listProducts(long page, long size, String status, String keyword);
 
     ProductView getProduct(Long productId);

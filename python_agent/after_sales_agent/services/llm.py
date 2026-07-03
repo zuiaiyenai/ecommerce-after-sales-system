@@ -81,6 +81,7 @@ class OpenAICompatibleClient:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=temperature,
+                max_tokens=max_tokens,
             )
         payload = {
             "model": self.config.model,
@@ -177,6 +178,7 @@ class OpenAICompatibleClient:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        max_tokens: int,
     ) -> dict[str, Any]:
         payload = {
             "model": self.config.model,
@@ -185,7 +187,8 @@ class OpenAICompatibleClient:
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
-            "options": {"temperature": temperature},
+            "format": "json",
+            "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         raw = self._post(payload, path="/api/chat")
         try:

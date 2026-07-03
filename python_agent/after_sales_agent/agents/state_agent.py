@@ -11,9 +11,9 @@ class StateMachineAgent:
         current = order.after_sales_status if order else AfterSalesStatus.NOT_APPLIED
         state_rules: dict[AfterSalesStatus, tuple[str, ...]] = {
             AfterSalesStatus.NOT_APPLIED: ("提交售后申请",),
-            AfterSalesStatus.SUBMITTED: ("进入商家审核", "要求补充凭证"),
+            AfterSalesStatus.SUBMITTED: ("进入商家审核", "要求补充凭证", "上传凭证"),
             AfterSalesStatus.WAITING_EVIDENCE: ("上传凭证",),
-            AfterSalesStatus.MERCHANT_REVIEW: ("等待审核", "平台介入", "转人工"),
+            AfterSalesStatus.MERCHANT_REVIEW: ("等待审核", "要求补充凭证", "上传凭证", "平台介入", "转人工"),
             AfterSalesStatus.PLATFORM_REVIEW: ("等待平台复核", "转人工"),
             AfterSalesStatus.APPROVED: ("退款处理", "待用户退货", "换货处理"),
             AfterSalesStatus.REJECTED: ("申诉", "转人工"),

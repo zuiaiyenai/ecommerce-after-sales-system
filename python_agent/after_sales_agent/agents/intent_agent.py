@@ -45,15 +45,34 @@ class IntentAgent:
         text = self.normalize_text(
             " ".join(part for part in (request.message, request.reason, request.description) if part)
         )
+        if (
+            request.llm_intent == Intent.SUPPLEMENT_EVIDENCE
+            and order is not None
+            and getattr(order.after_sales_status, "value", order.after_sales_status)
+            == AfterSalesStatus.NOT_APPLIED.value
+        ):
+            request = request.__class__(
+                **{**request.__dict__, "llm_intent": Intent.APPLY_AFTER_SALES}
+            )
         scene = request.llm_scene or self._infer_scene(text)
         scored_intents = self._score_all_rules(text, order, scene)
+
+        llm_override = self._llm_override_result(request)
+        if llm_override is not None and (
+            request.llm_intent == Intent.APPLY_AFTER_SALES
+            and (
+                order is None
+                or getattr(order.after_sales_status, "value", order.after_sales_status)
+                == AfterSalesStatus.NOT_APPLIED.value
+            )
+        ):
+            return llm_override
 
         if scored_intents:
             high_priority_override = self._pick_high_priority_override(scored_intents, text)
             if high_priority_override is not None:
                 return self._to_intent_result(high_priority_override)
 
-        llm_override = self._llm_override_result(request)
         if llm_override is not None:
             return llm_override
 

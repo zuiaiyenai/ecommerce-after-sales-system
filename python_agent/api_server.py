@@ -186,6 +186,18 @@ def build_trace_meta(*, attachments: tuple[Attachment, ...], skip_image_review: 
     }
 
 
+def public_ticket_status(agent_status: str) -> str:
+    """Expose workflow status names used by the miniapp and merchant console."""
+    mapping = {
+        "auto_approved": "processing",
+        "pending_review": "pending_review",
+        "waiting_user": "waiting_user",
+        "human_handoff": "pending_review",
+        "closed": "closed",
+    }
+    return mapping.get(agent_status, agent_status)
+
+
 def record_trace_event(
     trace: TraceRecorder,
     *,
@@ -350,6 +362,11 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 persistence_result = None
 
         ticket = result.fallback_result.ticket
+        response_ticket_id = (
+            persistence_result.ticket_no
+            if persistence_result and persistence_result.ticket_no
+            else (ticket.ticket_id if ticket else None)
+        )
         payload = {
             "assistant_reply": result.assistant_reply,
             "intent": result.intent,
@@ -359,8 +376,8 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             "fallback_progress_hint": result.fallback_result.progress_hint,
             "fallback_need_human": result.fallback_result.need_human,
             "ticket": {
-                "ticket_id": ticket.ticket_id,
-                "status": ticket.status.value,
+                "ticket_id": response_ticket_id,
+                "status": public_ticket_status(ticket.status.value),
                 "expected_hours": ticket.expected_hours,
             }
             if ticket
@@ -369,12 +386,13 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             "emotion": self._serialize_emotion(result),
             "image_review": serialize_image_review(image_review),
             "persistence": {
-                "session_id": persistence_result.session_id,
+                "session_id": str(persistence_result.session_id),
                 "session_no": persistence_result.session_no,
-                "user_message_id": persistence_result.user_message_id,
-                "assistant_message_id": persistence_result.assistant_message_id,
-                "ticket_log_id": persistence_result.ticket_log_id,
-                "notice_id": persistence_result.notice_id,
+                "user_message_id": str(persistence_result.user_message_id),
+                "assistant_message_id": str(persistence_result.assistant_message_id),
+                "ticket_no": persistence_result.ticket_no,
+                "ticket_log_id": str(persistence_result.ticket_log_id) if persistence_result.ticket_log_id else None,
+                "notice_id": str(persistence_result.notice_id) if persistence_result.notice_id else None,
             }
             if persistence_result
             else None,

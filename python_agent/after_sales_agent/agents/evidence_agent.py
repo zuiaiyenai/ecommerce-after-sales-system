@@ -95,6 +95,9 @@ class EvidenceAgent:
 
     @staticmethod
     def _has_meaningful_description(request: AfterSalesRequest) -> bool:
+        if request.normalized_issue or request.quality_description_detailed is True:
+            return True
+
         combined = " ".join(
             part.strip() for part in (request.message, request.reason, request.description) if part
         )

@@ -12,16 +12,27 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  ticketTotal: {
+    type: Number,
+    default: 0
+  },
   todos: {
     type: Array,
     default: () => []
   }
 });
 
-const emit = defineEmits(['toggleStatus', 'logout']);
+defineEmits(['toggleStatus', 'logout']);
 
 const route = useRoute();
-const terminalSessionStatuses = ['RESOLVED', 'CLOSED'];
+const unreadSessionCount = computed(() => props.sessions.reduce((sum, item) => {
+  if (['RESOLVED', 'CLOSED'].includes(item.status)) {
+    return sum;
+  }
+  return sum + (Number(item.serviceUnreadCount) || 0);
+}, 0));
+
+const pendingTicketCount = computed(() => props.tickets.filter((item) => item.status === 'PENDING_REVIEW').length);
 
 const navItems = computed(() => [
   { to: '/dashboard', key: 'dashboard', label: '首页', icon: 'home' },
@@ -30,11 +41,12 @@ const navItems = computed(() => [
     key: 'sessions',
     label: '在线会话',
     icon: 'message',
-    count: props.sessions.filter((item) => !terminalSessionStatuses.includes(item.status)).length
+    count: unreadSessionCount.value
   },
-  { to: '/tickets', key: 'tickets', label: '售后申请', icon: 'clipboard', count: props.tickets.length },
+  { to: '/tickets', key: 'tickets', label: '售后申请', icon: 'clipboard', count: pendingTicketCount.value },
   { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
   { to: '/products', key: 'products', label: '商品管理', icon: 'package' },
+  { to: '/reviews', key: 'reviews', label: '用户评价', icon: 'star' },
   { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.todos.length },
   { to: '/profile', key: 'profile', label: '个人中心', icon: 'user' }
 ]);
@@ -45,6 +57,7 @@ const iconPaths = {
   clipboard: ['M9 4h6l1 2h3v15H5V6h3l1-2Z', 'M9 11h6', 'M9 15h6', 'M8 11h.01', 'M8 15h.01'],
   verify: ['M9 4h6l1 2h3v15H5V6h3l1-2Z', 'M8.5 12.5h4', 'M8.5 16h2.5', 'm13.5 15.5 2 2 4-4'],
   bell: ['M18 10a6 6 0 0 0-12 0c0 4-2 5-2 6h16c0-1-2-2-2-6Z', 'M9.5 19a2.5 2.5 0 0 0 5 0'],
+  star: ['m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8L6.6 20l1-6L3.2 9.4l6.1-.9L12 3Z'],
   user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M4.5 20a7.5 7.5 0 0 1 15 0'],
   package: ['M15 3h4l2 5H3l2-5h4', 'M15 3v5h4l-2 12H7L5 8h4V3', 'M9 3h6', 'M9 12h6', 'M9 16h6']
 };

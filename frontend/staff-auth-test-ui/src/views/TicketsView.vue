@@ -73,6 +73,12 @@ const stats = computed(() => [
 async function loadPage() {
   const page = await getTickets();
   tickets.value = page.records;
+  if (shell?.tickets && 'value' in shell.tickets) {
+    shell.tickets.value = page.records;
+  }
+  if (shell?.ticketTotal && 'value' in shell.ticketTotal) {
+    shell.ticketTotal.value = page.total ?? page.records.length;
+  }
 }
 
 async function handleApprove(ticketId) {

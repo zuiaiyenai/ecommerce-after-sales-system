@@ -95,6 +95,12 @@ onLoad(async (options) => {
     orderId.value = String(options.orderId)
     try {
       orderData.value = await request({ url: '/orders/' + orderId.value })
+      if (orderData.value && orderData.value.status === 'AFTERSALE') {
+        uni.showToast({ title: '该订单已在售后中', icon: 'none' })
+        setTimeout(() => {
+          uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
+        }, 800)
+      }
     } catch (error) {
       orderData.value = null
     }

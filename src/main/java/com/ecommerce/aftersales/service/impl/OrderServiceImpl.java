@@ -3,9 +3,11 @@ package com.ecommerce.aftersales.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.CreateOrderRequest;
+import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.OrderInfo;
 import com.ecommerce.aftersales.entity.OrderItem;
 import com.ecommerce.aftersales.entity.ProductInfo;
+import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
@@ -30,6 +32,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderInfoMapper orderInfoMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final AfterSalesTicketMapper afterSalesTicketMapper;
 
     @Override
     public List<OrderVO> listByUserId(Long userId) {
@@ -124,7 +127,12 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
-        vo.setStatusText(getStatusText(orderInfo.getStatus()));
+        if (hasExistingAfterSale(orderInfo.getId())) {
+            vo.setStatus("AFTERSALE");
+            vo.setStatusText(getStatusText("AFTERSALE"));
+        } else {
+            vo.setStatusText(getStatusText(orderInfo.getStatus()));
+        }
 
         // 查询订单项
         LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
@@ -160,6 +168,13 @@ public class OrderServiceImpl implements OrderService {
         vo.setItems(itemVOs);
 
         return vo;
+    }
+
+    private boolean hasExistingAfterSale(Long orderId) {
+        Long count = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderId)
+                .in(AfterSalesTicket::getStatus, List.of("PENDING", "PENDING_REVIEW", "PROCESSING", "COMPLETED")));
+        return count != null && count > 0;
     }
 
     private String getStatusText(String status) {

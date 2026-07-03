@@ -18,6 +18,7 @@ from ..models import (
     Decision,
     Intent,
     RiskLevel,
+    TicketStatus,
 )
 from ..infra.trace import TraceRecorder
 from ..utils.vision_utils import serialize_image_review
@@ -50,7 +51,7 @@ class QwenReturnService:
     def handle(self, context: ConversationContext) -> LLMConversationResult:
         request, conversation_understanding = self._build_request_with_conversation_understanding(context)
         if not self._has_valid_conversation_understanding(conversation_understanding):
-            return self._understanding_unavailable_result(context, conversation_understanding)
+            return self._understanding_unavailable_result(context, request, conversation_understanding)
 
         fallback_result = self.rule_agent.handle(
             request=request,
@@ -119,15 +120,82 @@ class QwenReturnService:
         except LLMError as exc:
             return request, {"mode": "model_unavailable", "error": str(exc)}
 
+        normalized_issue = str(raw.get("normalized_issue") or "")
+        reason = str(raw.get("reason") or "")
         intent = self._parse_intent(raw.get("intent"))
         scene = self._parse_scene(raw.get("scene"))
+        if intent is None or scene is None:
+            intent, scene = self._repair_understanding_choice(
+                raw=raw,
+                request=request,
+                normalized_issue=normalized_issue,
+                reason=reason,
+                intent=intent,
+                scene=scene,
+            )
         confidence = self._parse_confidence(raw.get("confidence"))
         is_detailed = self._parse_bool(raw.get("quality_description_detailed"), None)
         if intent is None or scene is None:
             return request, {"mode": "invalid_model_output", "raw": raw}
-        normalized_issue = str(raw.get("normalized_issue") or "")
+        if self._looks_like_specific_issue(request.message):
+            normalized_issue = str(request.message or "").strip()
+        elif not normalized_issue:
+            normalized_issue = self._fallback_normalized_issue(request)
+        if self._is_refund_progress_query(context, request):
+            intent = Intent.REFUND_PROGRESS
+            scene = AfterSalesScene.PROGRESS_QUERY
+            normalized_issue = ""
+            is_detailed = None
+            if confidence < 0.8:
+                confidence = 0.8
+        if (
+            scene == AfterSalesScene.QUALITY_ISSUE
+            and context.image_review is not None
+            and context.image_review.success
+            and context.image_review.has_damage_area
+            and normalized_issue
+            and not self._is_generic_quality_description_only(request, normalized_issue)
+        ):
+            scene = AfterSalesScene.PRODUCT_DAMAGE
+        if is_detailed is None and normalized_issue:
+            is_detailed = self._looks_like_specific_issue(normalized_issue)
+        user_has_specific_issue = any(
+            self._looks_like_specific_issue(value)
+            for value in (request.message, request.description, request.reason)
+            if value
+        )
+        if (
+            context.image_review is not None
+            and context.image_review.success
+            and context.image_review.has_damage_area
+            and not user_has_specific_issue
+        ):
+            if scene == AfterSalesScene.PRODUCT_DAMAGE:
+                scene = AfterSalesScene.QUALITY_ISSUE
+            is_detailed = False
+        if self._is_generic_quality_description_only(request, normalized_issue):
+            if scene == AfterSalesScene.PRODUCT_DAMAGE:
+                scene = AfterSalesScene.QUALITY_ISSUE
+            is_detailed = False
+        if (
+            intent == Intent.SUPPLEMENT_EVIDENCE
+            and context.selected_order is not None
+            and getattr(
+                context.selected_order.after_sales_status,
+                "value",
+                context.selected_order.after_sales_status,
+            ) == AfterSalesStatus.NOT_APPLIED.value
+            and (normalized_issue or request.visual_evidence)
+        ):
+            intent = Intent.APPLY_AFTER_SALES
+        if (
+            intent == Intent.APPLY_AFTER_SALES
+            and scene != AfterSalesScene.GENERAL
+            and normalized_issue
+            and confidence < 0.6
+        ):
+            confidence = 0.8
         missing_detail = str(raw.get("missing_detail") or "")
-        reason = str(raw.get("reason") or "")
         if (
             scene == AfterSalesScene.QUALITY_ISSUE
             and is_detailed is True
@@ -157,70 +225,98 @@ class QwenReturnService:
         ), review
 
     @staticmethod
+    def _fallback_normalized_issue(request: AfterSalesRequest) -> str:
+        for value in (request.message, request.description, request.reason):
+            text = str(value or "").strip()
+            if text and QwenReturnService._looks_like_specific_issue(text):
+                return text
+        return ""
+
+    @staticmethod
+    def _looks_like_specific_issue(text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        generic_words = ("质量问题", "商品有问题", "申请售后", "售后申请", "补充说明")
+        if normalized in generic_words:
+            return False
+        specific_markers = (
+            "破", "裂", "碎", "坏", "损", "凹", "断",
+            "没声音", "没有声音", "不响", "无法开机", "不能开机", "充电", "连接失败", "按键失灵",
+        )
+        return any(marker in normalized for marker in specific_markers)
+
+    @staticmethod
+    def _repair_understanding_choice(
+        *,
+        raw: dict[str, Any],
+        request: AfterSalesRequest,
+        normalized_issue: str,
+        reason: str,
+        intent: Intent | None,
+        scene: AfterSalesScene | None,
+    ) -> tuple[Intent | None, AfterSalesScene | None]:
+        raw_intent = str(raw.get("intent") or "").strip().lower()
+        raw_scene = str(raw.get("scene") or "").strip().lower()
+        combined = " ".join(
+            part
+            for part in (request.message, request.description, normalized_issue, reason)
+            if part
+        ).lower()
+
+        if intent is None:
+            if raw_intent == "progress_query" or QwenReturnService._has_refund_progress_keywords(combined):
+                intent = Intent.REFUND_PROGRESS
+            elif any(keyword in combined for keyword in ("人工", "客服", "真人")):
+                intent = Intent.HUMAN_SERVICE
+            elif any(keyword in combined for keyword in ("进度", "退款", "到账")):
+                intent = Intent.REFUND_PROGRESS
+            elif any(keyword in combined for keyword in ("凭证", "图片", "照片", "补充")):
+                intent = Intent.SUPPLEMENT_EVIDENCE
+            elif "|" in raw_intent and combined:
+                intent = Intent.APPLY_AFTER_SALES
+            elif "|" in raw_intent:
+                intent = Intent.GENERAL
+
+        if scene is None:
+            if raw_scene == "progress_query" or QwenReturnService._has_refund_progress_keywords(combined):
+                scene = AfterSalesScene.PROGRESS_QUERY
+            elif any(keyword in combined for keyword in ("包装", "外包装", "盒子", "快递袋")):
+                scene = AfterSalesScene.PACKAGE_DAMAGE
+            elif any(keyword in combined for keyword in ("破", "裂", "碎", "坏", "损", "外壳")):
+                scene = AfterSalesScene.PRODUCT_DAMAGE
+            elif any(keyword in combined for keyword in ("少", "漏", "错发", "数量")):
+                scene = AfterSalesScene.WRONG_OR_MISSING_ITEMS
+            elif any(keyword in combined for keyword in ("物流", "快递", "配送")):
+                scene = AfterSalesScene.LOGISTICS_ISSUE
+            elif "|" in raw_scene and combined:
+                scene = AfterSalesScene.QUALITY_ISSUE
+            elif "|" in raw_scene:
+                scene = AfterSalesScene.GENERAL
+
+        return intent, scene
+
+    @staticmethod
     def _has_valid_conversation_understanding(review: dict[str, Any] | None) -> bool:
         return bool(review and review.get("mode") == "llm")
 
-    @staticmethod
     def _understanding_unavailable_result(
+        self,
         context: ConversationContext,
+        request: AfterSalesRequest,
         review: dict[str, Any] | None,
     ) -> LLMConversationResult:
-        request = build_after_sales_request(context)
-        current_status = (
-            context.selected_order.after_sales_status
-            if context.selected_order is not None
-            else AfterSalesStatus.NOT_APPLIED
+        fallback_request = self._repair_request_without_understanding(request, context)
+        fallback_result = self.rule_agent.handle(
+            request=fallback_request,
+            order=context.selected_order,
         )
-        if context.selected_order is not None and request.visual_review_failed:
-            fallback_result = AgentResult(
-                decision=Decision.ESCALATE_HUMAN,
-                user_reply="您好，已收到您的问题和图片材料。当前模型暂时无法自动核实图片是否与问题描述一致，我这边为您转人工客服进一步核实处理。",
-                extracted_order_id=context.selected_order.order_id,
-                intent=Intent.APPLY_AFTER_SALES,
-                next_agent="人工客服",
-                need_human=True,
-                current_status=current_status,
-                scene=AfterSalesScene.QUALITY_ISSUE,
-                risk_level=RiskLevel.MEDIUM,
-                suggested_action="转人工核实图片与描述",
-                progress_hint="图片核验失败或未识别到有效凭证，按人工核实流程处理。",
-                audit_note=f"conversation_understanding_unavailable_handoff review={review}; visual_failed={request.visual_review_failed}",
-                handoff_summary={
-                    "orderId": context.selected_order.order_id,
-                    "problem": request.description or request.message,
-                    "currentStatus": current_status.value,
-                    "evidence": "用户已上传图片，系统无法自动确认图片与描述一致",
-                    "risk": "medium",
-                    "userEmotion": "calm",
-                    "suggestedAction": "请客服人工核实图片与用户描述是否一致",
-                },
-            )
-            return LLMConversationResult(
-                assistant_reply=fallback_result.user_reply,
-                intent=fallback_result.intent.value,
-                item_opened=context.item_opened,
-                evidence_needed=fallback_result.missing_fields,
-                suggested_action=fallback_result.suggested_action or fallback_result.decision.value,
-                raw={
-                    "mode": "understanding_unavailable_handoff",
-                    "conversation_understanding": review,
-                },
-                fallback_result=fallback_result,
-            )
-
-        fallback_result = AgentResult(
-            decision=Decision.ASK_FOR_INFO,
-            user_reply="您好，我正在确认您的售后问题类型，当前模型理解结果暂不可用，请稍后重新发送一次问题描述。",
-            extracted_order_id=context.selected_order.order_id if context.selected_order else None,
-            intent=Intent.GENERAL,
-            next_agent="对话理解",
-            need_human=False,
-            current_status=current_status,
-            scene=AfterSalesScene.GENERAL,
-            missing_fields=("问题理解",),
-            suggested_action="重新发送问题描述",
-            progress_hint="LLM 预理解未成功，未进入裸规则 fallback。",
-            audit_note=f"conversation_understanding_unavailable review={review}",
+        fallback_result = replace(
+            fallback_result,
+            audit_note=self._merge_note(
+                fallback_result.audit_note,
+                f"conversation_understanding_unavailable review={review}",
+            ),
         )
         return LLMConversationResult(
             assistant_reply=fallback_result.user_reply,
@@ -234,6 +330,79 @@ class QwenReturnService:
             },
             fallback_result=fallback_result,
         )
+
+    @staticmethod
+    def _repair_request_without_understanding(
+        request: AfterSalesRequest,
+        context: ConversationContext,
+    ) -> AfterSalesRequest:
+        text = QwenReturnService._combined_user_text(context, request)
+        if QwenReturnService._has_refund_progress_keywords(text):
+            return replace(
+                request,
+                llm_intent=Intent.REFUND_PROGRESS,
+                llm_scene=AfterSalesScene.PROGRESS_QUERY,
+                llm_confidence=max(request.llm_confidence, 0.8),
+            )
+        if any(keyword in text for keyword in ("人工", "真人客服", "转人工")):
+            return replace(
+                request,
+                llm_intent=Intent.HUMAN_SERVICE,
+                llm_confidence=max(request.llm_confidence, 0.8),
+            )
+        if any(keyword in text for keyword in ("补充凭证", "上传凭证", "补充图片", "上传图片", "补充照片")):
+            return replace(
+                request,
+                llm_intent=Intent.SUPPLEMENT_EVIDENCE,
+                llm_confidence=max(request.llm_confidence, 0.8),
+            )
+        return request
+
+    @staticmethod
+    def _combined_user_text(context: ConversationContext, request: AfterSalesRequest) -> str:
+        parts = [request.message or "", request.description or "", request.reason or ""]
+        parts.extend(
+            message.content
+            for message in context.recent_history[-4:]
+            if message.role == "user" and message.content
+        )
+        return "".join(parts).lower()
+
+    @staticmethod
+    def _is_refund_progress_query(
+        context: ConversationContext,
+        request: AfterSalesRequest,
+    ) -> bool:
+        current_text = "".join(
+            part for part in (request.message, request.description, request.reason) if part
+        ).lower()
+        if QwenReturnService._has_refund_progress_keywords(current_text):
+            return True
+        return QwenReturnService._has_refund_progress_keywords(
+            QwenReturnService._combined_user_text(context, request)
+        )
+
+    @staticmethod
+    def _has_refund_progress_keywords(text: str) -> bool:
+        return any(
+            keyword in text
+            for keyword in (
+                "退款进度",
+                "查看退款",
+                "查退款",
+                "退款状态",
+                "什么时候退款",
+                "什么时候退",
+                "什么时候能退",
+                "多久到账",
+                "退钱",
+                "到账",
+            )
+        )
+
+    @staticmethod
+    def _merge_note(base: str | None, extra: str) -> str:
+        return f"{base}; {extra}" if base else extra
 
     @staticmethod
     def _conversation_understanding_system_prompt() -> str:
@@ -338,6 +507,11 @@ class QwenReturnService:
     def _should_skip_model(fallback_result: AgentResult) -> bool:
         if fallback_result.decision == Decision.ESCALATE_HUMAN:
             return True
+        if (
+            fallback_result.ticket is not None
+            and fallback_result.ticket.status == TicketStatus.AUTO_APPROVED
+        ):
+            return True
         if fallback_result.suggested_action in {
             "补充异常描述",
             "补充必要信息后转人工",
@@ -362,7 +536,9 @@ class QwenReturnService:
             "4. 不输出内部推理、规则分析过程、Agent名称；\n"
             "5. 信息不足时，只提示用户补充必要材料；\n"
             "6. 需要人工处理时，只说明已转人工处理；\n"
-            "7. 每次回复不超过100字。\n"
+            "7. 每次回复不超过100字；\n"
+            "8. 不要说已提交或已创建售后申请，不要展示售后编号、工单编号或ticket_id；\n"
+            "9. 不要暴露自动审核、图片识别、风险等级、策略引擎、Agent等系统术语。\n"
             "限制：\n"
             "1. 只能使用输入中已有的信息；\n"
             "2. 可以适度安抚用户情绪，但不要空泛安慰；\n"
@@ -610,9 +786,28 @@ class QwenReturnService:
             "查询进度还是联系人工",
             "联系人工客服处理呢",
         )
+        banned_markers = (
+            "已为您提交售后申请",
+            "已帮您创建售后申请",
+            "售后申请已提交",
+            "售后编号",
+            "工单编号",
+            "工单",
+            "ticket_id",
+            "Ticket",
+            "AS",
+            "AI自动审核",
+            "自动审核",
+            "图片识别",
+            "意图识别",
+            "风险等级",
+            "策略引擎",
+            "自动化决策",
+            "当前已进入处理中状态",
+        )
         if candidate == fallback_reply:
             return False
-        return any(marker in candidate for marker in generic_markers)
+        return any(marker in candidate for marker in generic_markers + banned_markers)
 
 
 def sample_context() -> ConversationContext:

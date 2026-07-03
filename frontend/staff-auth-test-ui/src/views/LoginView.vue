@@ -1,7 +1,8 @@
 <script setup>
-import { computed, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login } from '../api/merchantCs';
+import WelcomeAnimation from '../components/WelcomeAnimation.vue';
 import avatarOne from '../assets/support-avatar-1.png';
 import avatarTwo from '../assets/support-avatar-2.png';
 import avatarThree from '../assets/support-avatar-3.png';
@@ -13,6 +14,11 @@ const router = useRouter();
 const loading = ref(false);
 const errorMessage = ref('');
 const actionMessage = ref('');
+const showWelcome = ref(false);
+const loginStaffName = ref('');
+const WELCOME_DURATION_MS = 5000;
+let welcomeFinished = false;
+
 const form = reactive({
   account: '',
   password: '',
@@ -30,6 +36,50 @@ const networkAvatars = [
 
 const loginButtonText = computed(() => (loading.value ? '正在进入...' : '登录进入工作台'));
 
+function clearScheduledDashboardEnter() {
+}
+
+function pushDashboard() {
+  const root = document.documentElement;
+  const supportsViewTransition = typeof document.startViewTransition === 'function';
+
+  root.classList.add('welcome-route-transition');
+
+  const clearRouteTransition = () => {
+    root.classList.remove('welcome-route-transition');
+  };
+
+  if (!supportsViewTransition) {
+    router.push('/dashboard').finally(clearRouteTransition);
+    return;
+  }
+
+  try {
+    const transition = document.startViewTransition(() => router.push('/dashboard'));
+    transition.finished.finally(clearRouteTransition);
+  } catch {
+    router.push('/dashboard').finally(clearRouteTransition);
+  }
+}
+
+function enterDashboard() {
+  if (welcomeFinished) {
+    return;
+  }
+
+  welcomeFinished = true;
+  clearScheduledDashboardEnter();
+  pushDashboard();
+}
+
+function skipWelcome() {
+  enterDashboard();
+}
+
+function finishWelcome() {
+  enterDashboard();
+}
+
 function showAction(message) {
   actionMessage.value = message;
   window.setTimeout(() => {
@@ -44,10 +94,15 @@ async function handleLogin() {
   errorMessage.value = '';
   actionMessage.value = '';
   try {
-    await login(form);
-    router.push('/dashboard');
+    const result = await login(form);
+    clearScheduledDashboardEnter();
+    loginStaffName.value = result?.staff?.realName || form.account || '客服';
+    welcomeFinished = false;
+    showWelcome.value = true;
   } catch (error) {
     errorMessage.value = error.message || '登录失败，请检查账号或密码';
+    showWelcome.value = false;
+    welcomeFinished = false;
   } finally {
     loading.value = false;
   }
@@ -62,10 +117,14 @@ function handleRegister() {
   errorMessage.value = '';
   showAction('注册申请入口已保留，后续接入商家客服开户注册流程');
 }
+
+onBeforeUnmount(() => {
+  clearScheduledDashboardEnter();
+});
 </script>
 
 <template>
-  <main class="login-view">
+  <main :class="['login-view', { 'welcome-active': showWelcome }]">
     <section class="login-stage" aria-label="商家客服端欢迎区">
       <div class="support-network" aria-hidden="true">
         <div class="network-glow glow-one"></div>
@@ -89,7 +148,7 @@ function handleRegister() {
 
         <div class="network-copy">
           <h1>商家客服工作台</h1>
-          <p>集中处理用户咨询、售后申请与服务记录</p>
+          <p>集中处理用户咨询、售后工单与服务记录</p>
         </div>
       </div>
     </section>
@@ -134,5 +193,12 @@ function handleRegister() {
         <button type="button" class="login-register-button" @click="handleRegister">注册</button>
       </div>
     </form>
+
+    <WelcomeAnimation
+      v-if="showWelcome"
+      :duration-ms="WELCOME_DURATION_MS"
+      @skip="skipWelcome"
+      @finished="finishWelcome"
+    />
   </main>
 </template>
