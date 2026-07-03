@@ -114,6 +114,9 @@ public final class MerchantCsDtos {
         private String orderNo;
         private String product;
         private String productName;
+        private String productImage;
+        private String productPrice;
+        private Integer productQuantity;
         private String ticketNo;
         private String lastMessageContent;
         private String lastMessageTime;
@@ -135,6 +138,7 @@ public final class MerchantCsDtos {
         private String content;
         private String aiIntent;
         private String emotionLabel;
+        private String readAt;
         private String createdAt;
     }
 
@@ -234,6 +238,7 @@ public final class MerchantCsDtos {
     public static class OrderProductItem {
         private Long productId;
         private String productName;
+        private String productImage;
         private Integer quantity;
         private String price;
     }

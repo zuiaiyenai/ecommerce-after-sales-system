@@ -16,6 +16,26 @@ let staffProfile = {
   maxSessionCount: 8
 };
 
+function normalizeStaffProfile(profile = {}) {
+  const staffId = profile.staffId ?? profile.id;
+  return {
+    ...profile,
+    staffId,
+    staffNo: formatStaffNo(profile.staffNo, staffId)
+  };
+}
+
+function formatStaffNo(staffNo, staffId) {
+  const current = String(staffNo || '');
+  if (/^CS\d{8,}$/.test(current)) {
+    return `CS${current.slice(-4)}`;
+  }
+  if (!current && staffId) {
+    return `CS${String(staffId).slice(-4).padStart(4, '0')}`;
+  }
+  return current;
+}
+
 function normalizeBaseUrl(url) {
   return url.replace(/\/+$/, '').replace(/\/api$/, '');
 }
@@ -130,7 +150,7 @@ export async function login(credentials) {
     if (credentials.account !== 'cs_demo' || credentials.password !== '123456' || credentials.merchantCode !== 'MERCHANT_DEMO') {
       throw new Error('账号或密码错误');
     }
-    staffProfile = {
+    staffProfile = normalizeStaffProfile({
       staffId: 1,
       staffNo: 'CS0001',
       merchantCode: credentials.merchantCode,
@@ -139,7 +159,7 @@ export async function login(credentials) {
       role: 'CUSTOMER_SERVICE',
       onlineStatus: 'ONLINE',
       maxSessionCount: 8
-    };
+    });
     saveToken('demo-token');
     return delay({ token: 'demo-token', staff: staffProfile });
   }
@@ -148,8 +168,8 @@ export async function login(credentials) {
     body: JSON.stringify(credentials)
   });
   saveToken(data.token);
-  staffProfile = data.staff;
-  return data;
+  staffProfile = normalizeStaffProfile(data.staff);
+  return { ...data, staff: staffProfile };
 }
 
 export async function logout() {
@@ -175,8 +195,8 @@ export async function getCurrentStaff() {
     return delay(staffProfile);
   }
   const data = await request('/api/merchant-cs/auth/me');
-  staffProfile = { ...staffProfile, ...data };
-  return data;
+  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
+  return staffProfile;
 }
 
 export async function updateWorkStatus(onlineStatus) {
@@ -188,8 +208,8 @@ export async function updateWorkStatus(onlineStatus) {
     method: 'PUT',
     body: JSON.stringify({ onlineStatus })
   });
-  staffProfile.onlineStatus = data.onlineStatus;
-  return data;
+  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
+  return staffProfile;
 }
 
 // ==================== Dashboard ====================

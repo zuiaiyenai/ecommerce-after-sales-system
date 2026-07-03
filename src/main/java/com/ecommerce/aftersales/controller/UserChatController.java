@@ -11,16 +11,20 @@ import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionResponse;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageResponse;
+import com.ecommerce.aftersales.dto.UserChatDtos.ServiceStatusResponse;
 import com.ecommerce.aftersales.dto.WsChatMessage;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.OrderInfo;
+import com.ecommerce.aftersales.entity.SysUser;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
+import com.ecommerce.aftersales.mapper.SysUserMapper;
 import com.ecommerce.aftersales.service.NotificationService;
+import com.ecommerce.aftersales.util.BusinessNoGenerator;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -50,6 +54,7 @@ public class UserChatController {
     private final ChatMessageMapper chatMessageMapper;
     private final AfterSalesTicketMapper afterSalesTicketMapper;
     private final OrderInfoMapper orderInfoMapper;
+    private final SysUserMapper sysUserMapper;
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final NotificationService notificationService;
 
@@ -57,12 +62,14 @@ public class UserChatController {
                               ChatMessageMapper chatMessageMapper,
                               AfterSalesTicketMapper afterSalesTicketMapper,
                               OrderInfoMapper orderInfoMapper,
+                              SysUserMapper sysUserMapper,
                               ChatWebSocketHandler chatWebSocketHandler,
                               NotificationService notificationService) {
         this.chatSessionMapper = chatSessionMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.afterSalesTicketMapper = afterSalesTicketMapper;
         this.orderInfoMapper = orderInfoMapper;
+        this.sysUserMapper = sysUserMapper;
         this.chatWebSocketHandler = chatWebSocketHandler;
         this.notificationService = notificationService;
     }
@@ -75,7 +82,7 @@ public class UserChatController {
         boolean created = false;
         if (session == null) {
             session = new ChatSession();
-            session.setSessionNo("CS" + System.currentTimeMillis());
+            session.setSessionNo(nextSessionNo());
             session.setUserId(userId);
             session.setMode(MODE_AI);
             session.setStatus(STATUS_AI_ACTIVE);
@@ -98,6 +105,7 @@ public class UserChatController {
         response.setMerchantCode(session.getMerchantCode());
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
+        fillServiceStatus(response, session.getMerchantCode());
         response.setWelcomeMessage(welcomeMessage(session));
         return ApiResponse.success("会话创建成功", response);
     }
@@ -121,13 +129,16 @@ public class UserChatController {
 
         boolean humanSession = MODE_HUMAN.equals(session.getMode());
         boolean transferToHuman = !humanSession && shouldTransferToHuman(request.getMessage());
+        boolean humanOnline = hasOnlineHumanStaff(session.getMerchantCode());
         String reply = null;
 
         if (transferToHuman) {
             session.setMode(MODE_HUMAN);
             session.setStatus(STATUS_WAITING);
             chatSessionMapper.updateById(session);
-            reply = "已为您转接人工客服，请稍候。人工客服接入后可以看到您前面和智能客服的对话内容。";
+            reply = humanOnline
+                    ? "已为您转接人工客服，请稍候。人工客服接入后可以看到您前面和智能客服的对话内容。"
+                    : "当前人工客服离线，已为您留言并进入人工待处理队列。客服上线后会尽快查看，您也可以先继续描述问题。";
             addMessage(session.getId(), "ASSISTANT", reply, "TEXT");
             notifyMerchant(session, request.getMessage());
         } else if (humanSession) {
@@ -142,6 +153,8 @@ public class UserChatController {
         response.setSessionId(session.getId());
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
+        response.setHumanOnline(humanOnline);
+        response.setHumanStatus(humanOnline ? "ONLINE" : "OFFLINE");
         response.setReply(reply);
         response.setMessage(transferToHuman || humanSession ? "消息已发送，人工客服端可查看" : "智能客服已回复");
         return ApiResponse.success("发送成功", response);
@@ -155,13 +168,25 @@ public class UserChatController {
         }
         List<ChatMessageView> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getSessionId, sessionId)
-                        .orderByAsc(ChatMessage::getCreateTime))
+                        .orderByAsc(ChatMessage::getCreateTime)
+                        .orderByAsc(ChatMessage::getId))
                 .stream()
                 .map(this::toMessageView)
                 .toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
         response.setSessionId(sessionId);
         response.setList(messages);
+        return ApiResponse.success("获取成功", response);
+    }
+
+    @GetMapping("/service-status")
+    public ApiResponse<ServiceStatusResponse> serviceStatus(@RequestParam(required = false) String merchantCode) {
+        String normalizedMerchantCode = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+        ServiceStatusResponse response = new ServiceStatusResponse();
+        response.setMerchantCode(normalizedMerchantCode);
+        response.setAiOnline(true);
+        response.setHumanOnline(hasOnlineHumanStaff(normalizedMerchantCode));
+        response.setHumanStatus(Boolean.TRUE.equals(response.getHumanOnline()) ? "ONLINE" : "OFFLINE");
         return ApiResponse.success("获取成功", response);
     }
 
@@ -178,6 +203,13 @@ public class UserChatController {
         } catch (Exception ignored) {
             // WebSocket broadcast failure should not break the HTTP response.
         }
+    }
+
+    private String nextSessionNo() {
+        String dailyPrefix = BusinessNoGenerator.dailyPrefix("CS");
+        long existingTodayCount = chatSessionMapper.selectCount(new LambdaQueryWrapper<ChatSession>()
+                .likeRight(ChatSession::getSessionNo, dailyPrefix));
+        return BusinessNoGenerator.dailySerial("CS", existingTodayCount);
     }
 
     private ChatSession findExistingSession(Long userId, CreateSessionRequest request) {
@@ -292,6 +324,20 @@ public class UserChatController {
         return message.length() > 50 ? message.substring(0, 50) + "..." : message;
     }
 
+    private void fillServiceStatus(CreateSessionResponse response, String merchantCode) {
+        boolean humanOnline = hasOnlineHumanStaff(merchantCode);
+        response.setHumanOnline(humanOnline);
+        response.setHumanStatus(humanOnline ? "ONLINE" : "OFFLINE");
+    }
+
+    private boolean hasOnlineHumanStaff(String merchantCode) {
+        return sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getMerchantCode, StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE)
+                .in(SysUser::getRoleType, "AGENT", "CUSTOMER_SERVICE")
+                .eq(SysUser::getStatus, 1)
+                .eq(SysUser::getOnlineStatus, 1)) > 0;
+    }
+
     private String welcomeMessage(ChatSession session) {
         if (session.getTicketId() != null) {
             return "您好，我是智能客服，已收到您的售后咨询。您可以先描述问题；如需人工处理，请发送“转人工”。";
@@ -321,6 +367,7 @@ public class UserChatController {
         view.setRole("USER".equals(message.getRole()) ? "user" : "service");
         view.setContent(message.getContent());
         view.setMessageType(message.getMessageType());
+        view.setRead(message.getReadTime() != null);
         view.setCreateTime(message.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(message.getCreateTime()));
         return view;
     }

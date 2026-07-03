@@ -26,6 +26,13 @@ const statusTone = computed(() => (staff.value?.onlineStatus || 'OFFLINE').toLow
 const statusText = computed(() => statusTextMap[staff.value?.onlineStatus] || staff.value?.onlineStatus || '--');
 const roleText = computed(() => roleTextMap[staff.value?.role] || staff.value?.role || '--');
 const performanceBars = computed(() => performance.value?.metrics ?? []);
+const displayStaffNo = computed(() => {
+  const staffNo = String(staff.value?.staffNo || '');
+  if (/^CS\d{8,}$/.test(staffNo)) {
+    return `CS${String(staff.value?.staffId || staffNo.slice(-4)).padStart(4, '0')}`;
+  }
+  return staffNo || '--';
+});
 const profileInitial = computed(() => {
   const name = staff.value?.realName || staff.value?.account || 'CS';
   return name.slice(0, 1).toUpperCase();
@@ -60,7 +67,7 @@ onMounted(loadPage);
         <div class="profile-identity">
           <span class="eyebrow">个人中心</span>
           <h2>{{ staff?.realName || '客服资料' }}</h2>
-          <p>{{ staff?.staffNo || '--' }} · {{ staff?.account || '--' }}</p>
+          <p>{{ displayStaffNo }} · {{ staff?.account || '--' }}</p>
           <span :class="['profile-status-chip', statusTone]">{{ statusText }}</span>
         </div>
         <div class="profile-capacity">
@@ -93,7 +100,7 @@ onMounted(loadPage);
             </div>
           </div>
           <div class="profile-info-list">
-            <div><span>客服编号</span><strong>{{ staff?.staffNo || '--' }}</strong></div>
+            <div><span>客服编号</span><strong>{{ displayStaffNo }}</strong></div>
             <div><span>登录账号</span><strong>{{ staff?.account || '--' }}</strong></div>
             <div><span>商家编码</span><strong>{{ staff?.merchantCode || '--' }}</strong></div>
             <div><span>角色权限</span><strong>{{ roleText }}</strong></div>

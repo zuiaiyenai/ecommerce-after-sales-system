@@ -15,6 +15,7 @@ import com.ecommerce.aftersales.mapper.ProductInfoMapper;
 import com.ecommerce.aftersales.mapper.TicketAttachmentMapper;
 import com.ecommerce.aftersales.mapper.TicketLogMapper;
 import com.ecommerce.aftersales.service.AfterSalesService;
+import com.ecommerce.aftersales.util.BusinessNoGenerator;
 import com.ecommerce.aftersales.vo.AfterSalesLogVO;
 import com.ecommerce.aftersales.vo.AfterSalesVO;
 import lombok.RequiredArgsConstructor;
@@ -78,7 +79,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         }
         AfterSalesTicket ticket = new AfterSalesTicket();
         // 生成工单号
-        ticket.setTicketNo("AS" + System.currentTimeMillis());
+        ticket.setTicketNo(nextTicketNo());
         ticket.setOrderId(order.getId());
         ticket.setOrderNo(order.getOrderNo());
         ticket.setUserId(userId);
@@ -110,6 +111,13 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         }
 
         return convertToVO(ticket);
+    }
+
+    private String nextTicketNo() {
+        String dailyPrefix = BusinessNoGenerator.dailyPrefix("AS");
+        long existingTodayCount = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
+                .likeRight(AfterSalesTicket::getTicketNo, dailyPrefix));
+        return BusinessNoGenerator.dailySerial("AS", existingTodayCount);
     }
 
     private BigDecimal resolveRefundAmount(AfterSalesVO afterSalesVO, OrderInfo order) {

@@ -24,6 +24,8 @@ public final class UserChatDtos {
         private String merchantCode;
         private String mode;
         private String status;
+        private Boolean humanOnline;
+        private String humanStatus;
         private String welcomeMessage;
     }
 
@@ -39,8 +41,18 @@ public final class UserChatDtos {
         private Long sessionId;
         private String mode;
         private String status;
+        private Boolean humanOnline;
+        private String humanStatus;
         private String reply;
         private String message;
+    }
+
+    @Data
+    public static class ServiceStatusResponse {
+        private String merchantCode;
+        private Boolean aiOnline;
+        private Boolean humanOnline;
+        private String humanStatus;
     }
 
     @Data
@@ -49,6 +61,7 @@ public final class UserChatDtos {
         private String role;
         private String content;
         private String messageType;
+        private Boolean read;
         private String createTime;
     }
 

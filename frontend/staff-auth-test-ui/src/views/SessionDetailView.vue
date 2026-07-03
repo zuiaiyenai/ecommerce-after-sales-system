@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   closeSession,
@@ -18,6 +18,7 @@ const shell = inject('merchantCsShell', null);
 const session = ref(null);
 const sessions = ref([]);
 const messages = ref([]);
+const messageStreamRef = ref(null);
 const draft = ref('');
 const sending = ref(false);
 const actionLoading = ref('');
@@ -101,6 +102,7 @@ async function loadPage() {
   session.value = detail;
   messages.value = messageList;
   await loadCatalogProduct(detail);
+  await scrollMessagesToBottom();
   connectWebSocket(route.params.sessionId);
 }
 
@@ -116,6 +118,7 @@ async function refreshLiveData() {
   sessions.value = page.records || [];
   session.value = detail;
   messages.value = messageList;
+  await scrollMessagesToBottom();
 }
 
 async function loadCatalogProduct(detail) {
@@ -158,6 +161,7 @@ function connectWebSocket(sessionId) {
             content: msg.content,
             createdAt: msg.createdAt
           }];
+          scrollMessagesToBottom();
           refreshLiveData();
         }
       } catch (e) {
@@ -192,6 +196,7 @@ async function handleSend() {
     const message = await sendSessionMessage(route.params.sessionId, draft.value.trim());
     messages.value = [...messages.value, message];
     draft.value = '';
+    await scrollMessagesToBottom();
     shell?.setAction('消息已发送');
     await loadPage();
   } finally {
@@ -244,6 +249,15 @@ function handleInputKeydown(event) {
   }
   event.preventDefault();
   handleSend();
+}
+
+async function scrollMessagesToBottom() {
+  await nextTick();
+  const stream = messageStreamRef.value;
+  if (!stream) {
+    return;
+  }
+  stream.scrollTop = stream.scrollHeight;
 }
 
 function useRecommendedReply() {
@@ -395,7 +409,7 @@ onUnmounted(() => {
         <button type="button" class="template-order-button" @click="router.push(`/orders/${session?.orderId}`)">查看订单</button>
       </header>
 
-      <div class="template-message-stream">
+      <div ref="messageStreamRef" class="template-message-stream">
         <div
           v-for="message in messages"
           :key="message.id"

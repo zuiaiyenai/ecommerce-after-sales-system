@@ -26,7 +26,6 @@ const statusLabels = {
 };
 
 const stats = computed(() => [
-  { label: '全部订单', value: orders.value.length, tone: 'blue', filter: 'ALL' },
   { label: '未发货', value: orders.value.filter((item) => item.status === 'PAID').length, tone: 'orange', filter: 'PAID' },
   { label: '配送中', value: orders.value.filter((item) => item.status === 'SHIPPED').length, tone: 'blue', filter: 'SHIPPED' },
   { label: '售后中', value: orders.value.filter((item) => item.status === 'AFTERSALE').length, tone: 'green', filter: 'AFTERSALE' }

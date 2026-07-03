@@ -192,7 +192,7 @@ function emitFinishedAfterPaint() {
   });
 }
 
-function handleOverlayAnimationEnd(event) {
+function handleVisualAnimationEnd(event) {
   if (event.target !== event.currentTarget) {
     return;
   }
@@ -216,8 +216,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="welcome-overlay" :style="welcomeStyle" aria-live="polite" @animationend="handleOverlayAnimationEnd">
-    <canvas ref="canvasRef" class="welcome-canvas" aria-hidden="true"></canvas>
+  <div class="welcome-overlay" :style="welcomeStyle" aria-live="polite">
+    <canvas
+      ref="canvasRef"
+      class="welcome-canvas"
+      aria-hidden="true"
+      @animationend="handleVisualAnimationEnd"
+    ></canvas>
     <button type="button" class="welcome-skip" @click="emit('skip')">跳过动画</button>
     <div class="welcome-card">
       <h2>Welcome</h2>
@@ -236,10 +241,8 @@ onBeforeUnmount(() => {
   padding: 24px;
   color: #fff;
   background: #fff;
-  animation: welcomeOverlayIn var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
   backface-visibility: hidden;
   contain: layout paint;
-  will-change: opacity;
 }
 
 .welcome-canvas {
@@ -247,7 +250,9 @@ onBeforeUnmount(() => {
   inset: 0;
   width: 100%;
   height: 100%;
+  animation: welcomeVisualIn var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
   backface-visibility: hidden;
+  will-change: opacity;
 }
 
 .welcome-card {
@@ -297,7 +302,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.92);
 }
 
-@keyframes welcomeOverlayIn {
+@keyframes welcomeVisualIn {
   0% {
     opacity: 0;
   }
@@ -319,37 +324,37 @@ onBeforeUnmount(() => {
 @keyframes welcomeTextIn {
   0% {
     opacity: 0;
-    transform: translateY(8px) scale(0.96);
+    transform: translate3d(0, 8px, 0) scale(0.96);
   }
 
   14% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 
   76% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 
   84% {
     opacity: 0.72;
-    transform: translateY(-1px) scale(1.003);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 
   92% {
     opacity: 0.32;
-    transform: translateY(-2px) scale(1.006);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 
   100% {
     opacity: 0;
-    transform: translateY(-3px) scale(1.008);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .welcome-overlay,
+  .welcome-canvas,
   .welcome-card {
     animation-duration: 0.01ms;
     animation-iteration-count: 1;

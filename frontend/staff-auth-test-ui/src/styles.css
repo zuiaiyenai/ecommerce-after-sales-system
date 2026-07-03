@@ -222,13 +222,26 @@ button:disabled {
 .agent-card {
   margin-top: auto;
   display: grid;
-  grid-template-columns: 46px 1fr;
+  grid-template-columns: 46px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfe;
+}
+
+.agent-card > div:not(.avatar) {
+  min-width: 0;
+}
+
+.agent-card strong,
+.agent-card p {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .avatar {
@@ -260,6 +273,11 @@ button:disabled {
 .status-pill.online {
   color: #24784a;
   background: #e8f7ef;
+}
+
+.status-pill.busy {
+  color: #bd560b;
+  background: #fff3e8;
 }
 
 .status-pill.offline {
@@ -3715,6 +3733,11 @@ html[data-theme="dark"] .status-banner.success,
 html[data-theme="dark"] .profile-status-chip.online {
   color: #a3f2c4;
   background: rgba(95, 202, 142, 0.14);
+}
+
+html[data-theme="dark"] .status-pill.busy {
+  color: #ffd3b5;
+  background: rgba(255, 138, 61, 0.18);
 }
 
 html[data-theme="dark"] .status-pill.offline,

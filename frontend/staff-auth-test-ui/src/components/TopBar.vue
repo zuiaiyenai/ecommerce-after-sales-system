@@ -10,13 +10,12 @@ const props = defineProps({
   }
 });
 
-defineEmits(['refresh', 'logout', 'toggleTheme']);
+defineEmits(['refresh', 'toggleTheme']);
 
 const route = useRoute();
 const router = useRouter();
 
 const title = computed(() => route.meta.title || '商家客服端');
-const showLogout = computed(() => true);
 const showBack = computed(() => route.name === 'sessionDetail' || route.name === 'ticketDetail' || route.name === 'orderDetail');
 const themeLabel = computed(() => (props.themeMode === 'dark' ? '夜间模式' : '日间模式'));
 const themeIcon = computed(() => (props.themeMode === 'dark' ? 'moon' : 'sun'));
@@ -36,7 +35,7 @@ function handleBack() {
       <span class="eyebrow">当前页面</span>
       <h1>{{ title }}</h1>
     </div>
-    <div v-if="showLogout || showBack" class="topbar-actions">
+    <div class="topbar-actions">
       <button v-if="showBack" type="button" class="ghost-mini" @click="handleBack">返回上一页</button>
       <button
         type="button"
@@ -65,7 +64,6 @@ function handleBack() {
           <span>{{ themeLabel }}</span>
         </template>
       </button>
-      <button v-if="showLogout" type="button" class="ghost-mini" @click="$emit('logout')">退出登录</button>
     </div>
   </header>
 </template>

@@ -58,7 +58,23 @@ const iconPaths = {
 };
 
 const isOnline = computed(() => props.staff?.onlineStatus === 'ONLINE');
-
+const statusTone = computed(() => {
+  const onlineStatus = props.staff?.onlineStatus;
+  if (onlineStatus === 'ONLINE') {
+    return 'online';
+  }
+  if (onlineStatus === 'BUSY') {
+    return 'busy';
+  }
+  return 'offline';
+});
+const displayStaffNo = computed(() => {
+  const staffNo = String(props.staff?.staffNo || '');
+  if (/^CS\d{8,}$/.test(staffNo)) {
+    return `CS${staffNo.slice(-4)}`;
+  }
+  return staffNo || '请先登录';
+});
 function isActive(item) {
   return route.path === item.to || route.path.startsWith(`${item.to}/`);
 }
@@ -95,9 +111,9 @@ function isActive(item) {
       <div class="avatar">{{ staff?.realName?.slice(0, 1) || '客' }}</div>
       <div>
         <strong>{{ staff?.realName || '未登录客服' }}</strong>
-        <p>{{ staff?.staffNo || '请先登录' }}</p>
+        <p>{{ displayStaffNo }}</p>
       </div>
-      <span :class="['status-pill', isOnline ? 'online' : 'offline']">
+      <span :class="['status-pill', statusTone]">
         {{ staff?.onlineStatus || 'OFFLINE' }}
       </span>
     </section>

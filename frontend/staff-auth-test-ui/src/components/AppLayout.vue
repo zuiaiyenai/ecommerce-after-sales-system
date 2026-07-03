@@ -79,13 +79,22 @@ async function handleToggleStatus() {
 }
 
 async function handleLogout() {
-  if (route.name === 'sessionDetail') {
-    router.push('/sessions');
-    return;
+  loading.value = true;
+  errorMessage.value = '';
+  try {
+    await logout();
+    staff.value = null;
+    todos.value = [];
+    sessions.value = [];
+    tickets.value = [];
+    pendingTicketCount.value = 0;
+    setAction('已退出登录');
+    await router.replace('/login');
+  } catch (error) {
+    errorMessage.value = error.message || '退出登录失败，请稍后重试';
+  } finally {
+    loading.value = false;
   }
-  await logout();
-  setAction('已退出登录');
-  router.push('/login');
 }
 
 function toggleTheme() {
@@ -131,6 +140,7 @@ onMounted(loadShellData);
       :ticket-count="pendingTicketCount"
       :notice-count="noticeCount"
       @toggle-status="handleToggleStatus"
+      @logout="handleLogout"
     />
 
     <section :class="['page-area', { 'page-area-full': isFullHeightPage }]">
@@ -138,7 +148,6 @@ onMounted(loadShellData);
         :loading="loading"
         :theme-mode="themeMode"
         @refresh="loadShellData"
-        @logout="handleLogout"
         @toggle-theme="toggleTheme"
       />
       <div v-if="errorMessage" class="status-banner error">{{ errorMessage }}</div>

@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS chat_message
     emotion_label VARCHAR(20)  NULL     COMMENT '该条消息情绪标签',
     emotion_score DECIMAL(3,2) NULL     COMMENT '该条消息情绪分值',
     token_usage   INT          NULL     COMMENT '本次回复Token消耗量',
+    read_time     DATETIME     NULL     COMMENT '客服端阅读时间，NULL表示未读',
     create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     INDEX idx_chat_message_session (session_id),
