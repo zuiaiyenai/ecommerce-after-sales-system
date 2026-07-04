@@ -16,26 +16,6 @@ let staffProfile = {
   maxSessionCount: 8
 };
 
-function normalizeStaffProfile(profile = {}) {
-  const staffId = profile.staffId ?? profile.id;
-  return {
-    ...profile,
-    staffId,
-    staffNo: formatStaffNo(profile.staffNo, staffId)
-  };
-}
-
-function formatStaffNo(staffNo, staffId) {
-  const current = String(staffNo || '');
-  if (/^CS\d{8,}$/.test(current)) {
-    return `CS${current.slice(-4)}`;
-  }
-  if (!current && staffId) {
-    return `CS${String(staffId).slice(-4).padStart(4, '0')}`;
-  }
-  return current;
-}
-
 function normalizeBaseUrl(url) {
   return url.replace(/\/+$/, '').replace(/\/api$/, '');
 }
@@ -64,6 +44,7 @@ function resolveUploadUrl(payload) {
   if (typeof data === 'string') {
     return data;
   }
+  return data?.url || data?.fileUrl || data?.path || data?.src || '';
 }
 
 function saveToken(newToken) {
@@ -84,7 +65,7 @@ async function request(path, options = {}) {
     headers,
     ...options
   });
-  const payload = await parseApiResponse(response);
+  const payload = await response.json();
   if (!response.ok || payload.success === false) {
     throw new Error(payload.message || '接口请求失败');
   }
@@ -150,7 +131,7 @@ export async function login(credentials) {
     if (credentials.account !== 'cs_demo' || credentials.password !== '123456' || credentials.merchantCode !== 'MERCHANT_DEMO') {
       throw new Error('账号或密码错误');
     }
-    staffProfile = normalizeStaffProfile({
+    staffProfile = {
       staffId: 1,
       staffNo: 'CS0001',
       merchantCode: credentials.merchantCode,
@@ -159,7 +140,7 @@ export async function login(credentials) {
       role: 'CUSTOMER_SERVICE',
       onlineStatus: 'ONLINE',
       maxSessionCount: 8
-    });
+    };
     saveToken('demo-token');
     return delay({ token: 'demo-token', staff: staffProfile });
   }
@@ -168,8 +149,8 @@ export async function login(credentials) {
     body: JSON.stringify(credentials)
   });
   saveToken(data.token);
-  staffProfile = normalizeStaffProfile(data.staff);
-  return { ...data, staff: staffProfile };
+  staffProfile = data.staff;
+  return data;
 }
 
 export async function logout() {
@@ -195,8 +176,8 @@ export async function getCurrentStaff() {
     return delay(staffProfile);
   }
   const data = await request('/api/merchant-cs/auth/me');
-  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
-  return staffProfile;
+  staffProfile = { ...staffProfile, ...data };
+  return data;
 }
 
 export async function updateWorkStatus(onlineStatus) {
@@ -208,8 +189,8 @@ export async function updateWorkStatus(onlineStatus) {
     method: 'PUT',
     body: JSON.stringify({ onlineStatus })
   });
-  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
-  return staffProfile;
+  staffProfile.onlineStatus = data.onlineStatus;
+  return data;
 }
 
 // ==================== Dashboard ====================
@@ -554,11 +535,23 @@ export async function uploadProductImage(file) {
     },
     body: formData
   });
-  const payload = await parseApiResponse(response);
-  if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || '图片上传失败');
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(text || '图片上传接口返回格式错误');
+    }
   }
-  return payload.data;
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || `图片上传失败（HTTP ${response.status}）`);
+  }
+  const url = resolveUploadUrl(payload);
+  if (!url) {
+    throw new Error('图片上传成功，但响应中没有图片地址');
+  }
+  return { ...(payload.data || {}), url };
 }
 
 export async function updateProduct(productId, productData) {

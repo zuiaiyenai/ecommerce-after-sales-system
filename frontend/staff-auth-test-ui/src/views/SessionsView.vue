@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { closeSession, getSessions } from '../api/merchantCs';
 
@@ -8,7 +8,6 @@ const shell = inject('merchantCsShell', null);
 const loading = ref(true);
 const sessions = ref([]);
 const activeFilter = ref('ACTIVE');
-let refreshTimer = null;
 
 const terminalStatuses = ['RESOLVED'];
 const filterOptions = [
@@ -43,17 +42,13 @@ const stats = computed(() => {
   ];
 });
 
-async function loadPage(silent = false) {
-  if (!silent) {
-    loading.value = true;
-  }
+async function loadPage() {
+  loading.value = true;
   try {
     const page = await getSessions();
     sessions.value = page.records || [];
   } finally {
-    if (!silent) {
-      loading.value = false;
-    }
+    loading.value = false;
   }
 }
 
@@ -101,17 +96,7 @@ function fieldValue(value, fallback = '暂无') {
   return value || fallback;
 }
 
-onMounted(() => {
-  loadPage();
-  refreshTimer = window.setInterval(() => loadPage(true), 5000);
-});
-
-onUnmounted(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
-});
+onMounted(loadPage);
 </script>
 
 <template>

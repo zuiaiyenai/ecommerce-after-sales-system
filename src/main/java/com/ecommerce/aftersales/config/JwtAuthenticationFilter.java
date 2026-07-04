@@ -29,7 +29,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             "/api/merchant-cs/auth/login",
             "/api/agent/**",
             "/api/static/**",
-            "/api/uploads/**"
+            "/api/uploads/**",
+            "/api/upload/**"
     );
 
     private static final List<String> STAFF_PATHS = List.of(

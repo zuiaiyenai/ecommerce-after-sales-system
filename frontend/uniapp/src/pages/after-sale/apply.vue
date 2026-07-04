@@ -65,7 +65,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { BASE_URL, request } from '../../utils/request'
+import { request } from '../../utils/request'
 
 const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
@@ -106,6 +106,10 @@ onLoad(async (options) => {
     }
   }
 })
+
+function goBack() {
+  uni.navigateBack()
+}
 
 function selectReason(value) {
   selectedReason.value = value
@@ -208,7 +212,7 @@ async function submit() {
 }
 
 .card {
-  margin-top: 20rpx;
+  margin-top: 24rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;

@@ -1,7 +1,6 @@
 package com.ecommerce.aftersales.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.PageResult;
 import com.ecommerce.aftersales.config.ChatWebSocketHandler;
@@ -146,7 +145,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         for (SessionView session : allSessions().stream().filter(item -> "WAITING".equals(item.getStatus())).limit(5).toList()) {
             TodoItem item = new TodoItem();
             item.setId(session.getId());
-            item.setTitle("会话 #" + displayBusinessNo(session.getSessionNo()));
+            item.setTitle("会话 #" + session.getSessionNo());
             item.setTag("人工介入");
             item.setAmount(Optional.ofNullable(session.getEmotion()).orElse("待处理"));
             item.setPriority("HIGH".equals(session.getLevel()) ? "HIGH" : "NORMAL");
@@ -185,14 +184,11 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public List<MessageView> listSessionMessages(Long sessionId) {
         findSession(sessionId);
-        markUserMessagesRead(sessionId);
         return chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getSessionId, sessionId)
-                        .orderByAsc(ChatMessage::getCreateTime)
-                        .orderByAsc(ChatMessage::getId))
+                        .orderByAsc(ChatMessage::getCreateTime))
                 .stream()
                 .map(this::toMessageView)
                 .toList();
@@ -206,7 +202,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
             throw new BizException("消息内容不能为空");
         }
         SysUser staff = ensureStaff();
-        markUserMessagesRead(sessionId);
         ChatMessage message = new ChatMessage();
         message.setSessionId(sessionId);
         message.setRole("ASSISTANT");
@@ -246,19 +241,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                     .content(content)
                     .messageType(messageType)
                     .createdAt(LocalDateTime.now().format(DATE_TIME_FORMATTER))
-                    .build());
-        } catch (Exception ignored) {
-            // WebSocket broadcast failure should not break the HTTP response
-        }
-    }
-
-    private void broadcastReadReceipt(Long sessionId, Long lastReadMessageId, LocalDateTime readAt) {
-        try {
-            chatWebSocketHandler.broadcastToSession(sessionId, WsChatMessage.builder()
-                    .action("read")
-                    .sessionId(sessionId)
-                    .lastReadMessageId(lastReadMessageId)
-                    .createdAt(readAt.format(DATE_TIME_FORMATTER))
                     .build());
         } catch (Exception ignored) {
             // WebSocket broadcast failure should not break the HTTP response
@@ -617,7 +599,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private StaffProfile toStaffProfile(SysUser staff) {
         StaffProfile profile = new StaffProfile();
         profile.setStaffId(staff.getId());
-        profile.setStaffNo(formatStaffNo(staff.getId()));
+        profile.setStaffNo("CS" + String.format("%04d", staff.getId()));
         profile.setMerchantCode(merchantCodeOf(staff));
         profile.setAccount(staff.getUsername());
         profile.setRealName(staff.getRealName());
@@ -627,15 +609,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         profile.setAccountStatus(Integer.valueOf(1).equals(staff.getStatus()) ? "ENABLED" : "DISABLED");
         profile.setMaxSessionCount(staff.getMaxSessions());
         return profile;
-    }
-
-    private String formatStaffNo(Long staffId) {
-        if (staffId == null) {
-            return "CS0000";
-        }
-        String idText = String.valueOf(staffId);
-        String suffix = idText.length() > 4 ? idText.substring(idText.length() - 4) : idText;
-        return "CS" + String.format("%04d", Long.parseLong(suffix));
     }
 
     private List<SessionView> allSessions() {
@@ -671,11 +644,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setSourceChannel("小程序咨询");
         view.setServiceUnreadCount(serviceUnreadCount(session.getId()));
         view.setOrderNo(order == null ? null : order.getOrderNo());
-        view.setProduct(productName);
-        view.setProductName(productName);
-        view.setProductImage(firstText(firstOrderItem == null ? null : firstOrderItem.getProductImage(), catalogProduct == null ? null : catalogProduct.getMainImage()));
-        view.setProductPrice(firstText(firstOrderItem == null ? null : firstOrderItem.getPrice(), catalogProduct == null ? null : money(catalogProduct.getPrice())));
-        view.setProductQuantity(firstOrderItem == null ? null : firstOrderItem.getQuantity());
+        view.setProduct(ticket == null ? null : ticket.getProductName());
+        view.setProductName(ticket == null ? null : ticket.getProductName());
         view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
         view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));
@@ -730,7 +700,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setMessageType(message.getMessageType());
         view.setContent(message.getContent());
         view.setEmotionLabel(message.getEmotionLabel());
-        view.setReadAt(format(message.getReadTime()));
         view.setCreatedAt(format(message.getCreateTime()));
         return view;
     }
@@ -810,7 +779,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                     OrderProductItem view = new OrderProductItem();
                     view.setProductId(item.getProductId());
                     view.setProductName(product == null ? "未知商品" : product.getProductName());
-                    view.setProductImage(product == null ? null : product.getMainImage());
                     view.setQuantity(item.getQuantity());
                     view.setPrice(money(item.getPrice()));
                     return view;
@@ -1134,27 +1102,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return Arrays.stream(values).filter(Objects::nonNull).anyMatch(value -> value.contains(keyword));
     }
 
-    private Optional<ProductInfo> findProductByName(String merchantCode, String productName) {
-        if (!StringUtils.hasText(productName)) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getMerchantCode, normalizeMerchantCode(merchantCode))
-                .eq(ProductInfo::getProductName, productName)
-                .last("limit 1")));
-    }
-
-    private String firstText(String first, String second) {
-        return StringUtils.hasText(first) ? first : second;
-    }
-
-    private String displayBusinessNo(String businessNo) {
-        if (!StringUtils.hasText(businessNo) || businessNo.length() <= 12) {
-            return businessNo;
-        }
-        return businessNo.substring(0, 2) + businessNo.substring(businessNo.length() - 4);
-    }
-
     private String format(LocalDateTime value) {
         return value == null ? null : DATE_TIME_FORMATTER.format(value);
     }
@@ -1231,8 +1178,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
             case "WAITING" -> "WAITING";
             case "AWAITING_EVALUATION" -> "AWAITING_EVALUATION";
             case "CLOSED" -> "CLOSED";
-            case SESSION_STATUS_AWAITING_EVALUATION -> SESSION_STATUS_AWAITING_EVALUATION;
-            case SESSION_STATUS_READY_TO_CLOSE -> SESSION_STATUS_READY_TO_CLOSE;
             default -> "PROCESSING";
         };
     }

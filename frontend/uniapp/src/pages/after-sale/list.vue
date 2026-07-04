@@ -1,5 +1,14 @@
 ﻿<template>
   <view class="page">
+    <!-- 顶部导航 -->
+    <view class="nav-bar">
+      <view class="back-btn" @tap="goBack">
+        <text class="back-icon">←</text>
+      </view>
+      <text class="nav-title">我的售后</text>
+      <view class="nav-right"></view>
+    </view>
+
     <!-- Tab 筛选 -->
     <view class="tabs">
       <view v-for="tab in tabs" :key="tab.key" class="tab-item" :class="{ active: activeTab === tab.key }" @tap="activeTab = tab.key">
@@ -102,6 +111,10 @@ onLoad(() => {
   loadAfterSales()
 })
 
+function goBack() {
+  uni.navigateBack()
+}
+
 function goDetail(ticketNo) {
   uni.navigateTo({ url: '/pages/after-sale/detail?ticketNo=' + ticketNo })
 }
@@ -117,22 +130,50 @@ function applyAfterSale() {
 
 <style scoped>
 .page {
-  width: 100%;
   min-height: 100vh;
   background: #f0eeea;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
+}
+
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32rpx 28rpx;
+  background: #ffffff;
+}
+
+.back-btn {
+  width: 64rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 16rpx;
+  background: #f5f3ef;
+}
+
+.back-icon {
+  font-size: 32rpx;
+  color: #1a1a1a;
+}
+
+.nav-title {
+  font-size: 32rpx;
+  font-weight: 800;
+  color: #1a1a1a;
+}
+
+.nav-right {
+  width: 64rpx;
 }
 
 /* Tabs */
 .tabs {
-  width: 100%;
   display: flex;
   background: #ffffff;
   padding: 0 28rpx;
   border-bottom: 1rpx solid rgba(0,0,0,0.04);
-  box-sizing: border-box;
 }
 
 .tab-item {
@@ -167,10 +208,8 @@ function applyAfterSale() {
 
 /* 列表 */
 .list-area {
-  width: 100%;
   flex: 1;
   padding: 20rpx 28rpx;
-  box-sizing: border-box;
 }
 
 .empty {
@@ -192,14 +231,12 @@ function applyAfterSale() {
 
 /* 卡片 */
 .card {
-  width: 100%;
   margin-bottom: 20rpx;
   padding: 24rpx;
   background: #ffffff;
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
-  box-sizing: border-box;
 }
 
 .card-header {
@@ -311,16 +348,13 @@ function applyAfterSale() {
 
 /* 底部 */
 .bottom-bar {
-  width: 100%;
   padding: 20rpx 28rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background: #ffffff;
   border-top: 1rpx solid rgba(0,0,0,0.06);
-  box-sizing: border-box;
 }
 
 .apply-btn {
-  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;

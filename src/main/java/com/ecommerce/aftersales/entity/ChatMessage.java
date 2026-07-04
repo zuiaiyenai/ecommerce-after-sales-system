@@ -31,8 +31,6 @@ public class ChatMessage {
 
     private Integer tokenUsage;
 
-    private LocalDateTime readTime;
-
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 }

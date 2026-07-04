@@ -182,7 +182,7 @@ async function confirmReceive(id) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(var(--status-bar-height) + 24rpx) 28rpx 24rpx;
+  padding: 32rpx 28rpx;
   background: #ffffff;
 }
 

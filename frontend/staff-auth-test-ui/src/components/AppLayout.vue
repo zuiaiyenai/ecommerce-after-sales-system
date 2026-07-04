@@ -9,7 +9,6 @@ import {
   logout,
   updateWorkStatus
 } from '../api/merchantCs';
-import { noticeRules } from '../data/staticData';
 import SidebarNav from './SidebarNav.vue';
 import TopBar from './TopBar.vue';
 
@@ -48,7 +47,7 @@ async function loadShellData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [profile, todoData, sessionPage, ticketPage, pendingTicketPage] = await Promise.all([
+    const [profile, todoData, sessionPage, ticketPage] = await Promise.all([
       getCurrentStaff(),
       getDashboardTodos(),
       getSessions({ size: 100 }),
@@ -77,22 +76,13 @@ async function handleToggleStatus() {
 }
 
 async function handleLogout() {
-  loading.value = true;
-  errorMessage.value = '';
-  try {
-    await logout();
-    staff.value = null;
-    todos.value = [];
-    sessions.value = [];
-    tickets.value = [];
-    pendingTicketCount.value = 0;
-    setAction('已退出登录');
-    await router.replace('/login');
-  } catch (error) {
-    errorMessage.value = error.message || '退出登录失败，请稍后重试';
-  } finally {
-    loading.value = false;
+  if (route.name === 'sessionDetail') {
+    router.push('/sessions');
+    return;
   }
+  await logout();
+  setAction('已退出登录');
+  router.push('/login');
 }
 
 function toggleTheme() {
@@ -137,10 +127,7 @@ onMounted(loadShellData);
       :tickets="tickets"
       :ticket-total="ticketTotal"
       :todos="todos"
-      :ticket-count="pendingTicketCount"
-      :notice-count="noticeCount"
       @toggle-status="handleToggleStatus"
-      @logout="handleLogout"
     />
 
     <section :class="['page-area', { 'page-area-full': isFullHeightPage }]">

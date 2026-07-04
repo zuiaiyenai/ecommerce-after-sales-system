@@ -51,7 +51,7 @@
     {
       "path": "pages/after-sale/detail",
       "style": {
-        "navigationBarTitleText": "订单详情",
+        "navigationBarTitleText": "订单售后",
         "navigationBarBackgroundColor": "#ffffff",
         "navigationBarTextStyle": "black"
       }
@@ -69,8 +69,7 @@
       "style": {
         "navigationBarTitleText": "我的订单",
         "navigationBarBackgroundColor": "#ffffff",
-        "navigationBarTextStyle": "black",
-        "navigationStyle": "custom"
+        "navigationBarTextStyle": "black"
       }
     },
     {

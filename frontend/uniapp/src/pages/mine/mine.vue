@@ -223,6 +223,10 @@ function goAfterSaleList() {
   uni.navigateTo({ url: '/pages/after-sale/list' })
 }
 
+function applyAfterSale() {
+  uni.navigateTo({ url: '/pages/after-sale/apply' })
+}
+
 function goChat() {
   uni.navigateTo({ url: '/pages/chat/consult' })
 }
@@ -352,7 +356,7 @@ function logout() {
   border: 1rpx solid rgba(0, 0, 0, 0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #1a1a1a;
+  color: #888;
   font-size: 22rpx;
 }
 

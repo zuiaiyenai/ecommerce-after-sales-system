@@ -32,7 +32,7 @@
     <view class="card orders-card">
       <view class="card-header">
         <text class="card-title">最近订单</text>
-        <button v-if="hasMoreOrders" class="link-btn" @tap="goOrders">查看全部</button>
+        <button class="link-btn" @tap="goOrders">查看全部</button>
       </view>
       <view class="divider"></view>
       <view class="order-list">
@@ -55,9 +55,7 @@
     <!-- 底部导航 -->
     <view class="bottom-nav">
       <view v-for="item in navItems" :key="item.key" class="nav-item" :class="{ active: activeTab === item.key }" @tap="switchTab(item.key)">
-        <view class="nav-icon">
-          <image class="nav-icon-img" :src="item.icon" mode="aspectFit" />
-        </view>
+        <text class="nav-icon">{{ item.icon }}</text>
         <text class="nav-label">{{ item.label }}</text>
       </view>
     </view>
@@ -76,9 +74,9 @@ const allAfterSales = ref([])
 const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
-  { key: 'home', label: '首页', icon: '/static/images/mine/nav-home.png' },
-  { key: 'chat', label: '咨询', icon: '/static/images/mine/nav-chat.png' },
-  { key: 'mine', label: '我的', icon: '/static/images/mine/nav-mine.png' }
+  { key: 'home', label: '首页', icon: '⌂' },
+  { key: 'chat', label: '咨询', icon: '◇' },
+  { key: 'mine', label: '我的', icon: '◒' }
 ]
 
 function getStatusClass(status) {
@@ -130,14 +128,12 @@ const orders = computed(() => {
       id: o.id,
       icon: item ? item.productImage : '',
       title: item ? item.productName : o.orderNo,
-      desc: `${formatDate(o.createTime)} | ¥${formatAmount(o.payAmount)}`,
-      status: o.statusText || o.status,
+      desc: `${o.createTime.slice(0, 10)} | ¥${o.payAmount}`,
+      status: o.statusText,
       statusClass: getStatusClass(o.status)
     }
   })
 })
-
-const hasMoreOrders = computed(() => allOrders.value.length > RECENT_ORDER_LIMIT)
 
 const initial = computed(() => {
   const name = userInfo.value.nickname || '用户'
@@ -146,26 +142,18 @@ const initial = computed(() => {
 
 async function loadData() {
   try {
-    const ordersData = await request({ url: '/orders' })
-    allOrders.value = normalizeList(ordersData)
+    const [ordersData, afterSalesData] = await Promise.all([
+      request({ url: '/orders' }),
+      request({ url: '/aftersales' })
+    ])
+    allOrders.value = ordersData || []
+    allAfterSales.value = afterSalesData || []
   } catch (e) {
-    console.error('加载订单失败', e)
-  }
-
-  try {
-    const afterSalesData = await request({ url: '/aftersales' })
-    allAfterSales.value = normalizeList(afterSalesData)
-  } catch (e) {
-    console.error('加载售后失败', e)
-    allAfterSales.value = []
+    console.error('加载数据失败', e)
   }
 }
 
 onLoad(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
-})
-
-onShow(() => {
   userInfo.value = uni.getStorageSync('userInfo') || {}
   loadData()
 })
@@ -300,7 +288,7 @@ function logout() {
   border: 1rpx solid rgba(0,0,0,0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #1a1a1a;
+  color: #888;
   font-size: 22rpx;
 }
 
@@ -454,23 +442,12 @@ function logout() {
 }
 
 .nav-icon {
-  position: relative;
-  width: 40rpx;
-  height: 40rpx;
-  overflow: hidden;
+  font-size: 36rpx;
+  color: #999;
 }
 
-.nav-icon-img {
-  position: absolute;
-  left: -28rpx;
-  top: -28rpx;
-  width: 96rpx;
-  height: 96rpx;
-  filter: grayscale(1) saturate(0) opacity(0.62);
-}
-
-.nav-item.active .nav-icon-img {
-  filter: none;
+.nav-item.active .nav-icon {
+  color: #c97b5a;
 }
 
 .nav-label {

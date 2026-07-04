@@ -111,7 +111,6 @@ const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
 const messages = ref([])
 const inputText = ref('')
-const attachmentUploading = ref(false)
 const scrollTop = ref(0)
 const hasOrder = ref(false)
 const orderData = ref(null)
@@ -163,6 +162,10 @@ function addMessage(role, content, meta = '') {
     time: getNowTime()
   })
   scrollToBottom()
+}
+
+function goBack() {
+  uni.navigateBack()
 }
 
 function copyOrderNo() {
@@ -553,8 +556,6 @@ async function sendMessage() {
     addMessage('service', '图片已收到，我会结合订单和材料继续处理。')
   }
 
-async function sendChatMessage(content, messageType = 'TEXT') {
-  const clientId = addUserMessage(content, messageType)
   try {
     await sendAgentMessage({
       text,
@@ -566,13 +567,6 @@ async function sendChatMessage(content, messageType = 'TEXT') {
   } finally {
     sending.value = false
   }
-}
-
-function bindLocalMessageId(clientId, messageId) {
-  if (!messageId) return
-  messages.value = messages.value.map(item => (
-    item.clientId === clientId ? { ...item, id: messageId } : item
-  ))
 }
 
 function quickAction(type) {
@@ -704,9 +698,6 @@ onLoad(async (options) => {
   font-size: 28rpx;
   font-weight: 700;
   color: #1a1a1a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .order-row {
@@ -739,9 +730,6 @@ onLoad(async (options) => {
 .copy-icon,
 .upload-tip {
   color: #999;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .order-status {
@@ -750,13 +738,10 @@ onLoad(async (options) => {
   font-weight: 600;
 }
 
-.human-status {
+.service-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6rpx;
-  margin: 0 28rpx 6rpx;
-  min-height: 28rpx;
+  padding: 16rpx 28rpx;
 }
 
 .service-name {
@@ -776,20 +761,12 @@ onLoad(async (options) => {
   width: 12rpx;
   height: 12rpx;
   border-radius: 50%;
-  background: #b7b7b7;
-}
-
-.status-dot.online {
   background: #52c41a;
 }
 
 .online-text {
   margin-left: 8rpx;
   color: #52c41a;
-}
-
-.status-text.offline {
-  color: #8c8c8c;
 }
 
 .chat-area {
@@ -837,7 +814,7 @@ onLoad(async (options) => {
 .msg-text {
   display: block;
   font-size: 26rpx;
-  line-height: 1.55;
+  line-height: 1.6;
   color: #1a1a1a;
   overflow-wrap: anywhere;
 }
@@ -847,10 +824,6 @@ onLoad(async (options) => {
   margin-top: 12rpx;
   color: #8d6e63;
   line-height: 1.5;
-}
-
-.msg-read.unread {
-  color: #c97b5a;
 }
 
 .quick-actions {
@@ -875,12 +848,6 @@ onLoad(async (options) => {
 
 .review-action {
   background: #fff4e8;
-}
-
-.action-image-icon {
-  width: 24rpx;
-  height: 24rpx;
-  flex-shrink: 0;
 }
 
 .action-text {
@@ -968,10 +935,6 @@ onLoad(async (options) => {
   line-height: 60rpx;
   text-align: center;
   border-radius: 50%;
-  background: transparent;
-}
-
-.attach-btn.uploading {
   background: #f5f3ef;
   border: 1rpx solid rgba(0, 0, 0, 0.06);
   flex: none;
@@ -993,9 +956,9 @@ onLoad(async (options) => {
 }
 
 .send-btn {
-  width: 60rpx;
-  height: 60rpx;
-  line-height: 60rpx;
+  width: 64rpx;
+  height: 64rpx;
+  line-height: 64rpx;
   text-align: center;
   border-radius: 50%;
   background: #e0e0e0;
