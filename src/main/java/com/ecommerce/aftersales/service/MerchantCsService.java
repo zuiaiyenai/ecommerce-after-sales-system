@@ -45,6 +45,8 @@ public interface MerchantCsService {
 
     TicketView rejectTicket(Long ticketId, String rejectReason);
 
+    TicketView completeTicket(Long ticketId, String completeNote);
+
     PageResult<OrderView> listOrders(long page, long size, String status, String keyword);
 
     OrderDetail getOrder(Long orderId);
@@ -54,6 +56,8 @@ public interface MerchantCsService {
     PageResult<NoticeView> listNotices(long page, long size, String readStatus, String level);
 
     NoticeView markNoticeRead(Long noticeId);
+
+    PageResult<ReviewView> listReviews(long page, long size, String score, String keyword);
 
     PageResult<ProductView> listProducts(long page, long size, String status, String keyword);
 

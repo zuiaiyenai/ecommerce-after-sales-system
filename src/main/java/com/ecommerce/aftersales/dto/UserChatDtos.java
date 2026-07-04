@@ -19,7 +19,7 @@ public final class UserChatDtos {
 
     @Data
     public static class CreateSessionResponse {
-        private Long sessionId;
+        private String sessionId;
         private String sessionNo;
         private String merchantCode;
         private String mode;
@@ -57,7 +57,7 @@ public final class UserChatDtos {
 
     @Data
     public static class ChatMessageView {
-        private Long id;
+        private String id;
         private String role;
         private String content;
         private String messageType;
@@ -67,7 +67,42 @@ public final class UserChatDtos {
 
     @Data
     public static class ChatHistoryResponse {
-        private Long sessionId;
+        private String sessionId;
         private List<ChatMessageView> list;
+    }
+
+    @Data
+    public static class ChatSessionSummary {
+        private String sessionId;
+        private String sessionNo;
+        private String orderId;
+        private String afterSaleId;
+        private String title;
+        private String lastMessage;
+        private String lastMessageTime;
+        private String mode;
+        private String status;
+        private String evaluationStatus;
+    }
+
+    @Data
+    public static class ChatSessionListResponse {
+        private List<ChatSessionSummary> list;
+    }
+
+    @Data
+    public static class HideSessionRequest {
+        private Long sessionId;
+    }
+
+    @Data
+    public static class EvaluationRequest {
+        private Long sessionId;
+        private Integer rating;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
+        private String content;
     }
 }

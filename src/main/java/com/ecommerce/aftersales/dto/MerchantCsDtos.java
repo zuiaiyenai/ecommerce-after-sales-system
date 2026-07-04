@@ -125,6 +125,7 @@ public final class MerchantCsDtos {
         private String evaluationRequestedAt;
         private String evaluatedAt;
         private Integer rating;
+        private String evaluationContent;
         private String evaluationStatus;
     }
 
@@ -203,6 +204,11 @@ public final class MerchantCsDtos {
     }
 
     @Data
+    public static class TicketCompleteRequest {
+        private String completeNote;
+    }
+
+    @Data
     public static class OrderView {
         private Long id;
         private String orderNo;
@@ -258,6 +264,30 @@ public final class MerchantCsDtos {
         private String content;
         private String target;
         private String readStatus;
+        private String createdAt;
+    }
+
+    @Data
+    public static class ReviewView {
+        private Long id;
+        private Long orderId;
+        private String orderNo;
+        private Long userId;
+        private String user;
+        private String productName;
+        private String productImage;
+        private String ticketNo;
+        private Integer overallScore;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
+        private Integer productScore;
+        private Integer logisticsScore;
+        private Integer serviceScore;
+        private Integer afterSaleScore;
+        private String content;
+        private String sentiment;
         private String createdAt;
     }
 

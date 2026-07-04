@@ -66,8 +66,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { onLoad } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
 
 const userInfo = ref({})
 const activeTab = ref('home')
@@ -86,16 +86,34 @@ function getStatusClass(status) {
   return map[status] || ''
 }
 
+const activeAfterSaleStatuses = ['PENDING', 'PENDING_REVIEW', 'PROCESSING', 'APPROVED']
+
+function isActiveAfterSale(status) {
+  return activeAfterSaleStatuses.includes(String(status || '').toUpperCase())
+}
+
+function getOpenAfterSaleOrderIds(afterSales) {
+  return new Set(
+    afterSales
+      .filter(a => isActiveAfterSale(a.status))
+      .map(a => a.orderId)
+      .filter(id => id !== undefined && id !== null)
+  )
+}
+
 // 从API数据计算概览
 const overview = computed(() => {
   const orders = allOrders.value
   const aftersales = allAfterSales.value
-  const received = orders.filter(o => o.status === 'RECEIVED').length
+  const openAfterSaleOrderIds = getOpenAfterSaleOrderIds(aftersales)
+  const afterSaleOrderIds = new Set(openAfterSaleOrderIds)
+  orders
+    .filter(o => o.status === 'AFTERSALE')
+    .forEach(o => afterSaleOrderIds.add(o.id))
+
+  const received = orders.filter(o => o.status === 'RECEIVED' && !openAfterSaleOrderIds.has(o.id)).length
   const shipped = orders.filter(o => o.status === 'SHIPPED').length
-  const aftersale = Math.max(
-    orders.filter(o => o.status === 'AFTERSALE').length,
-    aftersales.filter(a => a.status === 'PROCESSING').length
-  )
+  const aftersale = afterSaleOrderIds.size
   const total = orders.length
   return [
     { label: '已收货订单', value: received, percent: total ? Math.round(received / total * 100) : 0 },
@@ -103,21 +121,6 @@ const overview = computed(() => {
     { label: '售后处理中', value: aftersale, percent: total ? Math.round(aftersale / total * 100) : 0 }
   ]
 })
-
-function normalizeList(data) {
-  if (Array.isArray(data)) return data
-  if (Array.isArray(data?.records)) return data.records
-  if (Array.isArray(data?.list)) return data.list
-  return []
-}
-
-function formatDate(value) {
-  return value ? String(value).slice(0, 10) : ''
-}
-
-function formatAmount(value) {
-  return value || value === 0 ? value : '0.00'
-}
 
 // 从API数据渲染最近订单
 const orders = computed(() => {
@@ -200,7 +203,7 @@ function applyAfterSale() {
 function switchTab(key) {
   if (key === 'chat') {
     uni.navigateTo({
-      url: '/pages/chat/consult'
+      url: '/pages/chat/list'
     })
     return
   }

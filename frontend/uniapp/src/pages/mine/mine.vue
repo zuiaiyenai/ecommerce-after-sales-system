@@ -45,6 +45,14 @@
           <text class="menu-desc">查看售后进度</text>
           <text class="arrow">›</text>
         </view>
+        <view class="menu-item" @tap="applyAfterSale">
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/after-sale-apply.png" mode="aspectFit" />
+          </view>
+          <text class="menu-label">申请售后</text>
+          <text class="menu-desc">退款、换货、维修</text>
+          <text class="arrow">›</text>
+        </view>
         <view class="menu-item" @tap="goChat">
           <view class="menu-icon image-menu-icon">
             <image class="menu-icon-img" src="/static/images/mine/customer-service.png" mode="aspectFit" />
@@ -131,16 +139,39 @@ const initial = computed(() => {
   return name.slice(0, 1)
 })
 
+const activeAfterSaleStatuses = ['PENDING', 'PENDING_REVIEW', 'PROCESSING', 'APPROVED']
+
+function isActiveAfterSale(status) {
+  return activeAfterSaleStatuses.includes(String(status || '').toUpperCase())
+}
+
+function getOpenAfterSaleOrderIds(afterSales) {
+  return new Set(
+    afterSales
+      .filter(a => isActiveAfterSale(a.status))
+      .map(a => a.orderId)
+      .filter(id => id !== undefined && id !== null)
+  )
+}
+
 async function loadBadges() {
   try {
     const [orders, afterSales] = await Promise.all([
       request({ url: '/orders' }),
       request({ url: '/aftersales' })
     ])
-    const paid = (orders || []).filter(o => o.status === 'PAID').length
-    const shipped = (orders || []).filter(o => o.status === 'SHIPPED').length
-    const received = (orders || []).filter(o => o.status === 'RECEIVED').length
-    const aftersale = (afterSales || []).filter(a => a.status === 'PROCESSING').length
+    const orderList = orders || []
+    const afterSaleList = afterSales || []
+    const openAfterSaleOrderIds = getOpenAfterSaleOrderIds(afterSaleList)
+    const afterSaleOrderIds = new Set(openAfterSaleOrderIds)
+    orderList
+      .filter(o => o.status === 'AFTERSALE')
+      .forEach(o => afterSaleOrderIds.add(o.id))
+
+    const paid = orderList.filter(o => o.status === 'PAID').length
+    const shipped = orderList.filter(o => o.status === 'SHIPPED').length
+    const received = orderList.filter(o => o.status === 'RECEIVED' && !openAfterSaleOrderIds.has(o.id)).length
+    const aftersale = afterSaleOrderIds.size
 
     // 读取已读记录
     const seen = uni.getStorageSync('badgeSeen') || {}

@@ -54,7 +54,7 @@ onMounted(loadPage);
         <div class="hero-status-row">
           <span class="status-chip online">当前在线</span>
           <span>{{ activeSessions.length }} 个活跃会话</span>
-          <span>{{ pendingTickets.length }} 个待审核工单</span>
+          <span>{{ pendingTickets.length }} 个待审核申请</span>
         </div>
       </div>
       <div class="hero-number">

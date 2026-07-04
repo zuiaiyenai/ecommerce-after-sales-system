@@ -35,6 +35,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(registry -> registry
                         .requestMatchers("/miniapp/auth/**").permitAll()
                         .requestMatchers("/products/**").permitAll()
+                        .requestMatchers("/agent/**").permitAll()
                         .requestMatchers("/merchant-cs/auth/login").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/static/**").permitAll()

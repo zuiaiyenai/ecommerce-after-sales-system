@@ -22,7 +22,7 @@ const staff = ref(null);
 const todos = ref([]);
 const sessions = ref([]);
 const tickets = ref([]);
-const pendingTicketCount = ref(0);
+const ticketTotal = ref(0);
 const THEME_KEY = 'merchant_cs_theme';
 const savedTheme = localStorage.getItem(THEME_KEY);
 const themeMode = ref(
@@ -32,8 +32,7 @@ let themeAnimationTimer = 0;
 
 const isOnline = computed(() => staff.value?.onlineStatus === 'ONLINE');
 const isDarkTheme = computed(() => themeMode.value === 'dark');
-const noticeCount = computed(() => noticeRules.length + todos.value.length);
-const fullHeightRoutes = ['dashboard', 'tickets', 'sessions', 'orders', 'notices'];
+const fullHeightRoutes = ['dashboard', 'tickets', 'sessions', 'orders', 'reviews', 'notices'];
 const isFullHeightPage = computed(() => fullHeightRoutes.includes(route.name));
 
 function setAction(message) {
@@ -52,15 +51,14 @@ async function loadShellData() {
     const [profile, todoData, sessionPage, ticketPage, pendingTicketPage] = await Promise.all([
       getCurrentStaff(),
       getDashboardTodos(),
-      getSessions(),
-      getTickets(),
-      getTickets({ status: 'PENDING_REVIEW', size: 1 })
+      getSessions({ size: 100 }),
+      getTickets({ size: 100 })
     ]);
     staff.value = profile;
     todos.value = todoData;
-    sessions.value = sessionPage.records;
-    tickets.value = ticketPage.records;
-    pendingTicketCount.value = pendingTicketPage.total ?? pendingTicketPage.records?.length ?? 0;
+    sessions.value = sessionPage.records || [];
+    tickets.value = ticketPage.records || [];
+    ticketTotal.value = ticketPage.total ?? tickets.value.length;
   } catch (error) {
     errorMessage.value = error.message || '基础数据加载失败';
   } finally {
@@ -121,6 +119,7 @@ provide('merchantCsShell', {
   todos,
   sessions,
   tickets,
+  ticketTotal,
   themeMode,
   toggleTheme,
   setAction,
@@ -136,6 +135,7 @@ onMounted(loadShellData);
       :staff="staff"
       :sessions="sessions"
       :tickets="tickets"
+      :ticket-total="ticketTotal"
       :todos="todos"
       :ticket-count="pendingTicketCount"
       :notice-count="noticeCount"
@@ -148,6 +148,7 @@ onMounted(loadShellData);
         :loading="loading"
         :theme-mode="themeMode"
         @refresh="loadShellData"
+        @logout="handleLogout"
         @toggle-theme="toggleTheme"
       />
       <div v-if="errorMessage" class="status-banner error">{{ errorMessage }}</div>

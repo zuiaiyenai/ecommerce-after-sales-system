@@ -32,3 +32,11 @@ app:
     expire-minutes: 10080
   upload:
     dir: ./uploads
+  agent:
+    base-url: ${AGENT_BASE_URL:http://127.0.0.1:8000/api}
+    timeout-millis: ${AGENT_TIMEOUT_MILLIS:90000}
+    auto-start: ${AGENT_AUTO_START:false}
+    python-command: ${AGENT_PYTHON_COMMAND:python}
+    script-path: ${AGENT_SCRIPT_PATH:python_agent/api_server.py}
+    working-directory: ${AGENT_WORKING_DIRECTORY:.}
+    startup-wait-millis: ${AGENT_STARTUP_WAIT_MILLIS:15000}

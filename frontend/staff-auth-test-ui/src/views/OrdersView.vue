@@ -158,7 +158,7 @@ onMounted(loadOrders);
             class="ghost-mini"
             @click="router.push(`/tickets/${order.relatedTicketId}`)"
           >
-            关联工单
+            关联申请
           </button>
         </div>
 

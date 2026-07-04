@@ -73,10 +73,10 @@ export function normalizeImageUrl(src) {
   if (value.startsWith('/api/')) {
     return `${API_ORIGIN}${value}`
   }
-  if (value.startsWith('/uploads/')) {
+  if (value.startsWith('/uploads/') || value.startsWith('/static/')) {
     return `${BASE_URL}${value}`
   }
-  if (value.startsWith('uploads/')) {
+  if (value.startsWith('uploads/') || value.startsWith('static/')) {
     return `${BASE_URL}/${value}`
   }
   return value

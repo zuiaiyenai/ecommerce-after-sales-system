@@ -1,332 +1,570 @@
 <template>
   <view class="page">
-    <!-- order info card - only when order exists -->
-    <view v-if="hasOrder" class="order-card">
-      <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
-      <view class="order-product-info">
-        <text class="order-product">{{ orderInfo.productName }}</text>
-        <view class="order-row">
-          <text class="order-no">订单号：{{ orderInfo.orderNo }}</text>
-          <text class="copy-icon" @tap="copyOrderNo">📋</text>
-          <text class="order-status">{{ orderInfo.statusText }}</text>
+    <view class="nav-bar">
+      <view class="back-btn" @tap="goBack">
+        <text class="back-icon">←</text>
+      </view>
+      <text class="nav-title">智能售后助手</text>
+      <view class="nav-right"></view>
+    </view>
+
+    <view class="fixed-context">
+      <view v-if="hasOrder" class="order-card">
+        <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
+        <view class="order-product-info">
+          <text class="order-product">{{ orderInfo.productName || '售后商品' }}</text>
+          <view class="order-row">
+            <text class="order-no">订单号：{{ orderInfo.orderNo || '--' }}</text>
+            <text class="copy-icon" @tap="copyOrderNo">复制</text>
+            <text class="order-status">{{ orderInfo.statusText || '售后咨询' }}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="service-header">
+        <view class="service-info">
+          <text class="service-name">售后助手在线</text>
+          <view class="online-dot">
+            <view class="dot"></view>
+            <text class="online-text">{{ agentStatusText }}</text>
+          </view>
         </view>
       </view>
     </view>
 
-    <view v-if="chatMode === 'HUMAN'" class="human-status">
-      <view :class="['status-dot', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']"></view>
-      <text :class="['status-text', humanServiceStatus === 'ONLINE' ? 'online' : 'offline']">
-        人工{{ humanServiceStatusText }}
-      </text>
-    </view>
-
-    <!-- chat area -->
     <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" scroll-with-animation>
       <view v-for="(msg, index) in messages" :key="index" class="msg-group">
-        <text class="msg-time" v-if="msg.time">{{ msg.time }}</text>
+        <text v-if="msg.time" class="msg-time">{{ msg.time }}</text>
         <view class="message" :class="msg.role">
           <view class="msg-bubble">
-            <image
-              v-if="msg.messageType === 'IMAGE'"
-              class="msg-image"
-              :src="normalizeImageUrl(msg.content)"
-              mode="aspectFill"
-              @tap="previewMessageImage(msg.content)"
-            />
-            <text v-else class="msg-text">{{ msg.content }}</text>
+            <text class="msg-text">{{ msg.content }}</text>
+            <text v-if="msg.meta" class="msg-meta">{{ msg.meta }}</text>
           </view>
         </view>
-        <text class="msg-read" :class="{ unread: !msg.read }" v-if="msg.role === 'user'">
-          {{ msg.read ? '已读' : '未读' }}
-        </text>
       </view>
     </scroll-view>
 
-    <!-- quick actions -->
     <view class="quick-actions">
-      <template v-if="hasOrder">
-        <view class="action-btn" @tap="quickAction('refund')">
-          <text class="action-icon">🔄</text>
-          <text class="action-text">退款进度</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('supplement')">
-          <image class="action-image-icon" src="/static/images/icon-supplement-voucher.png" mode="aspectFit" />
-          <text class="action-text">补充凭证</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('human')">
-          <text class="action-icon">👤</text>
-          <text class="action-text">人工帮助</text>
-        </view>
-      </template>
-      <template v-else>
-        <view class="action-btn" @tap="quickAction('query')">
-          <text class="action-icon">🔍</text>
-          <text class="action-text">查询订单</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('aftersale')">
-          <text class="action-icon">🔄</text>
-          <text class="action-text">申请售后</text>
-        </view>
-        <view class="action-btn" @tap="quickAction('human')">
-          <text class="action-icon">👤</text>
-          <text class="action-text">人工帮助</text>
-        </view>
-      </template>
+      <view v-if="evaluationPending" class="action-btn review-action" @tap="submitEvaluation">
+        <text class="action-icon">★</text>
+        <text class="action-text">评价服务</text>
+      </view>
+      <view class="action-btn" @tap="quickAction('refund')">
+        <text class="action-icon">🔄</text>
+        <text class="action-text">退款进度</text>
+      </view>
+      <view class="action-btn" @tap="quickAction('supplement')">
+        <image class="action-image-icon" src="/static/images/icon-supplement-voucher.png" mode="aspectFit" />
+        <text class="action-text">补充凭证</text>
+      </view>
+      <view class="action-btn" @tap="quickAction('human')">
+        <text class="action-icon">👤</text>
+        <text class="action-text">人工帮助</text>
+      </view>
     </view>
 
-    <!-- input area -->
+    <view v-if="attachments.length" class="attachment-preview">
+      <view class="image-grid">
+        <view v-for="(img, index) in attachments" :key="img" class="image-item">
+          <image :src="normalizeImageUrl(img)" mode="aspectFill" class="preview-img" @tap="previewImage(index)" />
+          <view class="delete-btn" @tap.stop="removeImage(index)">×</view>
+        </view>
+      </view>
+      <text class="upload-tip">最多 3 张，随问题一并提交</text>
+    </view>
+
     <view class="input-area">
-      <view class="attach-btn" :class="{ uploading: attachmentUploading }" @tap="chooseAttachment">
-        <text class="attach-icon">{{ attachmentUploading ? '…' : '+' }}</text>
+      <view v-if="attachments.length < 3" class="attach-btn" @tap="chooseImage">
+        <text class="attach-icon">+</text>
       </view>
       <input
         v-model="inputText"
         class="chat-input"
-        placeholder="请输入内容"
+        placeholder="请输入您的售后问题"
         confirm-type="send"
         @confirm="sendMessage"
       />
-      <view class="send-btn" :class="{ active: inputText.trim() }" @tap="sendMessage">
-        <text class="send-icon">➤</text>
+      <view class="send-btn" :class="{ active: canSend }" @tap="sendMessage">
+        <text class="send-icon">{{ sending ? '…' : '➤' }}</text>
       </view>
     </view>
   </view>
 </template>
 
 <script setup>
-import { ref, nextTick, onUnmounted } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { BASE_URL, request, normalizeImageUrl } from '../../utils/request'
+import { normalizeImageUrl, request } from '../../utils/request'
+import {
+  buildAttachments,
+  buildChatPayload,
+  buildOrderHint,
+  chat,
+  checkAgentHealth,
+  loadConversationState,
+  reviewImages,
+  saveConversationState
+} from '../../utils/afterSalesAgent'
+import { createChatSession, getChatHistory } from '../../utils/userChat'
+
+const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
 const messages = ref([])
 const inputText = ref('')
 const attachmentUploading = ref(false)
 const scrollTop = ref(0)
 const hasOrder = ref(false)
+const orderData = ref(null)
+const attachments = ref([])
+const sending = ref(false)
+const agentStatusText = ref('连接中')
 const sessionId = ref(null)
-const chatMode = ref('AI')
-const humanServiceStatus = ref('OFFLINE')
-const humanServiceStatusText = ref('离线')
-let socketTask = null
+const humanRequestCount = ref(0)
+const processingPendingApply = ref(false)
+const deferredReviewRunning = ref(false)
+const lastImageReview = ref(null)
+const evaluationPending = ref(false)
 
 const orderInfo = ref({
   productName: '',
-  spec: '',
   orderNo: '',
   productIcon: '',
   statusText: ''
 })
 
-async function loadOrderById(orderId) {
-  try {
-    const order = await request({ url: '/orders/' + orderId })
-    if (!order) return null
-    const item = order.items && order.items[0]
-    return {
-      productName: item ? item.productName : '',
-      spec: item ? item.productSpec : '',
-      orderNo: order.orderNo || '',
-      productIcon: item ? item.productImage : '',
-      statusText: order.statusText || ''
-    }
-  } catch (e) {
-    return null
-  }
-}
+const canSend = computed(() => (inputText.value.trim() || attachments.value.length > 0) && !sending.value)
 
-onLoad(async (options) => {
-  uni.setNavigationBarTitle({ title: '智能客服' })
-
-  // 用字符串存储ID，避免JS大数精度丢失
-  const orderId = options.orderId && /^\d+$/.test(String(options.orderId)) ? String(options.orderId) : null
-  const afterSaleId = options.afterSaleId && /^\d+$/.test(String(options.afterSaleId)) ? String(options.afterSaleId) : null
-
-  if (orderId) {
-    const data = await loadOrderById(orderId)
-    if (data) {
-      hasOrder.value = true
-      orderInfo.value = data
-    }
-  }
-
-  if (!hasOrder.value && options.productName) {
-    hasOrder.value = true
-    orderInfo.value = {
-      productName: options.productName,
-      spec: options.spec || '',
-      orderNo: options.orderId || '',
-      productIcon: options.productIcon || '',
-      statusText: options.statusText || '售后处理中'
-    }
-  }
-
-  await createOrLoadSession({
-    afterSaleId: afterSaleId,
-    orderId: orderId
-  })
-})
-
-function copyOrderNo() {
-  uni.setClipboardData({
-    data: orderInfo.value.orderNo,
-    success: () => {
-      uni.showToast({ title: '已复制', icon: 'success' })
-    }
-  })
-}
-
-function addServiceMessage(content, messageType = 'TEXT') {
+function getNowTime() {
   const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  messages.value.push({ role: 'service', content, messageType, time })
-  scrollToBottom()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 }
 
-function addUserMessage(content, messageType = 'TEXT') {
-  const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const clientId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  messages.value.push({ clientId, role: 'user', content, messageType, time, read: false })
-  scrollToBottom()
-  return clientId
+function getConversationKey() {
+  if (orderData.value?.orderNo) return orderData.value.orderNo
+  if (orderInfo.value.orderNo) return orderInfo.value.orderNo
+  return 'default'
 }
 
-async function createOrLoadSession(payload) {
-  try {
-    const session = await request({
-      url: '/chat/session',
-      method: 'POST',
-      data: payload
-    })
-    sessionId.value = session.sessionId
-    applyServiceStatus(session)
-    const history = await request({
-      url: '/chat/history?sessionId=' + session.sessionId
-    })
-    const list = history && history.list ? history.list : []
-    messages.value = list.map(item => ({
-      id: item.id,
-      role: item.role,
-      content: item.content,
-      messageType: item.messageType || 'TEXT',
-      read: Boolean(item.read),
-      time: item.createTime ? item.createTime.slice(11, 16) : ''
-    }))
-    if (messages.value.length === 0 && session.welcomeMessage) {
-      addServiceMessage(session.welcomeMessage)
-    } else {
-      scrollToBottom()
-    }
-    wsConnect(session.sessionId)
-  } catch (e) {
-    addServiceMessage('您好，我是智能客服，请问有什么可以帮您？您可以咨询订单问题、申请售后，或转接人工客服。')
-  }
+function getPendingApplyKey(orderId) {
+  return `${PENDING_APPLY_PREFIX}:${orderId || 'default'}`
 }
-
-function applyServiceStatus(data) {
-  chatMode.value = data && data.mode ? data.mode : (chatMode.value || 'AI')
-  if (chatMode.value !== 'HUMAN') {
-    return
-  }
-  const status = data && data.humanStatus ? data.humanStatus : (data && data.humanOnline ? 'ONLINE' : 'OFFLINE')
-  humanServiceStatus.value = status === 'ONLINE' ? 'ONLINE' : 'OFFLINE'
-  humanServiceStatusText.value = humanServiceStatus.value === 'ONLINE' ? '在线' : '离线'
-}
-
-function wsConnect(sid) {
-  if (socketTask) {
-    socketTask.close()
-    socketTask = null
-  }
-  socketTask = uni.connectSocket({
-    url: getChatWsUrl(),
-    complete: () => {}
-  })
-  socketTask.onOpen(() => {
-    socketTask.send({
-      data: JSON.stringify({ action: 'subscribe', sessionId: sid })
-    })
-  })
-  socketTask.onMessage((res) => {
-    try {
-      const msg = JSON.parse(res.data)
-      if (msg.action === 'message' && msg.role !== 'USER') {
-        addServiceMessage(msg.content, msg.messageType || 'TEXT')
-        markMessagesRead(msg.lastReadMessageId)
-      } else if (msg.action === 'read') {
-        markMessagesRead(msg.lastReadMessageId)
-      }
-    } catch (e) {
-      // ignore parse errors
-    }
-  })
-  socketTask.onError((err) => {
-    console.error('WebSocket error', err)
-  })
-  socketTask.onClose(() => {
-    // ignore
-  })
-}
-
-function getChatWsUrl() {
-  return BASE_URL.replace(/^http/, 'ws').replace(/\/api\/?$/, '/api/ws/chat')
-}
-
-function markMessagesRead(lastReadMessageId) {
-  messages.value = messages.value.map(item => {
-    if (item.role !== 'user') {
-      return item
-    }
-    if (!item.id || !lastReadMessageId || Number(item.id) <= Number(lastReadMessageId)) {
-      return { ...item, read: true }
-    }
-    return item
-  })
-}
-
-onUnmounted(() => {
-  if (socketTask) {
-    socketTask.close()
-    socketTask = null
-  }
-})
 
 function scrollToBottom() {
   nextTick(() => {
-    scrollTop.value = 1000000 + messages.value.length * 1000
+    scrollTop.value += 9999
   })
 }
 
-async function sendMessage() {
-  const text = inputText.value.trim()
-  if (!text) return
-
-  inputText.value = ''
-  await sendChatMessage(text, 'TEXT')
+function addMessage(role, content, meta = '') {
+  messages.value.push({
+    role,
+    content,
+    meta,
+    time: getNowTime()
+  })
+  scrollToBottom()
 }
+
+function copyOrderNo() {
+  if (!orderInfo.value.orderNo) return
+  uni.setClipboardData({
+    data: orderInfo.value.orderNo,
+    success: () => uni.showToast({ title: '已复制', icon: 'success' })
+  })
+}
+
+function buildFallbackOrder(options = {}) {
+  const item = {
+    productName: decodeURIComponent(options.productName || ''),
+    productImage: decodeURIComponent(options.productIcon || ''),
+    productSpec: decodeURIComponent(options.productSpec || ''),
+    price: options.amount || '0.00',
+    quantity: 1
+  }
+  const orderNo = decodeURIComponent(options.orderNo || '')
+  if (!orderNo && !item.productName) return null
+  return {
+    id: options.orderId || '',
+    orderNo,
+    payAmount: options.amount || item.price || '0.00',
+    status: decodeURIComponent(options.status || 'AFTERSALE'),
+    statusText: decodeURIComponent(options.statusText || '售后中'),
+    items: [item]
+  }
+}
+
+function applyOrderToView(order) {
+  const item = order?.items?.[0] || {}
+  orderData.value = order
+  orderInfo.value = {
+    productName: item.productName || '',
+    orderNo: order?.orderNo || '',
+    productIcon: item.productImage || '',
+    statusText: order?.statusText || ''
+  }
+  hasOrder.value = Boolean(order)
+}
+
+async function loadOrderById(orderId, fallbackOptions = {}) {
+  const expectedOrderNo = decodeURIComponent(fallbackOptions.orderNo || '')
+  try {
+    const order = await request({ url: '/orders/' + orderId })
+    if (expectedOrderNo && order?.orderNo && String(order.orderNo) !== expectedOrderNo) {
+      const fallbackOrder = buildFallbackOrder({ ...fallbackOptions, orderId })
+      if (fallbackOrder) {
+        applyOrderToView(fallbackOrder)
+        return
+      }
+    }
+    applyOrderToView(order)
+  } catch (error) {
+    const fallbackOrder = buildFallbackOrder({ ...fallbackOptions, orderId })
+    if (fallbackOrder) {
+      applyOrderToView(fallbackOrder)
+      return
+    }
+    throw error
+  }
+}
+
+async function initAgentStatus() {
+  try {
+    const result = await checkAgentHealth()
+    agentStatusText.value = result?.ok ? '服务正常' : '服务异常'
+  } catch (error) {
+    agentStatusText.value = '未连接'
+  }
+}
+
+function restoreConversation() {
+  const saved = loadConversationState(getConversationKey())
+  if (!saved) return false
+  sessionId.value = saved.sessionId || null
+  humanRequestCount.value = saved.humanRequestCount || 0
+  messages.value = Array.isArray(saved.messages) ? saved.messages : []
+  attachments.value = Array.isArray(saved.attachments) ? saved.attachments : []
+  lastImageReview.value = saved.lastImageReview || null
+  scrollToBottom()
+  return messages.value.length > 0
+}
+
+function persistConversation() {
+  saveConversationState(getConversationKey(), {
+    sessionId: sessionId.value,
+    humanRequestCount: humanRequestCount.value,
+    messages: messages.value,
+    attachments: attachments.value,
+    lastImageReview: lastImageReview.value
+  })
+}
+
+async function loadSessionHistory(id) {
+  if (!id) return false
+  try {
+    const result = await getChatHistory(id)
+    sessionId.value = String(id)
+    messages.value = (result.list || []).map(item => ({
+      role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
+      content: item.content,
+      meta: '',
+      time: item.createTime ? String(item.createTime).slice(11, 16) : ''
+    }))
+    scrollToBottom()
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
+async function resolveRemoteSession(options) {
+  if (options.sessionId) {
+    return await loadSessionHistory(options.sessionId)
+  }
+  if (!options.orderId && !options.afterSaleId) {
+    return false
+  }
+  try {
+    const result = await createChatSession({
+      orderId: options.orderId ? String(options.orderId) : null,
+      afterSaleId: options.afterSaleId ? String(options.afterSaleId) : null
+    })
+    if (!result?.sessionId) return false
+    sessionId.value = String(result.sessionId)
+    evaluationPending.value = result.status === 'AWAITING_EVALUATION'
+    return await loadSessionHistory(result.sessionId)
+  } catch (error) {
+    return false
+  }
+}
+
+function buildReplyMeta() {
+  return ''
+}
+
+async function chooseImage() {
+  uni.chooseImage({
+    count: 3 - attachments.value.length,
+    sizeType: ['compressed'],
+    sourceType: ['album', 'camera'],
+    success: (res) => {
+      attachments.value = [...attachments.value, ...(res.tempFilePaths || [])].slice(0, 3)
+      persistConversation()
+    }
+  })
+}
+
+function removeImage(index) {
+  attachments.value.splice(index, 1)
+  persistConversation()
+}
+
+function previewImage(index) {
+  uni.previewImage({
+    current: index,
+    urls: attachments.value.map(normalizeImageUrl)
+  })
+}
+
+async function reviewSelectedImages(order, imagePaths = attachments.value) {
+  if (!imagePaths.length) return null
+  const attachmentPayload = await buildAttachments(imagePaths)
+  const result = await reviewImages({
+    attachments: attachmentPayload,
+    order_hint: buildOrderHint({
+      order_id: order.orderNo,
+      product_name: order.items?.[0]?.productName || ''
+    })
+  })
+  return {
+    attachments: attachmentPayload,
+    imageReview: result.image_review || null
+  }
+}
+
+function hasSuccessfulImageReview(imageReview) {
+  return Boolean(imageReview?.success)
+}
+
+function evidenceFromImageReview(imageReview) {
+  if (!imageReview?.success) return []
+  const evidence = []
+  if (imageReview.has_damage_area) evidence.push('破损照片')
+  if (imageReview.has_outer_package) evidence.push('外包装照片')
+  if (imageReview.has_logistics_label) evidence.push('物流面单照片')
+  return evidence
+}
+
+function mergeUploadedEvidence(extraEvidence, imageReview) {
+  const provided = Array.isArray(extraEvidence)
+    ? extraEvidence
+    : (extraEvidence ? [extraEvidence] : [])
+  return [...new Set([...provided, ...evidenceFromImageReview(imageReview)])]
+}
+
+function buildRecentHistoryPayload() {
+  return messages.value.slice(-8).map((message) => ({
+    role: message.role === 'service' ? 'assistant' : message.role,
+    content: message.content || ''
+  })).filter((message) => message.role && message.content)
+}
+
+async function applyChatResult(result) {
+  if (result?.persistence?.session_id) {
+    sessionId.value = String(result.persistence.session_id)
+  }
+  if (result?.ticket?.ticket_id && orderData.value?.orderNo) {
+    uni.setStorageSync(`after_sales_ticket:${orderData.value.orderNo}`, result.ticket)
+  }
+  if (result?.fallback_need_human) {
+    humanRequestCount.value = Math.max(humanRequestCount.value, 2)
+  }
+  if (sessionId.value) {
+    const loaded = await loadSessionHistory(sessionId.value)
+    if (loaded) {
+      persistConversation()
+      return
+    }
+  }
+  addMessage('service', result?.assistant_reply || '已收到您的问题', buildReplyMeta(result))
+  if (result?.fallback_need_human) {
+    addMessage('service', 'AI 已建议转人工，等待客服接入。')
+  }
+  persistConversation()
+}
+
+async function runDeferredImageReview(imagePaths) {
+  if (!orderData.value || !imagePaths.length || deferredReviewRunning.value) return
+  deferredReviewRunning.value = true
+  try {
+    const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
+    if (hasSuccessfulImageReview(reviewResult?.imageReview)) {
+      lastImageReview.value = reviewResult.imageReview
+    }
+    persistConversation()
+  } catch (error) {
+    persistConversation()
+  } finally {
+    deferredReviewRunning.value = false
+  }
+}
+
+async function sendAgentMessage({
+  text,
+  description = text,
+  imagePaths = attachments.value,
+  selectedOrderExtra = {},
+  allowFallbackToDeferredReview = true
+}) {
+  const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
+  let attachmentPayload = []
+  let imageReview = null
+  let skipImageReview = !hasImages
+
+  if (hasImages && orderData.value) {
+    const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
+    attachmentPayload = reviewResult ? reviewResult.attachments : []
+    imageReview = reviewResult ? reviewResult.imageReview : null
+    if (hasSuccessfulImageReview(imageReview)) {
+      lastImageReview.value = imageReview
+    }
+  } else if (lastImageReview.value) {
+    imageReview = lastImageReview.value
+  }
+
+  try {
+    const result = await chat(
+      buildChatPayload({
+        order: orderData.value,
+        message: text,
+        description,
+        sessionId: sessionId.value,
+        humanRequestCount: humanRequestCount.value,
+        attachments: skipImageReview ? [] : attachmentPayload,
+        imageReview,
+        skipImageReview,
+        recentHistory: buildRecentHistoryPayload(),
+        selectedOrderExtra: {
+          ...selectedOrderExtra,
+          uploadedEvidence: mergeUploadedEvidence(selectedOrderExtra.uploadedEvidence, imageReview)
+        }
+      })
+    )
+
+    await applyChatResult(result)
+    attachments.value = []
+    persistConversation()
+    return result
+  } catch (error) {
+    if (hasImages && allowFallbackToDeferredReview) {
+      addMessage('service', '已收到图片，我先结合您的描述开始处理。')
+      const fallbackResult = await chat(
+        buildChatPayload({
+          order: orderData.value,
+          message: text,
+          description,
+          sessionId: sessionId.value,
+          humanRequestCount: humanRequestCount.value,
+          attachments: [],
+          imageReview: null,
+          skipImageReview: true,
+          recentHistory: buildRecentHistoryPayload(),
+          selectedOrderExtra: {
+            ...selectedOrderExtra,
+            uploadedEvidence: mergeUploadedEvidence(selectedOrderExtra.uploadedEvidence, lastImageReview.value)
+          }
+        })
+      )
+      await applyChatResult(fallbackResult)
+      attachments.value = []
+      persistConversation()
+      void runDeferredImageReview(imagePaths)
+      return fallbackResult
+    }
+    throw error
+  }
+}
+
+async function consumePendingApply(orderId) {
+  const key = getPendingApplyKey(orderId)
+  const pending = uni.getStorageSync(key)
+  if (!pending || processingPendingApply.value) return
+
+  processingPendingApply.value = true
+  uni.removeStorageSync(key)
+
+  if (messages.value.length === 0) {
+    addMessage('service', '已收到您的信息，我先帮您进入对话并继续处理。')
+  }
+
+  addMessage('user', pending.initialMessage)
+  if (pending.description && pending.description !== pending.initialMessage) {
+    addMessage('user', `补充说明：${pending.description}`)
+  }
+  if (Array.isArray(pending.imagePaths) && pending.imagePaths.length > 0) {
+    addMessage('service', '图片已收到，我会结合订单和材料继续处理。')
+  } else {
+    addMessage('service', '我先根据您补充的描述继续处理。')
+  }
+
+  try {
+    const result = await sendAgentMessage({
+      text: pending.initialMessage,
+      description: pending.description,
+      imagePaths: pending.imagePaths || [],
+      selectedOrderExtra: {
+        hasOpenAfterSales: false,
+        afterSalesStatus: 'not_applied',
+        uploadedEvidence: (pending.imagePaths || []).length > 0 ? ['商品照片'] : []
+      }
+    })
+
+    if (pending.orderId && result?.ticket?.ticket_id) {
+      await request({ url: `/orders/${pending.orderId}/status?status=AFTERSALE`, method: 'PUT' })
+    }
+
+    if (result?.ticket?.ticket_id) {
+      uni.showToast({ title: '已进入售后对话', icon: 'success' })
+    }
+  } catch (error) {
+    addMessage('service', error.message || '当前暂时无法获取处理结果，请稍后再试。')
+    persistConversation()
+  } finally {
+    processingPendingApply.value = false
+  }
+}
+
+async function sendMessage() {
+  const typedText = inputText.value.trim()
+  if ((!typedText && attachments.value.length === 0) || sending.value) return
+  const text = typedText || '我上传了售后凭证图片，请先分析。'
+
+  if (/人工|客服|真人/.test(text)) {
+    humanRequestCount.value += 1
+  }
+
+  const imagePaths = [...attachments.value]
+  if (typedText) {
+    addMessage('user', text)
+  }
+  inputText.value = ''
+  sending.value = true
+
+  if (imagePaths.length > 0) {
+    addMessage('service', '图片已收到，我会结合订单和材料继续处理。')
+  }
 
 async function sendChatMessage(content, messageType = 'TEXT') {
   const clientId = addUserMessage(content, messageType)
   try {
-    if (!sessionId.value) {
-      await createOrLoadSession({})
-    }
-    const result = await request({
-      url: '/chat/send',
-      method: 'POST',
-      data: {
-        sessionId: sessionId.value,
-        message: content,
-        messageType
-      }
+    await sendAgentMessage({
+      text,
+      description: text,
+      imagePaths
     })
-    bindLocalMessageId(clientId, result && result.messageId)
-    applyServiceStatus(result)
-    if (result && result.reply) {
-      addServiceMessage(result.reply)
-    }
-  } catch (e) {
-    addServiceMessage('消息暂时发送失败，请稍后重试。')
+  } catch (error) {
+    addMessage('service', error.message || '消息发送失败，请稍后重试')
+  } finally {
+    sending.value = false
   }
 }
 
@@ -339,93 +577,49 @@ function bindLocalMessageId(clientId, messageId) {
 
 function quickAction(type) {
   if (type === 'supplement') {
-    chooseAttachment()
+    chooseImage()
     return
   }
 
-  const actionMap = {
-    refund: '请帮我查看一下退款进度',
-    human: '请帮我转接人工客服',
-    query: '我想查询我的订单状态',
-    aftersale: '我想申请售后'
+  const map = {
+    refund: '请帮我查看退款进度',
+    human: '请帮我转人工客服'
   }
-  const text = actionMap[type]
-  inputText.value = text
+  inputText.value = map[type] || ''
   sendMessage()
 }
 
-function chooseAttachment() {
-  if (attachmentUploading.value) return
-
-  uni.chooseImage({
-    count: 1,
-    sizeType: ['compressed'],
-    sourceType: ['album', 'camera'],
-    success: async (res) => {
-      const filePath = res.tempFilePaths && res.tempFilePaths[0]
-      if (!filePath) return
-      await sendAttachmentMessage(filePath)
-    }
-  })
+function submitEvaluation() {
+  if (!sessionId.value) return
+  const params = [
+    'sessionId=' + encodeURIComponent(sessionId.value || ''),
+    'orderId=' + encodeURIComponent(orderData.value?.id || ''),
+    'afterSaleId=' + encodeURIComponent(orderData.value?.afterSaleId || ''),
+    'orderNo=' + encodeURIComponent(orderInfo.value.orderNo || ''),
+    'productName=' + encodeURIComponent(orderInfo.value.productName || ''),
+    'productIcon=' + encodeURIComponent(orderInfo.value.productIcon || '')
+  ].join('&')
+  uni.navigateTo({ url: `/pages/chat/evaluate?${params}` })
 }
 
-async function sendAttachmentMessage(filePath) {
-  attachmentUploading.value = true
-  try {
-    const url = await uploadAttachment(filePath)
-    await sendChatMessage(url, 'IMAGE')
-  } catch (e) {
-    uni.showToast({
-      title: e.message || '附件上传失败',
-      icon: 'none'
-    })
-  } finally {
-    attachmentUploading.value = false
+onLoad(async (options) => {
+  await initAgentStatus()
+
+  if (options.orderId) {
+    await loadOrderById(options.orderId, options)
   }
-}
 
-function uploadAttachment(filePath) {
-  return new Promise((resolve, reject) => {
-    const token = uni.getStorageSync('token') || ''
-    uni.uploadFile({
-      url: `${BASE_URL}/upload/image`,
-      filePath,
-      name: 'file',
-      header: {
-        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
-      },
-      success: (res) => {
-        try {
-          const body = JSON.parse(res.data)
-          if (body.code === 200 && body.data && body.data.url) {
-            resolve(body.data.url)
-            return
-          }
-          reject(new Error(body.message || '上传失败'))
-        } catch (e) {
-          reject(new Error('上传响应解析失败'))
-        }
-      },
-      fail: () => {
-        reject(new Error('上传失败，请稍后重试'))
-      }
-    })
-  })
-}
+  evaluationPending.value = options.status === 'AWAITING_EVALUATION'
+  const hasRemoteConversation = await resolveRemoteSession(options)
+  const hasSavedConversation = hasRemoteConversation ? true : restoreConversation()
+  if (!hasSavedConversation) {
+    addMessage('service', '您可以描述具体问题并补充图片，我会结合订单和材料给您回复。')
+  }
 
-function previewMessageImage(src) {
-  const current = normalizeImageUrl(src)
-  const urls = messages.value
-    .filter(item => item.messageType === 'IMAGE')
-    .map(item => normalizeImageUrl(item.content))
-    .filter(Boolean)
-
-  if (!current) return
-  uni.previewImage({
-    current,
-    urls: urls.length ? urls : [current]
-  })
-}
+  if (options.fromApply === '1' && options.orderId) {
+    await consumePendingApply(options.orderId)
+  }
+})
 </script>
 
 <style scoped>
@@ -436,6 +630,48 @@ function previewMessageImage(src) {
   background: #f0eeea;
 }
 
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32rpx 28rpx;
+  background: #ffffff;
+  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
+}
+
+.back-btn,
+.nav-right {
+  width: 64rpx;
+  height: 64rpx;
+}
+
+.back-btn {
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 16rpx;
+  background: #f5f3ef;
+}
+
+.back-icon,
+.nav-title {
+  color: #1a1a1a;
+}
+
+.back-icon {
+  font-size: 32rpx;
+}
+
+.nav-title {
+  font-size: 32rpx;
+  font-weight: 800;
+}
+
+.fixed-context {
+  flex: none;
+  background: #f0eeea;
+  z-index: 2;
+}
+
 .order-card {
   display: flex;
   align-items: center;
@@ -443,14 +679,15 @@ function previewMessageImage(src) {
   padding: 20rpx;
   background: #ffffff;
   border-radius: 16rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
+  border: 1rpx solid rgba(0, 0, 0, 0.04);
 }
 
 .order-product-img {
-  width: 76rpx;
-  height: 76rpx;
+  width: 80rpx;
+  height: 80rpx;
+  flex: none;
   border-radius: 12rpx;
-  flex-shrink: 0;
+  background: #f5f3ef;
 }
 
 .order-product-info {
@@ -461,8 +698,11 @@ function previewMessageImage(src) {
 
 .order-product {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 28rpx;
-  font-weight: 600;
+  font-weight: 700;
   color: #1a1a1a;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -472,28 +712,40 @@ function previewMessageImage(src) {
 .order-row {
   display: flex;
   align-items: center;
-  gap: 8rpx;
+  min-width: 0;
   margin-top: 8rpx;
+  gap: 8rpx;
+}
+
+.order-no,
+.copy-icon,
+.order-status,
+.online-text,
+.msg-time,
+.msg-meta,
+.upload-tip {
+  font-size: 22rpx;
 }
 
 .order-no {
   flex: 1;
   min-width: 0;
-  font-size: 22rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order-no,
+.copy-icon,
+.upload-tip {
   color: #999;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.copy-icon {
-  font-size: 20rpx;
-  flex-shrink: 0;
-}
-
 .order-status {
-  flex-shrink: 0;
-  font-size: 22rpx;
+  flex: none;
   color: #c97b5a;
   font-weight: 600;
 }
@@ -507,7 +759,20 @@ function previewMessageImage(src) {
   min-height: 28rpx;
 }
 
-.status-dot {
+.service-name {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.online-dot {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.dot {
   width: 12rpx;
   height: 12rpx;
   border-radius: 50%;
@@ -518,16 +783,8 @@ function previewMessageImage(src) {
   background: #52c41a;
 }
 
-.status-dot.offline {
-  background: #b7b7b7;
-}
-
-.status-text {
-  font-size: 20rpx;
-  color: #8c8c8c;
-}
-
-.status-text.online {
+.online-text {
+  margin-left: 8rpx;
   color: #52c41a;
 }
 
@@ -537,6 +794,7 @@ function previewMessageImage(src) {
 
 .chat-area {
   flex: 1;
+  min-height: 0;
   padding: 8rpx 0 20rpx;
   overflow-y: auto;
 }
@@ -550,20 +808,16 @@ function previewMessageImage(src) {
 .msg-time {
   display: block;
   text-align: center;
-  font-size: 20rpx;
   color: #bbb;
   margin: 4rpx 0 10rpx;
 }
 
 .message {
   display: flex;
-  align-items: flex-start;
-  width: 100%;
-  box-sizing: border-box;
 }
 
 .message.user {
-  flex-direction: row-reverse;
+  justify-content: flex-end;
 }
 
 .msg-bubble {
@@ -574,37 +828,25 @@ function previewMessageImage(src) {
 
 .message.service .msg-bubble {
   background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-  border-top-left-radius: 6rpx;
 }
 
 .message.user .msg-bubble {
   background: #fff5f0;
-  border: 1rpx solid rgba(244,90,11,0.1);
-  border-top-right-radius: 6rpx;
 }
 
 .msg-text {
+  display: block;
   font-size: 26rpx;
   line-height: 1.55;
   color: #1a1a1a;
+  overflow-wrap: anywhere;
 }
 
-.msg-image {
+.msg-meta {
   display: block;
-  width: 240rpx;
-  height: 240rpx;
-  border-radius: 12rpx;
-  background: #f5f3ef;
-}
-
-.msg-read {
-  display: block;
-  text-align: right;
-  margin-top: 4rpx;
-  padding-right: 4rpx;
-  font-size: 20rpx;
-  color: #bbb;
+  margin-top: 12rpx;
+  color: #8d6e63;
+  line-height: 1.5;
 }
 
 .msg-read.unread {
@@ -615,23 +857,24 @@ function previewMessageImage(src) {
   display: flex;
   gap: 14rpx;
   padding: 12rpx 24rpx;
-  background: rgba(240,238,234,0.96);
+  background: rgba(240, 238, 234, 0.96);
 }
 
 .action-btn {
   flex: 1;
+  min-width: 0;
+  height: 64rpx;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8rpx;
-  height: 58rpx;
   background: #ffffff;
-  border-radius: 30rpx;
-  border: 1rpx solid rgba(0,0,0,0.06);
+  border-radius: 32rpx;
+  border: 1rpx solid rgba(0, 0, 0, 0.06);
 }
 
-.action-icon {
-  font-size: 24rpx;
+.review-action {
+  background: #fff4e8;
 }
 
 .action-image-icon {
@@ -646,6 +889,69 @@ function previewMessageImage(src) {
   font-weight: 500;
 }
 
+.action-icon {
+  font-size: 24rpx;
+  color: #c97b5a;
+  font-weight: 800;
+}
+
+.action-image-icon {
+  width: 24rpx;
+  height: 24rpx;
+  flex-shrink: 0;
+}
+
+.attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 12rpx 24rpx 6rpx;
+  background: rgba(240, 238, 234, 0.96);
+}
+
+.upload-tip {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-grid {
+  display: flex;
+  gap: 16rpx;
+  flex-wrap: wrap;
+}
+
+.image-item {
+  width: 72rpx;
+  height: 72rpx;
+  position: relative;
+}
+
+.preview-img {
+  border-radius: 14rpx;
+}
+
+.preview-img {
+  width: 100%;
+  height: 100%;
+}
+
+.delete-btn {
+  position: absolute;
+  top: -12rpx;
+  right: -12rpx;
+  width: 36rpx;
+  height: 36rpx;
+  line-height: 36rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffffff;
+  font-size: 24rpx;
+}
+
 .input-area {
   display: flex;
   align-items: center;
@@ -653,29 +959,28 @@ function previewMessageImage(src) {
   padding: 16rpx 24rpx;
   padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #ffffff;
-  border-top: 1rpx solid rgba(0,0,0,0.06);
+  border-top: 1rpx solid rgba(0, 0, 0, 0.06);
 }
 
 .attach-btn {
-  width: 60rpx;
-  height: 60rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  width: 64rpx;
+  height: 64rpx;
+  line-height: 60rpx;
+  text-align: center;
   border-radius: 50%;
   background: transparent;
 }
 
 .attach-btn.uploading {
   background: #f5f3ef;
+  border: 1rpx solid rgba(0, 0, 0, 0.06);
+  flex: none;
 }
 
 .attach-icon {
-  font-size: 44rpx;
+  color: #c97b5a;
+  font-size: 38rpx;
   font-weight: 300;
-  color: #666666;
-  line-height: 1;
 }
 
 .chat-input {
@@ -694,7 +999,9 @@ function previewMessageImage(src) {
   text-align: center;
   border-radius: 50%;
   background: #e0e0e0;
-  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .send-btn.active {
@@ -704,5 +1011,6 @@ function previewMessageImage(src) {
 .send-icon {
   color: #ffffff;
   font-size: 28rpx;
+  font-weight: 700;
 }
 </style>

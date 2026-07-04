@@ -25,7 +25,7 @@ public class AfterSalesController {
     public ApiResponse<AfterSalesVO> getById(@PathVariable Long id, @CurrentUserId Long userId) {
         AfterSalesVO afterSales = afterSalesService.getById(id, userId);
         if (afterSales == null) {
-            return ApiResponse.fail(404, "售后工单不存在");
+            return ApiResponse.fail(404, "售后申请不存在");
         }
         return ApiResponse.success("获取成功", afterSales);
     }
@@ -34,7 +34,7 @@ public class AfterSalesController {
     public ApiResponse<AfterSalesVO> getByTicketNo(@PathVariable String ticketNo) {
         AfterSalesVO afterSales = afterSalesService.getByTicketNo(ticketNo);
         if (afterSales == null) {
-            return ApiResponse.fail(404, "售后工单不存在");
+            return ApiResponse.fail(404, "售后申请不存在");
         }
         return ApiResponse.success("获取成功", afterSales);
     }

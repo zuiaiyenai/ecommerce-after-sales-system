@@ -21,8 +21,10 @@ import com.ecommerce.aftersales.vo.AfterSalesVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -72,10 +74,20 @@ public class AfterSalesServiceImpl implements AfterSalesService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AfterSalesVO create(Long userId, AfterSalesVO afterSalesVO) {
         OrderInfo order = orderInfoMapper.selectById(afterSalesVO.getOrderId());
         if (order == null) {
             throw new BizException(404, "订单不存在");
+        }
+        if (!userId.equals(order.getUserId())) {
+            throw new BizException(404, "订单不存在");
+        }
+        if (!"RECEIVED".equals(order.getStatus()) && !"SHIPPED".equals(order.getStatus())) {
+            throw new BizException("当前订单状态不可申请售后");
+        }
+        if (hasExistingAfterSale(order.getId())) {
+            throw new BizException("该订单已申请售后，请进入售后咨询继续处理");
         }
         AfterSalesTicket ticket = new AfterSalesTicket();
         // 生成工单号
@@ -94,6 +106,9 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         ticket.setStatus("PENDING");
         ticket.setPriority(0);
         afterSalesTicketMapper.insert(ticket);
+        order.setStatus("AFTERSALE");
+        order.setUpdateTime(LocalDateTime.now());
+        orderInfoMapper.updateById(order);
 
         // Save attachments
         if (afterSalesVO.getAttachmentUrls() != null && !afterSalesVO.getAttachmentUrls().isEmpty()) {
@@ -113,11 +128,11 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         return convertToVO(ticket);
     }
 
-    private String nextTicketNo() {
-        String dailyPrefix = BusinessNoGenerator.dailyPrefix("AS");
-        long existingTodayCount = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
-                .likeRight(AfterSalesTicket::getTicketNo, dailyPrefix));
-        return BusinessNoGenerator.dailySerial("AS", existingTodayCount);
+    private boolean hasExistingAfterSale(Long orderId) {
+        Long count = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderId)
+                .in(AfterSalesTicket::getStatus, List.of("PENDING", "PENDING_REVIEW", "PROCESSING", "COMPLETED")));
+        return count != null && count > 0;
     }
 
     private BigDecimal resolveRefundAmount(AfterSalesVO afterSalesVO, OrderInfo order) {
@@ -203,8 +218,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         switch (status) {
             case "PENDING": return "待审核";
             case "PROCESSING": return "处理中";
-            case "APPROVED": return "已通过";
-            case "REJECTED": return "已拒绝";
+            case "REJECTED": return "已驳回";
             case "COMPLETED": return "已完成";
             default: return status;
         }

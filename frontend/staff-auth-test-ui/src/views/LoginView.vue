@@ -18,8 +18,6 @@ const showWelcome = ref(false);
 const loginStaffName = ref('');
 const WELCOME_DURATION_MS = 5000;
 let welcomeFinished = false;
-let dashboardFrameId = 0;
-let dashboardDelayId = 0;
 
 const form = reactive({
   account: '',
@@ -39,34 +37,39 @@ const networkAvatars = [
 const loginButtonText = computed(() => (loading.value ? '正在进入...' : '登录进入工作台'));
 
 function clearScheduledDashboardEnter() {
-  window.cancelAnimationFrame(dashboardFrameId);
-  window.clearTimeout(dashboardDelayId);
-  dashboardFrameId = 0;
-  dashboardDelayId = 0;
 }
 
 function pushDashboard() {
-  router.push('/dashboard');
+  const root = document.documentElement;
+  const supportsViewTransition = typeof document.startViewTransition === 'function';
+
+  root.classList.add('welcome-route-transition');
+
+  const clearRouteTransition = () => {
+    root.classList.remove('welcome-route-transition');
+  };
+
+  if (!supportsViewTransition) {
+    router.push('/dashboard').finally(clearRouteTransition);
+    return;
+  }
+
+  try {
+    const transition = document.startViewTransition(() => router.push('/dashboard'));
+    transition.finished.finally(clearRouteTransition);
+  } catch {
+    router.push('/dashboard').finally(clearRouteTransition);
+  }
 }
 
-function enterDashboard({ defer = false } = {}) {
+function enterDashboard() {
   if (welcomeFinished) {
     return;
   }
 
   welcomeFinished = true;
   clearScheduledDashboardEnter();
-
-  if (!defer) {
-    pushDashboard();
-    return;
-  }
-
-  dashboardFrameId = window.requestAnimationFrame(() => {
-    dashboardFrameId = window.requestAnimationFrame(() => {
-      dashboardDelayId = window.setTimeout(pushDashboard, 48);
-    });
-  });
+  pushDashboard();
 }
 
 function skipWelcome() {
@@ -74,7 +77,7 @@ function skipWelcome() {
 }
 
 function finishWelcome() {
-  enterDashboard({ defer: true });
+  enterDashboard();
 }
 
 function showAction(message) {
@@ -114,6 +117,7 @@ function handleRegister() {
   errorMessage.value = '';
   showAction('注册申请入口已保留，后续接入商家客服开户注册流程');
 }
+
 onBeforeUnmount(() => {
   clearScheduledDashboardEnter();
 });

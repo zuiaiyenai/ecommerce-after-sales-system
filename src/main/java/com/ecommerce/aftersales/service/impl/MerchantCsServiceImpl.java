@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -39,8 +40,7 @@ import java.util.stream.Collectors;
 public class MerchantCsServiceImpl implements MerchantCsService {
 
     private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
-    private static final String SESSION_STATUS_AWAITING_EVALUATION = "AWAITING_EVALUATION";
-    private static final String SESSION_STATUS_READY_TO_CLOSE = "READY_TO_CLOSE";
+    private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final SysUserMapper sysUserMapper;
@@ -52,6 +52,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
     private final UserMapper userMapper;
+    private final ReviewInfoMapper reviewInfoMapper;
     private final MessageNoticeMapper messageNoticeMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
@@ -120,7 +121,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         overview.setAiEnabled(true);
         overview.setMetrics(List.of(
                 metric("待接入会话", waitingSessions, "+0", "orange"),
-                metric("待审核工单", pendingTickets, "+0", "slate"),
+                metric("待审核申请", pendingTickets, "+0", "slate"),
                 metric("超时预警", warningTickets, "+0", "green")
         ));
         overview.setTimeline(buildTimeline());
@@ -133,7 +134,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         for (TicketView ticket : allTickets().stream().filter(item -> "PENDING_REVIEW".equals(item.getStatus())).limit(5).toList()) {
             TodoItem item = new TodoItem();
             item.setId(ticket.getId());
-            item.setTitle("售后工单 #" + displayBusinessNo(ticket.getTicketNo()));
+            item.setTitle("售后申请 #" + ticket.getTicketNo());
             item.setTag(ticket.getAfterSalesType());
             item.setAmount(Optional.ofNullable(ticket.getApplyRefundAmount()).orElse("0.00") + " 元");
             item.setPriority(ticket.getPriority());
@@ -268,11 +269,23 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView requestSessionEvaluation(Long sessionId) {
         ChatSession session = findSession(sessionId);
-        session.setStatus(SESSION_STATUS_AWAITING_EVALUATION);
+        if (!"PROCESSING".equals(toMerchantSessionStatus(session))) {
+            throw new BizException("只有处理中会话才能发送评价请求");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        session.setStatus("AWAITING_EVALUATION");
         session.setResolved(0);
-        session.setUpdateTime(LocalDateTime.now());
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
         addSystemMessage(sessionId, "已发送服务评价邀请，等待用户评价。");
+        notificationService.createNotification(
+                session.getUserId(),
+                "请评价本次客服服务",
+                "您的售后问题已处理完成，请对本次客服服务进行评价。",
+                "CHAT",
+                sessionId,
+                "CHAT_SESSION"
+        );
         return toSessionView(session);
     }
 
@@ -280,12 +293,17 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView submitSessionEvaluation(Long sessionId, EvaluationRequest request) {
         ChatSession session = findSession(sessionId);
+        if (!"AWAITING_EVALUATION".equals(session.getStatus())) {
+            throw new BizException("当前会话不在待评价状态");
+        }
+        LocalDateTime now = LocalDateTime.now();
         session.setResolved(1);
         session.setSatisfaction(request.getRating() == null ? 5 : request.getRating());
         session.setStatus("CLOSED");
-        session.setCloseTime(LocalDateTime.now());
+        session.setCloseTime(now);
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
-        addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价");
+        addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价，会话已从列表移除");
         return toSessionView(session);
     }
 
@@ -293,9 +311,12 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView closeSession(Long sessionId) {
         ChatSession session = findSession(sessionId);
+        LocalDateTime now = LocalDateTime.now();
         session.setStatus("CLOSED");
-        session.setCloseTime(LocalDateTime.now());
+        session.setCloseTime(now);
+        session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
+        addSystemMessage(sessionId, "会话已从当前列表移除，历史内容已保留。");
         return toSessionView(session);
     }
 
@@ -329,18 +350,21 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public TicketView approveTicket(Long ticketId, String auditOpinion) {
         AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PENDING".equals(ticket.getStatus()) && !"PENDING_REVIEW".equals(ticket.getStatus())) {
+            throw new BizException("只有待审核状态的申请才能审核通过");
+        }
         String oldStatus = ticket.getStatus();
-        ticket.setStatus("APPROVED");
-        ticket.setAuditOpinion(StringUtils.hasText(auditOpinion) ? auditOpinion : "审核通过");
+        ticket.setStatus("PROCESSING");
+        ticket.setAuditOpinion(StringUtils.hasText(auditOpinion) ? auditOpinion : "审核通过，进入处理中");
         ticket.setAuditTime(LocalDateTime.now());
         ticket.setAssigneeId(ensureStaff().getId());
         afterSalesTicketMapper.updateById(ticket);
-        addTicketLog(ticket, oldStatus, "APPROVED", "APPROVE", ticket.getAuditOpinion());
+        addTicketLog(ticket, oldStatus, "PROCESSING", "APPROVE", ticket.getAuditOpinion());
         // Notify user about approval
         notificationService.createNotification(
                 ticket.getUserId(),
-                "售后工单审核通过",
-                "您的工单 " + ticket.getTicketNo() + " 已审核通过",
+                "售后申请审核通过",
+                "您的售后申请 " + ticket.getTicketNo() + " 已审核通过，当前处理中",
                 "AFTER_SALE",
                 ticket.getId(),
                 "TICKET"
@@ -352,6 +376,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public TicketView rejectTicket(Long ticketId, String rejectReason) {
         AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PENDING".equals(ticket.getStatus()) && !"PENDING_REVIEW".equals(ticket.getStatus())) {
+            throw new BizException("只有待审核状态的申请才能驳回");
+        }
         String oldStatus = ticket.getStatus();
         ticket.setStatus("REJECTED");
         ticket.setAuditOpinion(StringUtils.hasText(rejectReason) ? rejectReason : "资料不足，请补充凭证");
@@ -362,8 +389,35 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         // Notify user about rejection
         notificationService.createNotification(
                 ticket.getUserId(),
-                "售后工单审核驳回",
-                "您的工单 " + ticket.getTicketNo() + " 已被驳回，原因：" + ticket.getAuditOpinion(),
+                "售后申请已驳回",
+                "您的售后申请 " + ticket.getTicketNo() + " 已被驳回，原因：" + ticket.getAuditOpinion(),
+                "AFTER_SALE",
+                ticket.getId(),
+                "TICKET"
+        );
+        return toTicketView(ticket);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketView completeTicket(Long ticketId, String completeNote) {
+        AfterSalesTicket ticket = findTicket(ticketId);
+        if (!"PROCESSING".equals(ticket.getStatus())) {
+            throw new BizException("只有处理中状态的申请才能标记为已完成");
+        }
+        String oldStatus = ticket.getStatus();
+        ticket.setStatus("COMPLETED");
+        ticket.setCompleteTime(LocalDateTime.now());
+        ticket.setAuditOpinion(StringUtils.hasText(completeNote) ? completeNote : "处理完成");
+        ticket.setAssigneeId(ensureStaff().getId());
+        afterSalesTicketMapper.updateById(ticket);
+        addTicketLog(ticket, oldStatus, "COMPLETED", "COMPLETE", ticket.getAuditOpinion());
+        requestEvaluationForRelatedSessions(ticket);
+        // Notify user about completion
+        notificationService.createNotification(
+                ticket.getUserId(),
+                "售后申请已处理完成",
+                "您的售后已处理完成，请对本次服务进行评价。",
                 "AFTER_SALE",
                 ticket.getId(),
                 "TICKET"
@@ -457,6 +511,19 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         notice.setReadTime(LocalDateTime.now());
         messageNoticeMapper.updateById(notice);
         return toNoticeView(notice);
+    }
+
+    @Override
+    public PageResult<ReviewView> listReviews(long page, long size, String score, String keyword) {
+        List<ReviewView> records = reviewInfoMapper.selectList(new LambdaQueryWrapper<ReviewInfo>()
+                        .orderByDesc(ReviewInfo::getCreateTime))
+                .stream()
+                .map(this::toReviewView)
+                .filter(Objects::nonNull)
+                .filter(item -> !StringUtils.hasText(score) || scoreMatches(item, score))
+                .filter(item -> !StringUtils.hasText(keyword) || containsAny(keyword, item.getOrderNo(), item.getUser(), item.getProductName(), item.getTicketNo(), item.getContent()))
+                .toList();
+        return PageResult.of(records, page, size);
     }
 
     @Override
@@ -586,9 +653,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
         AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
         ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
-        OrderProductItem firstOrderItem = order == null ? null : orderItems(order.getId()).stream().findFirst().orElse(null);
-        String productName = ticket != null ? ticket.getProductName() : firstOrderItem == null ? null : firstOrderItem.getProductName();
-        ProductInfo catalogProduct = findProductByName(session.getMerchantCode(), productName).orElse(null);
+        ReviewInfo review = latestReview(session).orElse(null);
 
         SessionView view = new SessionView();
         view.setId(session.getId());
@@ -604,7 +669,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setWait(waitText(session.getCreateTime()));
         view.setEmotion(emotionText(session.getEmotionLabel()));
         view.setSourceChannel("小程序咨询");
-        view.setServiceUnreadCount(countUnreadUserMessages(session.getId()));
+        view.setServiceUnreadCount(serviceUnreadCount(session.getId()));
         view.setOrderNo(order == null ? null : order.getOrderNo());
         view.setProduct(productName);
         view.setProductName(productName);
@@ -615,55 +680,24 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));
         view.setAiSummary(session.getUserQuery());
-        String merchantSessionStatus = toMerchantSessionStatus(session);
-        boolean evaluationRequested = SESSION_STATUS_AWAITING_EVALUATION.equals(merchantSessionStatus)
-                || isEvaluationRequestMessage(lastMessage);
-        if (evaluationRequested && session.getSatisfaction() == null) {
-            merchantSessionStatus = SESSION_STATUS_AWAITING_EVALUATION;
-        }
-        view.setStatus(merchantSessionStatus);
-        view.setRating(session.getSatisfaction());
-        if (session.getSatisfaction() != null) {
-            view.setEvaluationStatus("SUBMITTED");
-        } else if (evaluationRequested) {
-            view.setEvaluationStatus("REQUESTED");
-            view.setEvaluationRequestedAt(format(lastMessage == null ? session.getUpdateTime() : lastMessage.getCreateTime()));
-        }
+        view.setStatus(toMerchantSessionStatus(session));
+        view.setRating(review == null ? session.getSatisfaction() : review.getOverallScore());
+        view.setEvaluationContent(review == null ? null : review.getContent());
+        view.setEvaluationRequestedAt("AWAITING_EVALUATION".equals(session.getStatus()) ? format(session.getUpdateTime()) : null);
+        view.setEvaluationStatus(evaluationStatus(session));
         view.setEvaluatedAt(session.getSatisfaction() == null ? null : format(session.getCloseTime()));
         return view;
     }
 
-    private boolean isEvaluationRequestMessage(ChatMessage message) {
-        return message != null
-                && "SYSTEM".equals(message.getRole())
-                && "已发送服务评价邀请，等待用户评价。".equals(message.getContent());
-    }
-
-    private Integer countUnreadUserMessages(Long sessionId) {
-        return Math.toIntExact(chatMessageMapper.selectCount(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "USER")
-                .isNull(ChatMessage::getReadTime)));
-    }
-
-    private void markUserMessagesRead(Long sessionId) {
-        ChatMessage lastUnreadUserMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "USER")
-                .isNull(ChatMessage::getReadTime)
-                .orderByDesc(ChatMessage::getCreateTime)
-                .orderByDesc(ChatMessage::getId)
-                .last("limit 1"));
-        if (lastUnreadUserMessage == null) {
-            return;
+    private Optional<ReviewInfo> latestReview(ChatSession session) {
+        if (session.getOrderId() == null) {
+            return Optional.empty();
         }
-        LocalDateTime readAt = LocalDateTime.now();
-        chatMessageMapper.update(null, new LambdaUpdateWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "USER")
-                .isNull(ChatMessage::getReadTime)
-                .set(ChatMessage::getReadTime, readAt));
-        broadcastReadReceipt(sessionId, lastUnreadUserMessage.getId(), readAt);
+        return Optional.ofNullable(reviewInfoMapper.selectOne(new LambdaQueryWrapper<ReviewInfo>()
+                .eq(ReviewInfo::getOrderId, session.getOrderId())
+                .eq(ReviewInfo::getUserId, session.getUserId())
+                .orderByDesc(ReviewInfo::getCreateTime)
+                .last("limit 1")));
     }
 
     private Optional<ChatMessage> lastMessage(Long sessionId) {
@@ -671,6 +705,21 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                 .eq(ChatMessage::getSessionId, sessionId)
                 .orderByDesc(ChatMessage::getCreateTime)
                 .last("limit 1")));
+    }
+
+    private Integer serviceUnreadCount(Long sessionId) {
+        ChatMessage lastServiceMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .eq(ChatMessage::getRole, "SERVICE")
+                .orderByDesc(ChatMessage::getCreateTime)
+                .last("limit 1"));
+        LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .eq(ChatMessage::getRole, "USER");
+        if (lastServiceMessage != null && lastServiceMessage.getCreateTime() != null) {
+            wrapper.gt(ChatMessage::getCreateTime, lastServiceMessage.getCreateTime());
+        }
+        return Math.toIntExact(chatMessageMapper.selectCount(wrapper));
     }
 
     private MessageView toMessageView(ChatMessage message) {
@@ -703,12 +752,12 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setOrderId(ticket.getOrderId());
         view.setOrderNo(ticket.getOrderNo());
         view.setUserId(ticket.getUserId());
-        view.setTitle(Optional.ofNullable(ticket.getProductName()).orElse("售后工单"));
+        view.setTitle(Optional.ofNullable(ticket.getProductName()).orElse("售后申请"));
         view.setStatus(toMerchantTicketStatus(ticket.getStatus()));
         view.setAfterSalesType(toMerchantAfterSalesType(Optional.ofNullable(ticket.getAfterSaleType()).orElse(ticket.getAiRecommendType())));
         view.setReasonType(ticket.getReason());
         view.setApplyRefundAmount(money(ticket.getRefundAmount()));
-        view.setApprovedRefundAmount("APPROVED".equals(ticket.getStatus()) || "COMPLETED".equals(ticket.getStatus()) ? money(ticket.getRefundAmount()) : null);
+        view.setApprovedRefundAmount("PROCESSING".equals(ticket.getStatus()) || "COMPLETED".equals(ticket.getStatus()) ? money(ticket.getRefundAmount()) : null);
         view.setRefundStatus("COMPLETED".equals(ticket.getStatus()) ? "SUCCESS" : "PENDING");
         view.setPriority(toPriorityText(ticket.getPriority()));
         view.setResponsibility("MERCHANT");
@@ -781,6 +830,93 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return view;
     }
 
+    private ReviewView toReviewView(ReviewInfo review) {
+        OrderInfo order = review.getOrderId() == null ? null : orderInfoMapper.selectById(review.getOrderId());
+        if (order == null || !currentMerchantCode().equals(order.getMerchantCode())) {
+            return null;
+        }
+        User user = userMapper.selectById(review.getUserId());
+        AfterSalesTicket ticket = latestTicketByOrder(order.getId()).orElse(null);
+        ProductInfo product = firstProductByOrder(order.getId()).orElse(null);
+        ReviewView view = new ReviewView();
+        view.setId(review.getId());
+        view.setOrderId(order.getId());
+        view.setOrderNo(order.getOrderNo());
+        view.setUserId(review.getUserId());
+        view.setUser(userDisplayName(user));
+        view.setProductName(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
+        view.setProductImage(product == null ? null : product.getMainImage());
+        view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
+        view.setOverallScore(review.getOverallScore());
+        Map<String, Integer> detailScores = reviewDetailScores(review);
+        view.setResponseSpeedScore(detailScores.get("responseSpeedScore"));
+        view.setServiceAttitudeScore(detailScores.get("serviceAttitudeScore"));
+        view.setProfessionalScore(detailScores.get("professionalScore"));
+        view.setEfficiencyScore(detailScores.get("efficiencyScore"));
+        view.setProductScore(review.getProductScore());
+        view.setLogisticsScore(review.getLogisticsScore());
+        view.setServiceScore(review.getServiceScore());
+        view.setAfterSaleScore(review.getAfterSaleScore());
+        view.setContent(review.getContent());
+        view.setSentiment(review.getSentiment());
+        view.setCreatedAt(format(review.getCreateTime()));
+        return view;
+    }
+
+    private Map<String, Integer> reviewDetailScores(ReviewInfo review) {
+        if (StringUtils.hasText(review.getTopics())) {
+            try {
+                Map<String, Integer> scores = objectMapper.readValue(review.getTopics(), new TypeReference<>() {
+                });
+                return Map.of(
+                        "responseSpeedScore", scoreOrDefault(scores.get("responseSpeedScore"), review.getLogisticsScore()),
+                        "serviceAttitudeScore", scoreOrDefault(scores.get("serviceAttitudeScore"), review.getServiceScore()),
+                        "professionalScore", scoreOrDefault(scores.get("professionalScore"), review.getServiceScore()),
+                        "efficiencyScore", scoreOrDefault(scores.get("efficiencyScore"), review.getAfterSaleScore())
+                );
+            } catch (Exception ignored) {
+                // Fall through to legacy field mapping.
+            }
+        }
+        return Map.of(
+                "responseSpeedScore", scoreOrDefault(review.getLogisticsScore(), review.getOverallScore()),
+                "serviceAttitudeScore", scoreOrDefault(review.getServiceScore(), review.getOverallScore()),
+                "professionalScore", scoreOrDefault(review.getServiceScore(), review.getOverallScore()),
+                "efficiencyScore", scoreOrDefault(review.getAfterSaleScore(), review.getOverallScore())
+        );
+    }
+
+    private Integer scoreOrDefault(Integer value, Integer fallback) {
+        if (value != null) {
+            return value;
+        }
+        return fallback == null ? 0 : fallback;
+    }
+
+    private Optional<AfterSalesTicket> latestTicketByOrder(Long orderId) {
+        return Optional.ofNullable(afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderId)
+                .orderByDesc(AfterSalesTicket::getCreateTime)
+                .last("limit 1")));
+    }
+
+    private Optional<ProductInfo> firstProductByOrder(Long orderId) {
+        OrderItem item = orderItemMapper.selectOne(new LambdaQueryWrapper<OrderItem>()
+                .eq(OrderItem::getOrderId, orderId)
+                .last("limit 1"));
+        return item == null ? Optional.empty() : Optional.ofNullable(productInfoMapper.selectById(item.getProductId()));
+    }
+
+    private boolean scoreMatches(ReviewView item, String score) {
+        int value = item.getOverallScore() == null ? 0 : item.getOverallScore();
+        return switch (score) {
+            case "GOOD" -> value >= 5;
+            case "NORMAL" -> value == 3 || value == 4;
+            case "BAD" -> value > 0 && value <= 2;
+            default -> true;
+        };
+    }
+
     private ProductView toProductView(ProductInfo product) {
         ProductView view = new ProductView();
         view.setId(product.getId());
@@ -824,6 +960,49 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         chatMessageMapper.insert(message);
     }
 
+    private void requestEvaluationForRelatedSessions(AfterSalesTicket ticket) {
+        List<ChatSession> sessions = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getMerchantCode, currentMerchantCode())
+                .and(wrapper -> {
+                    wrapper.eq(ChatSession::getTicketId, ticket.getId());
+                    if (ticket.getOrderId() != null) {
+                        wrapper.or().eq(ChatSession::getOrderId, ticket.getOrderId());
+                    }
+                })
+                .notIn(ChatSession::getStatus, List.of("AWAITING_EVALUATION", "READY_TO_CLOSE")));
+        for (ChatSession session : sessions) {
+            session.setStatus("AWAITING_EVALUATION");
+            session.setResolved(0);
+            session.setHumanAgentId(ensureStaff().getId());
+            session.setUpdateTime(LocalDateTime.now());
+            chatSessionMapper.updateById(session);
+            addSystemMessage(session.getId(), "您的售后已处理完成，请对本次服务进行评价。");
+            notificationService.createNotification(
+                    session.getUserId(),
+                    "请评价本次客服服务",
+                    "您的售后已处理完成，请对本次客服服务进行评价。",
+                    "CHAT",
+                    session.getId(),
+                    "CHAT_SESSION"
+            );
+        }
+    }
+
+    private void syncOrderAfterTicketCompleted(AfterSalesTicket ticket) {
+        if (ticket.getOrderId() == null) {
+            return;
+        }
+        OrderInfo order = orderInfoMapper.selectById(ticket.getOrderId());
+        if (order == null) {
+            return;
+        }
+        if ("AFTERSALE".equals(order.getStatus())) {
+            order.setStatus("RECEIVED");
+            order.setUpdateTime(LocalDateTime.now());
+            orderInfoMapper.updateById(order);
+        }
+    }
+
     private void addTicketLog(AfterSalesTicket ticket, String oldStatus, String newStatus, String action, String content) {
         TicketLog log = new TicketLog();
         log.setTicketId(ticket.getId());
@@ -851,9 +1030,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private AfterSalesTicket findTicket(Long ticketId) {
         AfterSalesTicket ticket = afterSalesTicketMapper.selectById(ticketId);
         if (ticket == null) {
-            throw new BizException(404, "工单不存在");
+            throw new BizException(404, "售后申请不存在");
         }
-        assertCurrentMerchant(ticket.getMerchantCode(), "工单不存在");
+        assertCurrentMerchant(ticket.getMerchantCode(), "售后申请不存在");
         return ticket;
     }
 
@@ -918,7 +1097,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         allTickets().stream().limit(3).forEach(ticket -> {
             TimelineItem item = new TimelineItem();
             item.setTime(Optional.ofNullable(ticket.getAuditTime()).orElse(""));
-            item.setTitle("工单 " + ticket.getTicketNo() + " 当前状态：" + ticket.getStatus());
+            item.setTitle("申请 " + ticket.getTicketNo() + " 当前状态：" + ticket.getStatus());
             item.setType("HIGH".equals(ticket.getPriority()) ? "warn" : "normal");
             items.add(item);
         });
@@ -1033,16 +1212,53 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     private String toMerchantSessionStatus(ChatSession session) {
+        if ("CLOSED".equals(session.getStatus())) {
+            return "CLOSED";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session)) {
+            return "READY_TO_CLOSE";
+        }
+        if ("READY_TO_CLOSE".equals(session.getStatus())) {
+            return "READY_TO_CLOSE";
+        }
+        if ("RESOLVED".equals(session.getStatus())) {
+            return "RESOLVED";
+        }
         if (Integer.valueOf(1).equals(session.getResolved())) {
             return "RESOLVED";
         }
         return switch (Optional.ofNullable(session.getStatus()).orElse("ACTIVE")) {
             case "WAITING" -> "WAITING";
+            case "AWAITING_EVALUATION" -> "AWAITING_EVALUATION";
             case "CLOSED" -> "CLOSED";
             case SESSION_STATUS_AWAITING_EVALUATION -> SESSION_STATUS_AWAITING_EVALUATION;
             case SESSION_STATUS_READY_TO_CLOSE -> SESSION_STATUS_READY_TO_CLOSE;
             default -> "PROCESSING";
         };
+    }
+
+    private boolean canCloseSession(ChatSession session) {
+        return "READY_TO_CLOSE".equals(session.getStatus())
+                || Integer.valueOf(1).equals(session.getResolved())
+                || ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session));
+    }
+
+    private boolean isEvaluationExpired(ChatSession session) {
+        return session.getUpdateTime() != null
+                && Duration.between(session.getUpdateTime(), LocalDateTime.now()).compareTo(EVALUATION_TIMEOUT) >= 0;
+    }
+
+    private String evaluationStatus(ChatSession session) {
+        if (session.getSatisfaction() != null) {
+            return "SUBMITTED";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus()) && isEvaluationExpired(session)) {
+            return "TIMEOUT";
+        }
+        if ("AWAITING_EVALUATION".equals(session.getStatus())) {
+            return "PENDING";
+        }
+        return null;
     }
 
     private String toMerchantTicketStatus(String status) {

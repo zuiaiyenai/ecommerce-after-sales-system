@@ -2,8 +2,12 @@
 .claude/
 .agents/
 target/
+.mvn/repository/
 src/main/resources/application-local.yml
 project.private.config.json
+python_agent/db.local.env
+python_agent/**/__pycache__/
+*.pyc
 frontend/uniapp/node_modules/
 frontend/uniapp/dist/
 frontend/uniapp/.vite/

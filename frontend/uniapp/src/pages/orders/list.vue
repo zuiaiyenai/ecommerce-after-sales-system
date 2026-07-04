@@ -47,6 +47,7 @@
           <view class="order-actions">
             <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
             <button v-if="order.status === 'RECEIVED' || order.status === 'SHIPPED'" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
+            <button v-if="order.status === 'AFTERSALE'" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
           </view>
         </view>
       </view>
@@ -56,8 +57,8 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
 
 const activeTab = ref('all')
 const allOrders = ref([])
@@ -121,6 +122,9 @@ onLoad((options) => {
   if (options.tab) {
     activeTab.value = options.tab
   }
+})
+
+onShow(() => {
   loadOrders()
 })
 
@@ -138,6 +142,20 @@ function goDetail(id) {
 
 function applyAfterSale(id) {
   uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + id })
+}
+
+function contactService(order) {
+  const params = [
+    'orderId=' + encodeURIComponent(order.id || ''),
+    'orderNo=' + encodeURIComponent(order.orderNo || ''),
+    'productName=' + encodeURIComponent(order.productName || ''),
+    'productIcon=' + encodeURIComponent(order.productIcon || ''),
+    'productSpec=' + encodeURIComponent(order.spec || ''),
+    'amount=' + encodeURIComponent(order.totalPrice || order.price || ''),
+    'status=' + encodeURIComponent(order.status || ''),
+    'statusText=' + encodeURIComponent(order.statusText || '')
+  ].join('&')
+  uni.navigateTo({ url: `/pages/chat/consult?${params}` })
 }
 
 async function confirmReceive(id) {

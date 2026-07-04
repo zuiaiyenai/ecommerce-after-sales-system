@@ -123,6 +123,12 @@ public class MerchantCsController {
         return ApiResponse.success("驳回成功", merchantCsService.rejectTicket(ticketId, request.getRejectReason()));
     }
 
+    @PostMapping("/tickets/{ticketId}/complete")
+    public ApiResponse<TicketView> completeTicket(@PathVariable Long ticketId,
+                                                  @RequestBody TicketCompleteRequest request) {
+        return ApiResponse.success("处理完成", merchantCsService.completeTicket(ticketId, request.getCompleteNote()));
+    }
+
     @GetMapping("/orders")
     public ApiResponse<PageResult<OrderView>> listOrders(@RequestParam(defaultValue = "1") long page,
                                                          @RequestParam(defaultValue = "10") long size,
@@ -152,6 +158,14 @@ public class MerchantCsController {
     @PutMapping("/notices/{noticeId}/read")
     public ApiResponse<NoticeView> markNoticeRead(@PathVariable Long noticeId) {
         return ApiResponse.success("标记成功", merchantCsService.markNoticeRead(noticeId));
+    }
+
+    @GetMapping("/reviews")
+    public ApiResponse<PageResult<ReviewView>> listReviews(@RequestParam(defaultValue = "1") long page,
+                                                           @RequestParam(defaultValue = "10") long size,
+                                                           @RequestParam(required = false) String score,
+                                                           @RequestParam(required = false) String keyword) {
+        return ApiResponse.success("获取成功", merchantCsService.listReviews(page, size, score, keyword));
     }
 
     @GetMapping("/products")

@@ -10,7 +10,7 @@ const props = defineProps({
   }
 });
 
-defineEmits(['refresh', 'toggleTheme']);
+defineEmits(['refresh', 'logout', 'toggleTheme']);
 
 const route = useRoute();
 const router = useRouter();
@@ -64,6 +64,7 @@ function handleBack() {
           <span>{{ themeLabel }}</span>
         </template>
       </button>
+      <button v-if="showLogout" type="button" class="ghost-mini" @click="$emit('logout')">退出登录</button>
     </div>
   </header>
 </template>

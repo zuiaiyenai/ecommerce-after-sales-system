@@ -1,25 +1,26 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { approveTicket, getTicket, getTicketLogs, rejectTicket } from '../api/merchantCs';
+import { approveTicket, completeTicket, getTicket, getTicketLogs, rejectTicket } from '../api/merchantCs';
 
 const route = useRoute();
 const router = useRouter();
 const shell = inject('merchantCsShell', null);
 const ticket = ref(null);
 const logs = ref([]);
+const actionLoading = ref('');
 
 const statusMap = {
   PENDING_REVIEW: '待审核',
   PROCESSING: '处理中',
-  APPROVED: '已通过',
+  COMPLETED: '已完成',
   REJECTED: '已驳回'
 };
 
 const statusDescMap = {
-  PENDING_REVIEW: '等待客服核验凭证，可执行通过或驳回。',
-  PROCESSING: '当前工单仍可执行审核；通过后进入售后处理，驳回后关闭申请。',
-  APPROVED: '审核已通过，等待后续售后动作完成。',
+  PENDING_REVIEW: '等待客服审核售后申请，可通过或驳回。',
+  PROCESSING: '已审核通过，正在处理中，完成后可点击"处理完成"。',
+  COMPLETED: '售后已处理完成。',
   REJECTED: '审核已驳回，本次申请不再进入处理。'
 };
 
@@ -34,7 +35,9 @@ const priorityMap = {
   NORMAL: '普通优先级'
 };
 
-const reviewable = computed(() => ['PENDING_REVIEW', 'PROCESSING'].includes(ticket.value?.status));
+const reviewable = computed(() => ticket.value?.status === 'PENDING_REVIEW');
+const completable = computed(() => ticket.value?.status === 'PROCESSING');
+const isActionBusy = computed(() => Boolean(actionLoading.value));
 
 async function loadPage() {
   ticket.value = await getTicket(route.params.ticketId);
@@ -42,21 +45,54 @@ async function loadPage() {
 }
 
 async function handleApprove() {
-  if (!reviewable.value) {
+  if (!reviewable.value || isActionBusy.value) {
     return;
   }
-  ticket.value = await approveTicket(route.params.ticketId, '客服前端审核通过');
-  shell?.setAction('工单审核已通过');
-  shell?.refreshShell();
+  actionLoading.value = 'approve';
+  try {
+    ticket.value = await approveTicket(route.params.ticketId, '客服审核通过，进入处理中');
+    logs.value = await getTicketLogs(route.params.ticketId);
+    shell?.setAction('售后申请审核已通过，进入处理中');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '审核通过失败');
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
 async function handleReject() {
-  if (!reviewable.value) {
+  if (!reviewable.value || isActionBusy.value) {
     return;
   }
-  ticket.value = await rejectTicket(route.params.ticketId, '客服前端驳回：资料不足');
-  shell?.setAction('工单已驳回');
-  shell?.refreshShell();
+  actionLoading.value = 'reject';
+  try {
+    ticket.value = await rejectTicket(route.params.ticketId, '客服驳回：资料不足');
+    logs.value = await getTicketLogs(route.params.ticketId);
+    shell?.setAction('售后申请已驳回');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '驳回申请失败');
+  } finally {
+    actionLoading.value = '';
+  }
+}
+
+async function handleComplete() {
+  if (!completable.value || isActionBusy.value) {
+    return;
+  }
+  actionLoading.value = 'complete';
+  try {
+    ticket.value = await completeTicket(route.params.ticketId, '客服处理完成');
+    logs.value = await getTicketLogs(route.params.ticketId);
+    shell?.setAction('售后处理已完成');
+    shell?.refreshShell();
+  } catch (error) {
+    shell?.setAction(error.message || '处理完成失败');
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
 function statusLabel(status) {
@@ -76,8 +112,8 @@ function priorityLabel(priority) {
 }
 
 function statusTone(status) {
-  if (status === 'APPROVED') {
-    return 'approved';
+  if (status === 'COMPLETED') {
+    return 'completed';
   }
   if (status === 'REJECTED') {
     return 'rejected';
@@ -96,7 +132,7 @@ onMounted(loadPage);
     <article class="wide-panel ticket-detail-panel">
       <div class="ticket-detail-head">
         <div>
-          <span class="eyebrow">工单详情</span>
+          <span class="eyebrow">售后申请详情</span>
           <h2>{{ ticket?.ticketNo }} · {{ ticket?.title }}</h2>
         </div>
         <span :class="['ticket-status', statusTone(ticket?.status)]">{{ statusLabel(ticket?.status) }}</span>
@@ -111,8 +147,15 @@ onMounted(loadPage);
       </div>
 
       <div class="action-row">
-        <button type="button" class="primary-action compact" :disabled="!reviewable" @click="handleApprove">审核通过</button>
-        <button type="button" class="ghost-mini danger" :disabled="!reviewable" @click="handleReject">驳回申请</button>
+        <button v-if="reviewable" type="button" class="primary-action compact" :disabled="isActionBusy" @click="handleApprove">
+          {{ actionLoading === 'approve' ? '处理中' : '审核通过' }}
+        </button>
+        <button v-if="reviewable" type="button" class="ghost-mini danger" :disabled="isActionBusy" @click="handleReject">
+          {{ actionLoading === 'reject' ? '处理中' : '驳回申请' }}
+        </button>
+        <button v-if="completable" type="button" class="primary-action compact complete" :disabled="isActionBusy" @click="handleComplete">
+          {{ actionLoading === 'complete' ? '处理中' : '处理完成' }}
+        </button>
         <button type="button" class="ghost-mini" @click="router.push('/orders')">查看订单</button>
       </div>
     </article>
