@@ -90,6 +90,25 @@ class ConversationPersistenceService:
         )
 
         user_message_ids = []
+        attachment_url_map: dict[str, str] = {}
+        if isinstance(result.raw, dict):
+            attachment_url_map = result.raw.get("_attachment_urls") or {}
+        for attachment in context.attachments:
+            if not attachment.source:
+                continue
+            saved_url = attachment_url_map.get(attachment.name)
+            content = saved_url if saved_url else attachment.source
+            user_message_ids.append(
+                self.repository.insert_chat_message(
+                    session_id=session["id"],
+                    sender_id=user_id,
+                    sender_role="USER",
+                    content=content,
+                    ai_intent=result.intent,
+                    emotion_label=self._map_emotion_label(user_emotion.label.value),
+                    message_type="IMAGE",
+                )
+            )
         for user_content in self._user_message_contents(context):
             user_message_ids.append(
                 self.repository.insert_chat_message(
@@ -125,7 +144,6 @@ class ConversationPersistenceService:
         )
 
         if result.fallback_result.need_human:
-            handoff_message = "AI 已建议转人工，等待客服接入。"
             self.repository.mark_session_waiting_human(
                 session_id=session["id"],
                 ticket_id=ticket_id,
@@ -135,20 +153,6 @@ class ConversationPersistenceService:
                     if result.fallback_result.emotion
                     else "calm"
                 ),
-            )
-            self.repository.insert_chat_message(
-                session_id=session["id"],
-                sender_id=0,
-                sender_role="SYSTEM",
-                content=handoff_message,
-                ai_intent=result.intent,
-                emotion_label="NEUTRAL",
-            )
-            self.repository.update_session_snapshot(
-                session_id=session["id"],
-                last_message_content=handoff_message,
-                ai_summary=self._build_human_session_summary(context, result),
-                increase_user_unread=True,
             )
 
         ticket_log_id = None

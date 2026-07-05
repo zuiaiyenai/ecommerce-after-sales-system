@@ -118,6 +118,7 @@ public class AgentGatewayDtos {
         private String fallback_decision;
         private String fallback_progress_hint;
         private Boolean fallback_need_human;
+        private String session_mode;
         private TicketDto ticket;
         private Map<String, Object> handoff_summary;
         private ImageReviewDto image_review;

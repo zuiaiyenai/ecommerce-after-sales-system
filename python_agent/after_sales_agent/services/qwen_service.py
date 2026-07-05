@@ -135,6 +135,7 @@ class QwenReturnService:
             )
         confidence = self._parse_confidence(raw.get("confidence"))
         is_detailed = self._parse_bool(raw.get("quality_description_detailed"), None)
+        evidence_consistent = self._parse_bool(raw.get("evidence_consistent"), None)
         if intent is None or scene is None:
             return request, {"mode": "invalid_model_output", "raw": raw}
         if self._looks_like_specific_issue(request.message):
@@ -148,34 +149,9 @@ class QwenReturnService:
             is_detailed = None
             if confidence < 0.8:
                 confidence = 0.8
-        if (
-            scene == AfterSalesScene.QUALITY_ISSUE
-            and context.image_review is not None
-            and context.image_review.success
-            and context.image_review.has_damage_area
-            and normalized_issue
-            and not self._is_generic_quality_description_only(request, normalized_issue)
-        ):
-            scene = AfterSalesScene.PRODUCT_DAMAGE
         if is_detailed is None and normalized_issue:
             is_detailed = self._looks_like_specific_issue(normalized_issue)
-        user_has_specific_issue = any(
-            self._looks_like_specific_issue(value)
-            for value in (request.message, request.description, request.reason)
-            if value
-        )
-        if (
-            context.image_review is not None
-            and context.image_review.success
-            and context.image_review.has_damage_area
-            and not user_has_specific_issue
-        ):
-            if scene == AfterSalesScene.PRODUCT_DAMAGE:
-                scene = AfterSalesScene.QUALITY_ISSUE
-            is_detailed = False
         if self._is_generic_quality_description_only(request, normalized_issue):
-            if scene == AfterSalesScene.PRODUCT_DAMAGE:
-                scene = AfterSalesScene.QUALITY_ISSUE
             is_detailed = False
         if (
             intent == Intent.SUPPLEMENT_EVIDENCE
@@ -211,6 +187,7 @@ class QwenReturnService:
             "scene": scene.value,
             "confidence": confidence,
             "quality_description_detailed": is_detailed,
+            "evidence_consistent": evidence_consistent,
             "reason": reason,
             "normalized_issue": normalized_issue,
             "missing_detail": missing_detail,
@@ -222,6 +199,7 @@ class QwenReturnService:
             llm_confidence=confidence,
             normalized_issue=review["normalized_issue"],
             quality_description_detailed=is_detailed,
+            evidence_consistent=evidence_consistent,
         ), review
 
     @staticmethod
@@ -411,18 +389,19 @@ class QwenReturnService:
             "scene": "quality_issue|product_damage|package_damage|wrong_or_missing_items|logistics_issue|progress_query|general",
             "confidence": "0到1之间的小数",
             "quality_description_detailed": "boolean|null，仅质量/功能异常场景需要判断",
+            "evidence_consistent": "boolean|null。图与描述是否一致。可见破损+损伤描述=true 功能异常描述+可见破损=false 无图=null",
             "normalized_issue": "提炼出的具体异常，无法提炼则为空字符串",
             "missing_detail": "如果信息不够，还缺什么信息",
             "reason": "一句话说明判断依据",
         }
         return (
-            "你是售后系统里的对话理解器，负责把用户当前消息结合近期上下文转换成结构化结论。\n"
-            "必须识别用户当前是在申请售后、查询进度、补充凭证、要求人工，还是普通咨询。\n"
-            "如果上一轮客服要求用户补充异常表现，当前用户只回复“没有声音”“连不上”“充不了电”等短句，"
-            "也要理解为正在补充售后申请的质量/功能异常，而不是普通咨询。\n"
-            "quality_description_detailed 判定为 true 的条件：用户描述了具体异常现象、受影响部位或故障行为，例如没有声音、某一侧不响、无法开机、充电异常、连接失败、按键失灵等。\n"
-            "quality_description_detailed 判定为 false 的条件：只有质量问题、商品有问题、申请售后、补充说明、尽快处理、已上传图片等概括性表达。\n"
-            "不要因为商品图片或凭证图片存在，就推断功能异常已经描述清楚；只根据文本里的异常描述判断。\n"
+            "你是售后系统里的对话理解器，负责把用户当前消息结合图片审核结果转换成结构化结论。\n"
+            "必须识别用户是在申请售后、查询进度、补充凭证、要求人工，还是普通咨询。\n"
+            "quality_description_detailed true=具体异常(没声音 无法开机 闪烁 裂开 碎裂 按键失灵) false=概括(质量问题 已上传图片)。\n"
+            "evidence_consistent 根据 image_review 的 has_damage_area/has_outer_package/has_logistics_label 与用户描述对比：\n"
+            "  true=图片可印证描述(破损图+破损描述 物流面单+物流问题)\n"
+            "  false=图片无法印证(破损图+功能异常描述如没声音/闪烁)\n"
+            "  null=无图片或无法判断\n"
             "只输出 JSON，不要输出 Markdown 或额外解释。\n"
             f"JSON字段示例：{json.dumps(schema, ensure_ascii=False)}"
         )

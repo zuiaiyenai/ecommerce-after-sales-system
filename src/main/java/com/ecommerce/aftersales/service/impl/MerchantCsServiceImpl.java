@@ -28,6 +28,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -618,6 +619,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                         .orderByDesc(ChatSession::getUpdateTime))
                 .stream()
                 .map(this::toSessionView)
+                .sorted(Comparator.comparingLong((SessionView view) -> Optional.ofNullable(view.getWaitSeconds()).orElse(0L)).reversed())
                 .toList();
     }
 
@@ -626,6 +628,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
         AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
         ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
+        ChatMessage waitStartMessage = waitStartMessage(session.getId()).orElse(null);
+        ProductInfo product = order == null ? null : firstProductByOrder(order.getId()).orElse(null);
         ReviewInfo review = latestReview(session).orElse(null);
 
         SessionView view = new SessionView();
@@ -639,15 +643,18 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setUser(userDisplayName(user));
         view.setTopic(Optional.ofNullable(session.getUserQuery()).orElse("在线咨询"));
         view.setLevel(priorityLabel(ticket));
-        view.setWait(waitText(session.getCreateTime()));
+        view.setWait(waitText(waitStartMessage == null ? null : waitStartMessage.getCreateTime()));
+        view.setWaitStartedAt(waitStartMessage == null ? null : format(waitStartMessage.getCreateTime()));
+        view.setWaitSeconds(waitSeconds(waitStartMessage == null ? null : waitStartMessage.getCreateTime()));
         view.setEmotion(emotionText(session.getEmotionLabel()));
         view.setSourceChannel("小程序咨询");
         view.setServiceUnreadCount(serviceUnreadCount(session.getId()));
         view.setOrderNo(order == null ? null : order.getOrderNo());
-        view.setProduct(ticket == null ? null : ticket.getProductName());
-        view.setProductName(ticket == null ? null : ticket.getProductName());
+        view.setProduct(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
+        view.setProductName(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
+        view.setProductImage(product == null ? null : product.getMainImage());
         view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
-        view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
+        view.setLastMessageContent(lastMessage == null ? null : ("IMAGE".equals(lastMessage.getMessageType()) ? "[图片]" : lastMessage.getContent()));
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));
         view.setAiSummary(session.getUserQuery());
         view.setStatus(toMerchantSessionStatus(session));
@@ -675,6 +682,23 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                 .eq(ChatMessage::getSessionId, sessionId)
                 .orderByDesc(ChatMessage::getCreateTime)
                 .last("limit 1")));
+    }
+
+    private Optional<ChatMessage> waitStartMessage(Long sessionId) {
+        ChatMessage lastServiceMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .eq(ChatMessage::getRole, "SERVICE")
+                .orderByDesc(ChatMessage::getCreateTime)
+                .last("limit 1"));
+        LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .eq(ChatMessage::getRole, "USER")
+                .orderByDesc(ChatMessage::getCreateTime)
+                .last("limit 1");
+        if (lastServiceMessage != null && lastServiceMessage.getCreateTime() != null) {
+            wrapper.gt(ChatMessage::getCreateTime, lastServiceMessage.getCreateTime());
+        }
+        return Optional.ofNullable(chatMessageMapper.selectOne(wrapper));
     }
 
     private Integer serviceUnreadCount(Long sessionId) {
@@ -1128,8 +1152,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (createTime == null) {
             return "等待中";
         }
-        long minutes = Math.max(Duration.between(createTime, LocalDateTime.now()).toMinutes(), 0);
-        return "等待 " + String.format("%02d:%02d", minutes / 60, minutes % 60);
+        long seconds = waitSeconds(createTime);
+        return "等待 " + String.format("%02d:%02d", seconds / 60, seconds % 60);
+    }
+
+    private long waitSeconds(LocalDateTime createTime) {
+        if (createTime == null) {
+            return 0L;
+        }
+        return Math.max(Duration.between(createTime, LocalDateTime.now()).toSeconds(), 0L);
     }
 
     private String emotionText(String emotionLabel) {

@@ -6,6 +6,7 @@ import {
   getSession,
   getSessionMessages,
   getSessions,
+  resolveAssetUrl,
   requestSessionEvaluation,
   sendSessionMessage,
   submitSessionEvaluation
@@ -255,6 +256,14 @@ function senderLabel(role) {
   return role === 'SERVICE' ? '客服' : '用户';
 }
 
+function showImage(msg) {
+  return msg && msg.messageType === 'IMAGE';
+}
+
+function imageSrc(msg) {
+  return resolveAssetUrl(msg && msg.content);
+}
+
 function fieldValue(value, fallback = '暂无') {
   return value || fallback;
 }
@@ -321,8 +330,8 @@ onUnmounted(() => {
       <header class="template-chat-head">
         <span class="template-user-avatar large">{{ fieldValue(session?.user, '访客').slice(0, 1) }}</span>
         <div>
-          <h2>{{ fieldValue(session?.user, '未知用户') }} <em>VIP</em></h2>
-          <p>会员等级：V3　联系方式：138****5678</p>
+          <h2>{{ fieldValue(session?.user, '未知用户') }}</h2>
+          <p>订单号：{{ fieldValue(session?.orderNo, '--') }}</p>
         </div>
         <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
         <button type="button" class="template-order-button" @click="router.push(`/orders/${session?.orderNo}`)">查看订单</button>
@@ -336,23 +345,30 @@ onUnmounted(() => {
         >
           <span class="template-user-avatar mini">{{ senderLabel(message.senderRole).slice(0, 1) }}</span>
           <div class="template-message-content">
-            <p>{{ message.content }}</p>
-            <time>{{ message.senderRole === 'SERVICE' ? '10:26' : '10:24' }}</time>
+            <img
+              v-if="showImage(message)"
+              :src="imageSrc(message)"
+              alt="图片"
+              style="max-width:200px;max-height:200px;border-radius:8px;display:block"
+            />
+            <p v-else>{{ message.content }}</p>
           </div>
         </div>
 
         <section class="template-product-card">
-          <div class="product-thumb">耳机</div>
-          <div>
-            <strong>{{ fieldValue(session?.product || session?.productName, '轻音降噪耳机 Pro') }}</strong>
-            <span>颜色：奶白色</span>
-            <em>¥299.00　×1</em>
+          <img
+            v-if="session?.productImage"
+            class="product-thumb"
+            :src="imageSrc({content: session.productImage})"
+            alt="商品"
+          />
+          <div v-else class="product-thumb">{{ fieldValue(session?.productName || session?.product, '商').slice(0, 1) }}</div>
+          <div class="product-card-main">
+            <strong>{{ fieldValue(session?.product || session?.productName, '售后商品') }}</strong>
+            <span>订单号：{{ fieldValue(session?.orderNo, '--') }}</span>
+            <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
           </div>
-          <div class="product-status">
-            <strong>售后中</strong>
-            <span>{{ fieldValue(session?.topic, '退款进度咨询') }}</span>
-          </div>
-          <button type="button" aria-label="查看商品">›</button>
+          <button type="button" aria-label="查看订单" @click="router.push(`/orders/${session?.orderId}`)">查看订单</button>
         </section>
       </div>
 
@@ -438,17 +454,16 @@ onUnmounted(() => {
       <section class="template-assist-card">
         <div class="template-card-title">
           <h2>用户信息</h2>
-          <button type="button">更多 ›</button>
         </div>
         <div class="template-user-info">
-          <span>用户等级</span>
-          <strong><em>V3</em> 高级会员</strong>
-          <span>近30天订单数</span>
-          <strong>6</strong>
-          <span>累计消费金额</span>
-          <strong>¥ 2,843.00</strong>
-          <span>满意度评分</span>
-          <strong>{{ userScore }} ★★★★★</strong>
+          <span>用户名称</span>
+          <strong>{{ fieldValue(session?.user, '未知用户') }}</strong>
+          <span>会话编号</span>
+          <strong>{{ fieldValue(session?.sessionNo, '--') }}</strong>
+          <span>当前状态</span>
+          <strong>{{ statusLabel(session?.status) }}</strong>
+          <span>情绪标签</span>
+          <strong>{{ session?.emotion || '中性' }}</strong>
         </div>
       </section>
     </aside>

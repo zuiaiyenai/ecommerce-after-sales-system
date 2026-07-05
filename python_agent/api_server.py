@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 from collections import deque
+from dataclasses import replace
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import socket
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from after_sales_agent import (
     AfterSalesStatus,
@@ -24,6 +28,7 @@ from after_sales_agent import (
     ReturnConversationService,
 )
 from after_sales_agent.infra.trace import TraceRecorder
+from after_sales_agent.models import AfterSalesType, Decision, Intent, Ticket, TicketStatus
 from after_sales_agent.utils.vision_utils import parse_image_review_payload, serialize_image_review
 
 
@@ -70,6 +75,118 @@ def load_order_cache() -> dict[str, Order]:
 
 
 ORDER_MAP = load_order_cache()
+
+# Shared upload directory matching the Spring Boot FileUploadController pattern.
+# Defaults to <project-root>/uploads.  Override with the UPLOAD_DIR env variable.
+_UPLOAD_ROOT = Path(__file__).resolve().parent.parent / "uploads"
+try:
+    _UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+except OSError:
+    _UPLOAD_ROOT = None
+
+
+def _save_attachment_image(attachment: Attachment) -> str | None:
+    """Decode a base64 data-URI attachment and persist it under the shared uploads directory.
+
+    Returns the URL path (e.g. ``/uploads/2026/07/04/<uuid>.jpg``) on success,
+    or ``None`` when the source is missing or invalid.
+    """
+    if _UPLOAD_ROOT is None or not attachment.source:
+        return None
+    source = str(attachment.source)
+    if not source.startswith("data:"):
+        return None
+    try:
+        header, encoded = source.split(",", 1)
+    except ValueError:
+        return None
+    if not encoded:
+        return None
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return None
+    # Infer extension from MIME in the data-URI header, default to .jpg
+    ext = ".jpg"
+    for part in header.split(";"):
+        if part.startswith("image/"):
+            mime_type = part.strip()
+            if mime_type == "image/png":
+                ext = ".png"
+            elif mime_type == "image/webp":
+                ext = ".webp"
+            elif mime_type == "image/gif":
+                ext = ".gif"
+            break
+    date_dir = datetime.now().strftime("%Y/%m/%d")
+    target_dir = _UPLOAD_ROOT / date_dir
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    filename = f"{uuid4().hex}{ext}"
+    target_path = target_dir / filename
+    try:
+        target_path.write_bytes(raw)
+    except OSError:
+        return None
+    return f"/uploads/{date_dir}/{filename}"
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_user_messages(
+    context: ConversationContext,
+    intent: str,
+    trace: TraceRecorder,
+) -> None:
+    """Save the user's text and image messages to the DB immediately, before the
+    AI reply is written.  This guarantees the agent console can always see what
+    the user sent — even when persistence_required() returns False (e.g. no
+    order selected)."""
+    if DB_REPOSITORY is None or context.session_id is None:
+        return
+    try:
+        with trace.step("persist_user_messages"):
+            user_id_int = _safe_int(context.user_id) or 0
+            # Text message
+            text = context.message.strip() or (
+                "用户发送了图片" if context.attachments else "用户发起了咨询"
+            )
+            DB_REPOSITORY.insert_chat_message(
+                session_id=context.session_id,
+                sender_id=user_id_int,
+                sender_role="USER",
+                content=text,
+                ai_intent=intent,
+                message_type="TEXT",
+            )
+            # Image messages — save to disk first, store URL (not base64)
+            for attachment in context.attachments:
+                if not attachment.source:
+                    continue
+                image_url = _save_attachment_image(attachment)
+                if image_url is None:
+                    image_url = attachment.source or ""
+                DB_REPOSITORY.insert_chat_message(
+                    session_id=context.session_id,
+                    sender_id=user_id_int,
+                    sender_role="USER",
+                    content=image_url,
+                    ai_intent=intent,
+                    message_type="IMAGE",
+                )
+            DB_REPOSITORY.update_session_snapshot(
+                session_id=context.session_id,
+                last_message_content=text,
+            )
+    except Exception:
+        pass
 
 
 def build_order_from_payload(data: dict[str, Any]) -> Order | None:
@@ -196,6 +313,62 @@ def public_ticket_status(agent_status: str) -> str:
         "closed": "closed",
     }
     return mapping.get(agent_status, agent_status)
+
+
+def is_force_after_sales_apply(data: dict[str, Any]) -> bool:
+    return bool(data.get("force_after_sales_apply") or data.get("apply_after_sales"))
+
+
+def ensure_forced_after_sales_ticket(result: Any, context: ConversationContext, _image_review: ImageReviewResult | None, *, force_apply: bool) -> Any:
+    if not force_apply or context.selected_order is None or result.fallback_result.ticket is not None:
+        return result
+
+    order = context.selected_order
+    ticket_status = TicketStatus.PENDING_REVIEW
+    problem = (context.description or context.message or "用户发起售后申请").strip()
+    product_name = order.items[0].product_name if order.items else "售后商品"
+    ticket = Ticket(
+        ticket_id=f"AS{uuid4().hex[:10].upper()}",
+        order_id=order.order_id,
+        user_id=context.user_id,
+        after_sales_type=AfterSalesType.RETURN_AND_REFUND,
+        intent=Intent.APPLY_AFTER_SALES,
+        status=ticket_status,
+        risk_level=result.fallback_result.risk_level,
+        summary=f"{product_name} 售后申请：{problem}",
+        expected_hours=24,
+        next_action="转人工审核",
+        created_at=datetime.now(),
+    )
+    reply = "已收到您的售后申请，当前已转人工审核，请耐心等待。"
+    forced_fallback = replace(
+        result.fallback_result,
+        decision=Decision.CREATE_TICKET,
+        intent=Intent.APPLY_AFTER_SALES,
+        need_human=True,
+        ticket=ticket,
+        suggested_action=ticket.next_action,
+        progress_hint="售后申请已进入待审核。",
+        audit_note="申请页强制创建售后单，避免仅保存聊天消息导致客服端不可见。",
+    )
+    raw = dict(result.raw or {})
+    raw["forced_after_sales_apply"] = True
+    raw["forced_after_sales_apply_status"] = ticket_status.value
+    return replace(
+        result,
+        assistant_reply=reply,
+        intent=forced_fallback.intent.value,
+        evidence_needed=(),
+        suggested_action=ticket.next_action,
+        raw=raw,
+        fallback_result=forced_fallback,
+    )
+
+
+def persistence_required(context: ConversationContext, result: Any, *, force_apply: bool) -> bool:
+    if context.selected_order is None:
+        return False
+    return bool(force_apply or result.fallback_result.ticket is not None or result.fallback_result.need_human)
 
 
 def record_trace_event(
@@ -344,12 +517,64 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             recent_history=recent_history,
         )
 
+        # --- Human-handoff guard: when the session is already in HUMAN mode the
+        #     AI must stay silent so the human agent can reply.  We still persist
+        #     the user message (including any images) so the agent console sees it.
+        session_mode = "AI"
+        if DB_REPOSITORY is not None and context.session_id is not None:
+            try:
+                db_session = DB_REPOSITORY.get_chat_session_by_id(context.session_id)
+                if db_session is not None:
+                    session_mode = str(db_session.get("mode") or "AI")
+            except Exception:
+                pass
+        if session_mode == "HUMAN":
+            with trace.step("human_session_guard"):
+                self._handle_human_session(data, context, trace)
+            return
+
         QWEN_SERVICE.bind_trace(trace)
         with trace.step("generate_assistant_reply"):
             result = QWEN_SERVICE.handle(context)
         QWEN_SERVICE.bind_trace(None)
+        force_apply = is_force_after_sales_apply(data)
+        result = ensure_forced_after_sales_ticket(
+            result,
+            context,
+            image_review,
+            force_apply=force_apply,
+        )
+
+        # Safety net: when the agent decides to hand off to a human, the
+        # reply must be a single short line with no internal reasoning.
+        if result.fallback_result.need_human:
+            result = replace(result, assistant_reply="已为您转接人工客服，请稍等。")
+
+        # Save attachment images to the shared uploads directory so the
+        # merchant console can render them (data URIs may exceed DB column size).
+        attachment_url_map: dict[str, str] = {}
+        for attachment in context.attachments:
+            if attachment.source:
+                saved_url = _save_attachment_image(attachment)
+                if saved_url is not None:
+                    attachment_url_map[attachment.name] = saved_url
+        if attachment_url_map:
+            raw = dict(result.raw or {})
+            raw["_attachment_urls"] = attachment_url_map
+            result = replace(result, raw=raw)
 
         persistence_result = None
+        must_persist = persistence_required(context, result, force_apply=force_apply)
+        if must_persist and PERSISTENCE is None:
+            self._send_json(
+                {
+                    "error": "persistence_unavailable",
+                    "message": "售后申请暂时无法保存，请稍后重试。",
+                    "trace": trace.to_dict(),
+                },
+                status=503,
+            )
+            return
         if PERSISTENCE is not None:
             try:
                 with trace.step("persist_interaction"):
@@ -358,8 +583,42 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                         result=result,
                         source_channel="H5",
                     )
-            except Exception:
+            except Exception as exc:
                 persistence_result = None
+                trace.set_meta(persistence_error=exc.__class__.__name__)
+                if must_persist:
+                    self._send_json(
+                        {
+                            "error": "persistence_failed",
+                            "message": "售后申请保存失败，请稍后重试。",
+                            "trace": trace.to_dict(),
+                        },
+                        status=500,
+                    )
+                    return
+
+        if must_persist and result.fallback_result.ticket is not None and not (
+            persistence_result and persistence_result.ticket_no
+        ):
+            self._send_json(
+                {
+                    "error": "ticket_not_persisted",
+                    "message": "售后申请未生成成功，请稍后重试。",
+                    "trace": trace.to_dict(),
+                },
+                status=500,
+            )
+            return
+
+        # After a successful force-apply, mark the order as AFTERSALE so the
+        # user cannot apply again from the order list.
+        if force_apply and persistence_result and persistence_result.ticket_no and DB_REPOSITORY is not None and context.selected_order is not None:
+            try:
+                order_db_id = DB_REPOSITORY.resolve_order_db_id(context.selected_order.order_id)
+                if order_db_id is not None:
+                    DB_REPOSITORY.update_order_status_to_aftersale(order_db_id)
+            except Exception:
+                pass
 
         ticket = result.fallback_result.ticket
         response_ticket_id = (
@@ -375,6 +634,7 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             "fallback_decision": result.fallback_result.decision.value,
             "fallback_progress_hint": result.fallback_result.progress_hint,
             "fallback_need_human": result.fallback_result.need_human,
+            "session_mode": result.fallback_result.need_human and "HUMAN" or "AI",
             "ticket": {
                 "ticket_id": response_ticket_id,
                 "status": public_ticket_status(ticket.status.value),
@@ -408,6 +668,50 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             if persistence_result
             else (int(session_id) if session_id is not None else None),
             reply_preview=result.assistant_reply,
+        )
+
+    def _handle_human_session(
+        self,
+        data: dict[str, Any],
+        context: ConversationContext,
+        trace: TraceRecorder,
+    ) -> None:
+        """Persist incoming user message(s) to a HUMAN-mode session without AI replies."""
+        reply = "您已接入人工客服，请等待人工客服回复。"
+        _persist_user_messages(context, "general", trace)
+
+        payload = {
+            "assistant_reply": reply,
+            "intent": "general",
+            "suggested_action": "等待人工客服",
+            "evidence_needed": [],
+            "fallback_decision": "respond",
+            "fallback_progress_hint": "当前正在人工客服接待中。",
+            "fallback_need_human": False,
+            "session_mode": "HUMAN",
+            "ticket": None,
+            "handoff_summary": None,
+            "emotion": None,
+            "image_review": None,
+            "persistence": {
+                "session_id": str(context.session_id),
+                "session_no": "",
+                "user_message_id": "",
+                "assistant_message_id": "",
+                "ticket_no": None,
+                "ticket_log_id": None,
+                "notice_id": None,
+            },
+            "raw": {"mode": "human_session"},
+            "trace": trace.to_dict(),
+        }
+        self._send_json(payload)
+        record_trace_event(
+            trace,
+            path="/api/chat",
+            order_id=str(data.get("order_id") or ""),
+            session_id=context.session_id,
+            reply_preview=reply,
         )
 
     def _handle_review_images(self) -> None:

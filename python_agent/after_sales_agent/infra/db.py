@@ -210,6 +210,17 @@ class MySQLRepository:
                 row = cur.fetchone()
         return int(row[0]) if row else None
 
+    def update_order_status_to_aftersale(self, order_db_id: int) -> None:
+        sql = """
+        UPDATE order_info
+        SET status = 'AFTERSALE', update_time = NOW()
+        WHERE id = %s AND deleted = 0
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (order_db_id,))
+                conn.commit()
+
     def resolve_recent_ticket_id(self, order_db_id: int) -> int | None:
         sql = """
         SELECT id
@@ -340,7 +351,7 @@ class MySQLRepository:
         audit_note: str | None = None,
     ) -> int:
         existing_sql = """
-        SELECT id
+        SELECT id, status
         FROM after_sales_ticket
         WHERE order_id = %s
           AND deleted = 0
@@ -402,12 +413,32 @@ class MySQLRepository:
                 cur.execute(existing_sql, (order_db_id,))
                 row = cur.fetchone()
                 if row:
+                    existing_ticket_id = int(row[0])
+                    existing_status = str(row[1] or "")
+                    if db_status == "PROCESSING" and existing_status in {"PENDING", "PENDING_REVIEW"}:
+                        cur.execute(
+                            """
+                            UPDATE after_sales_ticket
+                            SET status = 'PROCESSING',
+                                ai_recommend_type = 'AI_AUTO_APPROVE',
+                                ai_confidence = GREATEST(COALESCE(ai_confidence, 0), %s),
+                                audit_opinion = %s,
+                                audit_time = COALESCE(audit_time, NOW()),
+                                update_time = NOW()
+                            WHERE id = %s AND deleted = 0
+                            """,
+                            (
+                                Decimal(str(max(0.0, min(1.0, confidence)))),
+                                audit_opinion[:500],
+                                existing_ticket_id,
+                            ),
+                        )
                     cur.execute(
                         "UPDATE order_info SET status = 'AFTERSALE', update_time = NOW() WHERE id = %s AND deleted = 0",
                         (order_db_id,),
                     )
                     conn.commit()
-                    return int(row[0])
+                    return existing_ticket_id
 
                 cur.execute(order_sql, (order_db_id,))
                 order_row = cur.fetchone()
@@ -625,6 +656,28 @@ class MySQLRepository:
                 cur.execute(sql, (message_id, session_id, role, content, message_type, emotion_label))
                 conn.commit()
                 return message_id
+
+    def get_chat_session_by_id(self, session_id: int) -> dict[str, Any] | None:
+        """Return session {id, session_no, mode, status, user_id} or None."""
+        sql = """
+        SELECT id, session_no, mode, status, user_id
+        FROM chat_session
+        WHERE id = %s AND deleted = 0
+        LIMIT 1
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (session_id,))
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row[0]),
+            "session_no": row[1],
+            "mode": str(row[2] or "AI"),
+            "status": str(row[3] or "ACTIVE"),
+            "user_id": int(row[4]) if row[4] else None,
+        }
 
     def get_recent_messages(self, session_id: int, limit: int = 6) -> tuple[ConversationMessage, ...]:
         sql = """

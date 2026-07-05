@@ -10,12 +10,12 @@
     </view>
 
     <!-- Tab 筛选 -->
-    <view class="tabs">
+    <scroll-view class="tabs" scroll-x>
       <view v-for="tab in tabs" :key="tab.key" class="tab-item" :class="{ active: activeTab === tab.key }" @tap="switchTab(tab.key)">
         <text class="tab-text">{{ tab.label }}</text>
         <view v-if="tab.badge > 0" class="tab-badge">{{ tab.badge }}</view>
       </view>
-    </view>
+    </scroll-view>
 
     <!-- 订单列表 -->
     <scroll-view class="order-list" scroll-y>
@@ -48,6 +48,7 @@
             <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
             <button v-if="order.status === 'RECEIVED' || order.status === 'SHIPPED'" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
             <button v-if="order.status === 'AFTERSALE'" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
+            <button v-if="order.status === 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">去评价</button>
           </view>
         </view>
       </view>
@@ -64,7 +65,7 @@ const activeTab = ref('all')
 const allOrders = ref([])
 
 function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
+  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', AWAITING_EVALUATION: 'review', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
   return map[status] || ''
 }
 
@@ -73,12 +74,16 @@ const tabs = computed(() => {
   const shipped = allOrders.value.filter(o => o.status === 'SHIPPED').length
   const received = allOrders.value.filter(o => o.status === 'RECEIVED').length
   const aftersale = allOrders.value.filter(o => o.status === 'AFTERSALE').length
+  const awaitingEvaluation = allOrders.value.filter(o => o.status === 'AWAITING_EVALUATION').length
+  const completed = allOrders.value.filter(o => o.status === 'COMPLETED').length
   return [
     { key: 'all', label: '全部', badge: 0 },
     { key: 'paid', label: '未发货', badge: paid },
     { key: 'shipped', label: '配送中', badge: shipped },
     { key: 'received', label: '已收货', badge: received },
-    { key: 'aftersale', label: '售后中', badge: aftersale }
+    { key: 'aftersale', label: '售后中', badge: aftersale },
+    { key: 'review', label: '待评价', badge: awaitingEvaluation },
+    { key: 'completed', label: '已完成', badge: completed }
   ]
 })
 
@@ -106,6 +111,8 @@ const orders = computed(() => {
 const filteredOrders = computed(() => {
   if (activeTab.value === 'all') return orders.value
   if (activeTab.value === 'aftersale') return orders.value.filter(o => o.status === 'AFTERSALE')
+  if (activeTab.value === 'review') return orders.value.filter(o => o.status === 'AWAITING_EVALUATION')
+  if (activeTab.value === 'completed') return orders.value.filter(o => o.status === 'COMPLETED')
   return orders.value.filter(o => o.status.toLowerCase() === activeTab.value)
 })
 
@@ -212,17 +219,17 @@ async function confirmReceive(id) {
 
 /* Tabs */
 .tabs {
-  display: flex;
+  white-space: nowrap;
   background: #ffffff;
   padding: 0 28rpx;
   border-bottom: 1rpx solid rgba(0,0,0,0.04);
-  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .tab-item {
-  flex: 1;
+  width: 108rpx;
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 24rpx 0;
@@ -335,6 +342,14 @@ async function confirmReceive(id) {
 
 .order-status.waiting {
   color: #999;
+}
+
+.order-status.review {
+  color: #c97b5a;
+}
+
+.order-status.completed {
+  color: #52c41a;
 }
 
 .divider {

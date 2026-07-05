@@ -4,10 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.CreateOrderRequest;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
+import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.OrderInfo;
 import com.ecommerce.aftersales.entity.OrderItem;
 import com.ecommerce.aftersales.entity.ProductInfo;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
+import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
@@ -33,6 +35,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
     private final AfterSalesTicketMapper afterSalesTicketMapper;
+    private final ChatSessionMapper chatSessionMapper;
 
     @Override
     public List<OrderVO> listByUserId(Long userId) {
@@ -127,9 +130,11 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
-        if (hasExistingAfterSale(orderInfo.getId())) {
-            vo.setStatus("AFTERSALE");
-            vo.setStatusText(getStatusText("AFTERSALE"));
+        AfterSalesTicket latestAfterSale = latestAfterSale(orderInfo.getId());
+        if (latestAfterSale != null) {
+            String afterSaleOrderStatus = resolveOrderAfterSaleStatus(latestAfterSale);
+            vo.setStatus(afterSaleOrderStatus);
+            vo.setStatusText(getStatusText(afterSaleOrderStatus));
         } else {
             vo.setStatusText(getStatusText(orderInfo.getStatus()));
         }
@@ -170,11 +175,43 @@ public class OrderServiceImpl implements OrderService {
         return vo;
     }
 
-    private boolean hasExistingAfterSale(Long orderId) {
-        Long count = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
+    private AfterSalesTicket latestAfterSale(Long orderId) {
+        return afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
                 .eq(AfterSalesTicket::getOrderId, orderId)
-                .in(AfterSalesTicket::getStatus, List.of("PENDING", "PENDING_REVIEW", "PROCESSING", "COMPLETED")));
-        return count != null && count > 0;
+                .in(AfterSalesTicket::getStatus, List.of("PENDING", "PENDING_REVIEW", "PROCESSING", "COMPLETED"))
+                .orderByDesc(AfterSalesTicket::getUpdateTime)
+                .last("limit 1"));
+    }
+
+    private String resolveOrderAfterSaleStatus(AfterSalesTicket ticket) {
+        if (!"COMPLETED".equals(ticket.getStatus())) {
+            return "AFTERSALE";
+        }
+        ChatSession session = latestAfterSaleSession(ticket);
+        if (session == null) {
+            return "AWAITING_EVALUATION";
+        }
+        String sessionStatus = session.getStatus();
+        if ("AWAITING_EVALUATION".equals(sessionStatus) || "READY_TO_CLOSE".equals(sessionStatus)) {
+            return "AWAITING_EVALUATION";
+        }
+        if ("RESOLVED".equals(sessionStatus) || session.getSatisfaction() != null) {
+            return "COMPLETED";
+        }
+        return "AWAITING_EVALUATION";
+    }
+
+    private ChatSession latestAfterSaleSession(AfterSalesTicket ticket) {
+        LambdaQueryWrapper<ChatSession> wrapper = new LambdaQueryWrapper<ChatSession>()
+                .orderByDesc(ChatSession::getUpdateTime)
+                .last("limit 1");
+        wrapper.and(query -> {
+            query.eq(ChatSession::getTicketId, ticket.getId());
+            if (ticket.getOrderId() != null) {
+                query.or().eq(ChatSession::getOrderId, ticket.getOrderId());
+            }
+        });
+        return chatSessionMapper.selectOne(wrapper);
     }
 
     private String getStatusText(String status) {
@@ -184,6 +221,8 @@ public class OrderServiceImpl implements OrderService {
             case "SHIPPED": return "配送中";
             case "RECEIVED": return "已收货";
             case "AFTERSALE": return "售后中";
+            case "AWAITING_EVALUATION": return "待评价";
+            case "COMPLETED": return "已完成";
             case "CLOSED": return "已关闭";
             default: return status;
         }

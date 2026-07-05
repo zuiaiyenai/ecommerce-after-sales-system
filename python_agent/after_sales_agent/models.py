@@ -151,6 +151,7 @@ class AfterSalesRequest:
     llm_confidence: float = 0.0
     normalized_issue: Optional[str] = None
     quality_description_detailed: Optional[bool] = None
+    evidence_consistent: Optional[bool] = None
     requested_at: datetime = field(default_factory=datetime.now)
 
 

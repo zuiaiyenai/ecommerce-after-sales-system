@@ -202,7 +202,7 @@ class ReturnAgent:
         if handoff_result.triggered:
             return AgentResult(
                 decision=Decision.ESCALATE_HUMAN,
-                user_reply="抱歉给您带来不便，当前问题已为您转接人工客服，订单信息和已提交材料会同步给客服继续处理。",
+                user_reply="已为您转接人工客服，请稍等。",
                 extracted_order_id=order.order_id if order else request.order_id,
                 intent=intent_result.intent,
                 next_agent="人工客服",
@@ -360,22 +360,38 @@ class ReturnAgent:
                 emotion=emotion_result,
             )
 
+        # When the user uploaded images, let the LLM decide whether the
+        # evidence matches the description — no hardcoded keyword rules.
         if (
             intent_result.intent in {Intent.APPLY_AFTER_SALES, Intent.REFUND_ONLY, Intent.EXCHANGE_REPAIR}
-            and scene == AfterSalesScene.PRODUCT_DAMAGE
             and request.visual_evidence
             and not self._has_specific_damage_description(request)
         ):
-            if request.quality_description_detailed is True:
+            if request.evidence_consistent is True:
+                ticket = self._build_ticket(order, request, intent_result.intent, risk_result, scene, force_auto_approve=True)
+                return AgentResult(
+                    decision=Decision.CREATE_TICKET,
+                    user_reply="已根据您描述的问题和上传的图片自动审核通过，售后已进入处理中。",
+                    extracted_order_id=order.order_id if order else request.order_id,
+                    intent=intent_result.intent,
+                    next_agent="自动审核",
+                    need_human=False,
+                    current_status=state_result.suggested_status,
+                    scene=scene,
+                    allowed_actions=state_result.allowed_actions,
+                    risk_level=risk_result.risk_level,
+                    ticket=ticket,
+                    suggested_action=ticket.next_action,
+                    progress_hint="LLM判定图文一致，AI自动审核通过。",
+                    audit_note=self._build_audit_note(intent_result.intent, risk_result) + f"; evidence_consistent={request.evidence_consistent}",
+                    emotion=emotion_result,
+                )
+            if request.evidence_consistent is False:
                 summary = self._build_quality_handoff_summary(order, request, risk_result)
-                summary["suggestedAction"] = "图片识别为破损，但用户描述为其他具体异常，请客服人工判断通过或驳回。"
                 ticket = self._build_ticket(order, request, intent_result.intent, risk_result, scene)
                 return AgentResult(
                     decision=Decision.ESCALATE_HUMAN,
-                    user_reply=self._apply_emotion_prefix(
-                        "您好，已记录您的具体问题描述和图片凭证，但图片识别结果与问题描述不完全一致。我会转交客服人工审核，由客服判断通过或驳回。",
-                        emotion_result,
-                    ),
+                    user_reply="已为您转接人工客服，请稍等。",
                     extracted_order_id=order.order_id if order else request.order_id,
                     intent=intent_result.intent,
                     next_agent="人工客服",
@@ -386,16 +402,39 @@ class ReturnAgent:
                     missing_fields=(),
                     risk_level=risk_result.risk_level,
                     ticket=ticket,
-                    suggested_action="转人工审核图文一致性",
-                    progress_hint="图文一致性不足，已转人工审核。",
-                    audit_note=self._build_audit_note(intent_result.intent, risk_result),
+                    suggested_action="转人工审核",
+                    progress_hint="LLM判定图文无法印证，已转人工审核。",
+                    audit_note=self._build_audit_note(intent_result.intent, risk_result) + f"; evidence_consistent={request.evidence_consistent}",
+                    handoff_summary=summary,
+                    emotion=emotion_result,
+                )
+            # evidence_consistent is None — LLM couldn't decide, ask user for more
+            if request.quality_description_detailed is True:
+                summary = self._build_quality_handoff_summary(order, request, risk_result)
+                ticket = self._build_ticket(order, request, intent_result.intent, risk_result, scene)
+                return AgentResult(
+                    decision=Decision.ESCALATE_HUMAN,
+                    user_reply="已为您转接人工客服，请稍等。",
+                    extracted_order_id=order.order_id if order else request.order_id,
+                    intent=intent_result.intent,
+                    next_agent="人工客服",
+                    need_human=True,
+                    current_status=state_result.current_status,
+                    scene=scene,
+                    allowed_actions=state_result.allowed_actions,
+                    missing_fields=(),
+                    risk_level=risk_result.risk_level,
+                    ticket=ticket,
+                    suggested_action="转人工审核",
+                    progress_hint="LLM无法判断图文一致性，已转人工审核。",
+                    audit_note=self._build_audit_note(intent_result.intent, risk_result) + "; evidence_consistent=None",
                     handoff_summary=summary,
                     emotion=emotion_result,
                 )
             return AgentResult(
                 decision=Decision.ASK_FOR_INFO,
                 user_reply=self._apply_emotion_prefix(
-                    "您好，图片里疑似存在商品破损，但当前描述还只是概括性的质量问题。请补充具体表现，例如外壳破裂、屏幕碎裂、按键损坏或无法开机等，我会结合图片继续判断是否可直接进入处理。",
+                    "您好，图片里疑似存在异常，但当前描述还比较概括。请补充具体表现，例如外壳破裂、屏幕碎裂、按键损坏或无法开机等，我会结合图片继续判断是否可直接进入处理。",
                     emotion_result,
                 ),
                 extracted_order_id=order.order_id if order else request.order_id,
@@ -453,7 +492,7 @@ class ReturnAgent:
             extracted_order_id=order.order_id if order else request.order_id,
             intent=intent_result.intent,
             next_agent="自动审核" if force_auto_approve else intent_result.next_agent,
-            need_human=risk_result.need_human_review,
+            need_human=False if force_auto_approve else risk_result.need_human_review,
             current_status=state_result.suggested_status,
             scene=scene,
             allowed_actions=state_result.allowed_actions,
@@ -644,10 +683,7 @@ class ReturnAgent:
                 summary = self._build_quality_handoff_summary(order, request, risk_result)
                 return AgentResult(
                     decision=Decision.ESCALATE_HUMAN,
-                    user_reply=self._apply_emotion_prefix(
-                        "您好，已记录您的异常表现。当前图片暂时无法自动确认问题，我这边为您转客服进一步核实处理。",
-                        emotion_result,
-                    ),
+                    user_reply="已为您转接人工客服，请稍等。",
                     extracted_order_id=order.order_id if order else request.order_id,
                     intent=intent,
                     next_agent="人工客服",
@@ -670,10 +706,7 @@ class ReturnAgent:
                 ticket = self._build_ticket(order, request, intent, risk_result, scene)
                 return AgentResult(
                     decision=Decision.ESCALATE_HUMAN,
-                    user_reply=self._apply_emotion_prefix(
-                        "您好，已记录您的具体问题描述和图片凭证，但当前图片识别结果与问题描述不完全一致。我会转交客服人工审核，由客服判断通过或驳回。",
-                        emotion_result,
-                    ),
+                    user_reply="已为您转接人工客服，请稍等。",
                     extracted_order_id=order.order_id if order else request.order_id,
                     intent=intent,
                     next_agent="人工客服",

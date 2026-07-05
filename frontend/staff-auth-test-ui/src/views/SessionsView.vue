@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { closeSession, getSessions } from '../api/merchantCs';
 
@@ -8,6 +8,8 @@ const shell = inject('merchantCsShell', null);
 const loading = ref(true);
 const sessions = ref([]);
 const activeFilter = ref('ACTIVE');
+const nowTick = ref(Date.now());
+let waitTimer = null;
 
 const terminalStatuses = ['RESOLVED'];
 const filterOptions = [
@@ -28,7 +30,7 @@ const visibleSessions = computed(() => {
       return terminalStatuses.includes(item.status);
     }
     return item.status === activeFilter.value;
-  });
+  }).sort((a, b) => waitSeconds(b) - waitSeconds(a));
 });
 
 const stats = computed(() => {
@@ -96,7 +98,38 @@ function fieldValue(value, fallback = '暂无') {
   return value || fallback;
 }
 
-onMounted(loadPage);
+function waitSeconds(item) {
+  if (!item?.waitStartedAt) {
+    return Number(item?.waitSeconds || 0);
+  }
+  const started = new Date(String(item.waitStartedAt).replace(' ', 'T')).getTime();
+  if (!Number.isFinite(started)) {
+    return Number(item?.waitSeconds || 0);
+  }
+  return Math.max(Math.floor((nowTick.value - started) / 1000), 0);
+}
+
+function waitLabel(item) {
+  const seconds = waitSeconds(item);
+  if (!seconds) {
+    return '已回复';
+  }
+  const minutes = Math.floor(seconds / 60);
+  return `等待 ${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+onMounted(() => {
+  loadPage();
+  waitTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
+});
+onUnmounted(() => {
+  if (waitTimer) {
+    window.clearInterval(waitTimer);
+    waitTimer = null;
+  }
+});
 </script>
 
 <template>
@@ -156,7 +189,7 @@ onMounted(loadPage);
           </span>
           <span class="session-meta">
             <span :class="['session-status', statusTone(item.status)]">{{ statusLabel(item.status) }}</span>
-            <span>{{ fieldValue(item.wait, item.waitText || '等待中') }}</span>
+            <span>{{ waitLabel(item) }}</span>
           </span>
           <span class="session-meta compact">
             <span class="tag">{{ fieldValue(item.level, '普通优先级') }}</span>

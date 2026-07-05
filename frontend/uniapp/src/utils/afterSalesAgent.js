@@ -169,6 +169,9 @@ export function buildChatPayload({
     attachments,
     recent_history: recentHistory
   }
+  if (selectedOrderExtra.forceAfterSalesApply) {
+    payload.force_after_sales_apply = true
+  }
   if (selectedOrder) {
     payload.selected_order = selectedOrder
   }
