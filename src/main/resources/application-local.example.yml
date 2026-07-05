@@ -1,0 +1,8 @@
+spring:
+  datasource:
+    username: root
+    password: your-local-mysql-password
+
+app:
+  jwt:
+    secret: "change-this-secret-key-to-at-least-32-bytes-in-production"

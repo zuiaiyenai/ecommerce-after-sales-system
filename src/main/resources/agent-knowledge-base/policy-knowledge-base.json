@@ -1,0 +1,136 @@
+{
+  "knowledge_base_version": "2026-07-05-kb-v2",
+  "editable_policy_fields": [
+    {
+      "field": "merchant_type",
+      "path": "merchant_type",
+      "label": "商品编号",
+      "type": "string",
+      "required": true,
+      "description": "当前商家主要商品或策略绑定商品编号。"
+    },
+    {
+      "field": "auto_refund_limit",
+      "path": "risk_policy.auto_refund_limit",
+      "label": "自动退款上限",
+      "type": "number",
+      "required": true,
+      "minimum": 0,
+      "unit": "元",
+      "description": "订单金额不超过该阈值时，可进入自动退款判断。"
+    },
+    {
+      "field": "emotion_handoff_min_level",
+      "path": "handoff_policy.emotion_handoff_min_level",
+      "label": "情绪转人工阈值",
+      "type": "enum",
+      "required": true,
+      "description": "当用户情绪达到该等级或更高时，建议优先转人工。"
+    }
+  ],
+  "emotion_levels": [
+    {
+      "code": "satisfied",
+      "label": "满意",
+      "rank": 0,
+      "min_score": 0,
+      "meaning": "用户情绪正向，可继续常规处理。"
+    },
+    {
+      "code": "calm",
+      "label": "平静",
+      "rank": 1,
+      "min_score": 0,
+      "meaning": "用户表达平稳，可继续走标准流程。"
+    },
+    {
+      "code": "anxious",
+      "label": "焦虑",
+      "rank": 2,
+      "min_score": 20,
+      "meaning": "用户有明显催促或担忧，需要更快给出进度或方案。"
+    },
+    {
+      "code": "dissatisfied",
+      "label": "不满",
+      "rank": 3,
+      "min_score": 40,
+      "meaning": "用户已经表达负面体验，通常需要更谨慎地安抚和处理。"
+    },
+    {
+      "code": "angry",
+      "label": "愤怒",
+      "rank": 4,
+      "min_score": 75,
+      "meaning": "用户处于高风险负面情绪，优先考虑人工接入。"
+    }
+  ],
+  "after_sales_scheme_knowledge": [
+    {
+      "code": "REFUND_ONLY",
+      "label": "仅退款",
+      "description": "无需退回商品，直接进入退款流程。"
+    },
+    {
+      "code": "RETURN_REFUND",
+      "label": "退货退款",
+      "description": "需要退回商品，再进入退款流程。"
+    },
+    {
+      "code": "REISSUE",
+      "label": "补发",
+      "description": "商品少发、错发或补件时优先考虑。"
+    },
+    {
+      "code": "PARTIAL_REFUND",
+      "label": "部分退款",
+      "description": "以差价补偿或局部补偿解决问题。"
+    }
+  ],
+  "scene_evidence_knowledge": [
+    {
+      "scene": "quality_issue",
+      "label": "质量问题",
+      "default_evidence": ["问题描述"],
+      "description": "说明具体故障表现，例如没有声音、不开机、漏液、异味等。"
+    },
+    {
+      "scene": "product_damage",
+      "label": "商品破损",
+      "default_evidence": ["破损照片", "问题描述"],
+      "description": "适用于商品本体破裂、裂痕、外观损伤。"
+    },
+    {
+      "scene": "package_damage",
+      "label": "包装破损",
+      "default_evidence": ["外包装照片", "问题描述"],
+      "description": "适用于快递包装或外箱受损。"
+    },
+    {
+      "scene": "wrong_or_missing_items",
+      "label": "少发错发",
+      "default_evidence": ["商品照片", "问题描述"],
+      "description": "适用于实收商品和订单不一致。"
+    },
+    {
+      "scene": "logistics_issue",
+      "label": "物流问题",
+      "default_evidence": ["问题描述"],
+      "description": "适用于延迟、签收异常、物流停滞等。"
+    }
+  ],
+  "knowledge_boundary": {
+    "suitable_for_knowledge_base": [
+      "字段定义与中文说明",
+      "情绪等级字典",
+      "售后方案名词解释",
+      "问题场景与默认证据说明"
+    ],
+    "still_kept_in_execution_logic": [
+      "状态流转判断",
+      "是否命中自动退款",
+      "是否转人工",
+      "工单生成与主链路编排"
+    ]
+  }
+}
