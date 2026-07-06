@@ -29,10 +29,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
 
+    private final AfterSalesTicketMapper afterSalesTicketMapper;
     private final OrderInfoMapper orderInfoMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final AfterSalesTicketMapper afterSalesTicketMapper;
 
     @Override
     public List<OrderVO> listByUserId(Long userId) {
@@ -95,7 +95,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public void updateStatus(Long id, Long userId, String status) {
-        if (!"RECEIVED".equals(status) && !"AFTERSALE".equals(status)) {
+        if (!"RECEIVED".equals(status)) {
             throw new BizException(403, "用户端不能执行该订单状态操作");
         }
         OrderInfo orderInfo = orderInfoMapper.selectOne(new LambdaQueryWrapper<OrderInfo>()
@@ -127,12 +127,8 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
-        if (hasExistingAfterSale(orderInfo.getId())) {
-            vo.setStatus("AFTERSALE");
-            vo.setStatusText(getStatusText("AFTERSALE"));
-        } else {
-            vo.setStatusText(getStatusText(orderInfo.getStatus()));
-        }
+        vo.setStatusText(getStatusText(orderInfo.getStatus()));
+        applyAfterSalesSnapshot(vo, orderInfo);
 
         // 查询订单项
         LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
@@ -170,11 +166,39 @@ public class OrderServiceImpl implements OrderService {
         return vo;
     }
 
-    private boolean hasExistingAfterSale(Long orderId) {
-        Long count = afterSalesTicketMapper.selectCount(new LambdaQueryWrapper<AfterSalesTicket>()
-                .eq(AfterSalesTicket::getOrderId, orderId)
-                .in(AfterSalesTicket::getStatus, List.of("PENDING", "PENDING_REVIEW", "PROCESSING", "COMPLETED")));
-        return count != null && count > 0;
+    private void applyAfterSalesSnapshot(OrderVO vo, OrderInfo orderInfo) {
+        AfterSalesTicket ticket = afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderInfo.getId())
+                .orderByDesc(AfterSalesTicket::getCreateTime)
+                .last("limit 1"));
+        if (ticket == null) {
+            vo.setHasOpenAfterSales(false);
+            vo.setAfterSalesStatus(null);
+            vo.setAfterSalesStatusText(null);
+            vo.setLatestAfterSalesTicketNo(null);
+            return;
+        }
+
+        vo.setHasOpenAfterSales(!isClosedAfterSalesStatus(ticket.getStatus()));
+        vo.setAfterSalesStatus(ticket.getStatus());
+        vo.setAfterSalesStatusText(getAfterSalesStatusText(ticket.getStatus()));
+        vo.setLatestAfterSalesTicketNo(ticket.getTicketNo());
+    }
+
+    private boolean isClosedAfterSalesStatus(String status) {
+        return "REJECTED".equals(status) || "COMPLETED".equals(status) || "CLOSED".equals(status);
+    }
+
+    private String getAfterSalesStatusText(String status) {
+        if (status == null) return "";
+        if ("CLOSED".equals(status)) return "已关闭";
+        switch (status) {
+            case "PENDING": return "待审核";
+            case "PROCESSING": return "处理中";
+            case "REJECTED": return "已驳回";
+            case "COMPLETED": return "已完成";
+            default: return status;
+        }
     }
 
     private String getStatusText(String status) {

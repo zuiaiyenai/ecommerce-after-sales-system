@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import pymysql
 
-from ..models import AfterSalesStatus, AfterSalesType, ConversationMessage, Order, OrderItem, OrderStatus, Ticket
+from ..models import AfterSalesStatus, AfterSalesType, ConversationMessage, Order, OrderItem, OrderStatus
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,7 @@ class MySQLRepository:
             o.id,
             o.order_no,
             o.user_id,
+            o.merchant_code,
             o.total_amount,
             o.pay_amount,
             o.status,
@@ -76,6 +77,7 @@ class MySQLRepository:
             o.id,
             o.order_no,
             o.user_id,
+            o.merchant_code,
             o.total_amount,
             o.pay_amount,
             o.status,
@@ -104,6 +106,7 @@ class MySQLRepository:
             o.id,
             o.order_no,
             o.user_id,
+            o.merchant_code,
             o.total_amount,
             o.pay_amount,
             o.status,
@@ -237,25 +240,29 @@ class MySQLRepository:
             with conn.cursor() as cur:
                 cur.execute(sql, (ticket_id,))
                 row = cur.fetchone()
-        return str(row[0]) if row and row[0] is not None else None
+        return str(row[0]) if row else None
 
-    def find_or_create_handoff_ticket(
+    def find_or_create_agent_ticket(
         self,
         *,
         order_db_id: int,
         order_no: str,
         user_id: int,
+        policy_code: str | None,
+        policy_version: str | None,
         product_name: str,
         refund_amount: float,
         description: str,
-        ai_summary: dict[str, str] | None = None,
+        ticket,
+        confidence: float | None = None,
+        audit_note: str | None = None,
     ) -> int:
         existing_sql = """
         SELECT id
         FROM after_sales_ticket
         WHERE order_id = %s
           AND deleted = 0
-          AND status IN ('PENDING', 'PENDING_REVIEW', 'PROCESSING', 'COMPLETED')
+          AND status IN ('PENDING', 'PENDING_REVIEW', 'PROCESSING')
         ORDER BY update_time DESC, create_time DESC
         LIMIT 1
         """
@@ -267,15 +274,143 @@ class MySQLRepository:
         """
         insert_sql = """
         INSERT INTO after_sales_ticket (
-            id, ticket_no, order_id, order_no, user_id, merchant_id, merchant_code,
+            id, ticket_no, order_id, order_no, user_id, merchant_id, merchant_code, policy_code, policy_version,
             product_name, after_sale_type, reason, reason_detail, description,
             refund_amount, ai_classify_result, ai_confidence, ai_recommend_type,
             status, priority, audit_opinion, expected_complete_time,
             deleted, create_time, update_time
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s,
-            %s, 'REPAIR', 'QUALITY', %s, %s,
-            %s, %s, 0.80, 'HUMAN_REVIEW',
+            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s HOUR),
+            0, NOW(), NOW()
+        )
+        """
+        update_sql = """
+        UPDATE after_sales_ticket
+        SET policy_code = COALESCE(%s, policy_code),
+            policy_version = COALESCE(%s, policy_version),
+            ai_confidence = COALESCE(%s, ai_confidence),
+            ai_recommend_type = COALESCE(%s, ai_recommend_type),
+            reason_detail = COALESCE(%s, reason_detail),
+            description = COALESCE(%s, description),
+            audit_opinion = COALESCE(%s, audit_opinion),
+            update_time = NOW()
+        WHERE id = %s
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(existing_sql, (order_db_id,))
+                row = cur.fetchone()
+                after_sale_type = self._db_after_sales_type(ticket.after_sales_type)
+                ai_confidence = self._normalize_decimal_score(confidence)
+                reason = self._db_reason(ticket.intent.value if ticket.intent else None)
+                reason_detail = (ticket.summary or description or "AI 已生成售后工单").strip()[:500]
+                ai_classify_result = self._json_dumps(
+                    {
+                        "intent": ticket.intent.value if ticket.intent else None,
+                        "risk_level": ticket.risk_level.value if ticket.risk_level else None,
+                        "summary": ticket.summary,
+                    }
+                )[:200]
+                status = self._db_ticket_status(ticket.status.value if ticket.status else None)
+                priority = 1 if getattr(getattr(ticket, "risk_level", None), "value", "") == "high" else 0
+                final_audit_note = (audit_note or ticket.next_action or ticket.summary or "AI 已提交售后申请").strip()[:500]
+                expected_hours = max(int(getattr(ticket, "expected_hours", 24) or 24), 1)
+                if row:
+                    cur.execute(
+                        update_sql,
+                        (
+                            policy_code,
+                            policy_version,
+                            ai_confidence,
+                            after_sale_type,
+                            reason_detail,
+                            description,
+                            final_audit_note,
+                            row[0],
+                        ),
+                    )
+                    conn.commit()
+                    return int(row[0])
+
+                cur.execute(order_sql, (order_db_id,))
+                order_row = cur.fetchone()
+                merchant_id = int(order_row[0]) if order_row and order_row[0] is not None else None
+                merchant_code = str(order_row[1] or "MERCHANT_DEMO") if order_row else "MERCHANT_DEMO"
+                ticket_id = self._new_id()
+                ticket_no = getattr(ticket, "ticket_id", None) or f"AS{uuid4().hex[:10].upper()}"
+                cur.execute(
+                    insert_sql,
+                    (
+                        ticket_id,
+                        ticket_no,
+                        order_db_id,
+                        order_no,
+                        user_id,
+                        merchant_id,
+                        merchant_code,
+                        policy_code,
+                        policy_version,
+                        product_name[:200],
+                        after_sale_type,
+                        reason,
+                        reason_detail,
+                        description,
+                        refund_amount,
+                        ai_classify_result,
+                        ai_confidence,
+                        after_sale_type,
+                        status,
+                        priority,
+                        final_audit_note,
+                        expected_hours,
+                    ),
+                )
+                conn.commit()
+                return ticket_id
+
+    def find_or_create_handoff_ticket(
+        self,
+        *,
+        order_db_id: int,
+        order_no: str,
+        user_id: int,
+        policy_code: str | None,
+        policy_version: str | None,
+        product_name: str,
+        refund_amount: float,
+        description: str,
+        ai_summary: dict[str, str] | None = None,
+        ai_confidence: float | None = None,
+    ) -> int:
+        existing_sql = """
+        SELECT id, policy_code, policy_version, ai_confidence
+        FROM after_sales_ticket
+        WHERE order_id = %s
+          AND deleted = 0
+          AND status IN ('PENDING', 'PENDING_REVIEW', 'PROCESSING')
+        ORDER BY update_time DESC, create_time DESC
+        LIMIT 1
+        """
+        order_sql = """
+        SELECT merchant_id, merchant_code
+        FROM order_info
+        WHERE id = %s AND deleted = 0
+        LIMIT 1
+        """
+        insert_sql = """
+        INSERT INTO after_sales_ticket (
+            id, ticket_no, order_id, order_no, user_id, merchant_id, merchant_code, policy_code, policy_version,
+            product_name, after_sale_type, reason, reason_detail, description,
+            refund_amount, ai_classify_result, ai_confidence, ai_recommend_type,
+            status, priority, audit_opinion, expected_complete_time,
+            deleted, create_time, update_time
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, 'RETURN_REFUND', 'QUALITY', %s, %s,
+            %s, %s, %s, 'HUMAN_REVIEW',
             'PENDING', 1, %s, DATE_ADD(NOW(), INTERVAL 24 HOUR),
             0, NOW(), NOW()
         )
@@ -285,11 +420,19 @@ class MySQLRepository:
                 cur.execute(existing_sql, (order_db_id,))
                 row = cur.fetchone()
                 if row:
-                    cur.execute(
-                        "UPDATE order_info SET status = 'AFTERSALE', update_time = NOW() WHERE id = %s AND deleted = 0",
-                        (order_db_id,),
-                    )
-                    conn.commit()
+                    if not row[1] or not row[2] or row[3] is None:
+                        cur.execute(
+                            """
+                            UPDATE after_sales_ticket
+                            SET policy_code = COALESCE(%s, policy_code),
+                                policy_version = COALESCE(%s, policy_version),
+                                ai_confidence = COALESCE(%s, ai_confidence),
+                                update_time = NOW()
+                            WHERE id = %s
+                            """,
+                            (policy_code, policy_version, ai_confidence, row[0]),
+                        )
+                        conn.commit()
                     return int(row[0])
 
                 cur.execute(order_sql, (order_db_id,))
@@ -311,143 +454,16 @@ class MySQLRepository:
                         user_id,
                         merchant_id,
                         merchant_code,
+                        policy_code,
+                        policy_version,
                         product_name[:200],
                         reason_detail,
                         description,
                         refund_amount,
                         classify_result[:200],
+                        ai_confidence,
                         audit_opinion,
                     ),
-                )
-                cur.execute(
-                    "UPDATE order_info SET status = 'AFTERSALE', update_time = NOW() WHERE id = %s AND deleted = 0",
-                    (order_db_id,),
-                )
-                conn.commit()
-                return ticket_id
-
-    def find_or_create_agent_ticket(
-        self,
-        *,
-        order_db_id: int,
-        order_no: str,
-        user_id: int,
-        product_name: str,
-        refund_amount: float,
-        description: str,
-        ticket: Ticket,
-        confidence: float,
-        audit_note: str | None = None,
-    ) -> int:
-        existing_sql = """
-        SELECT id
-        FROM after_sales_ticket
-        WHERE order_id = %s
-          AND deleted = 0
-          AND status IN ('PENDING', 'PENDING_REVIEW', 'PROCESSING', 'COMPLETED')
-        ORDER BY update_time DESC, create_time DESC
-        LIMIT 1
-        """
-        ticket_no_sql = """
-        SELECT id
-        FROM after_sales_ticket
-        WHERE ticket_no = %s AND deleted = 0
-        LIMIT 1
-        """
-        order_sql = """
-        SELECT merchant_id, merchant_code
-        FROM order_info
-        WHERE id = %s AND deleted = 0
-        LIMIT 1
-        """
-        insert_sql = """
-        INSERT INTO after_sales_ticket (
-            id, ticket_no, order_id, order_no, user_id, merchant_id, merchant_code,
-            product_name, after_sale_type, reason, reason_detail, description,
-            refund_amount, ai_classify_result, ai_confidence, ai_recommend_type,
-            status, priority, audit_opinion, audit_time, expected_complete_time,
-            deleted, create_time, update_time
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s,
-            %s, %s, %s, %s,
-            %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s HOUR),
-            0, NOW(), NOW()
-        )
-        """
-        db_status = self._map_agent_ticket_status(ticket.status.value)
-        after_sale_type = self._map_agent_after_sale_type(ticket.after_sales_type.value)
-        reason = self._map_agent_reason(ticket.summary)
-        recommend_type = "AI_AUTO_APPROVE" if db_status == "PROCESSING" else "AI_REVIEW"
-        audit_opinion = audit_note or (
-            "AI识别图片与用户描述一致，自动审核通过，进入处理中。"
-            if db_status == "PROCESSING"
-            else "AI已创建售后申请，等待客服审核。"
-        )
-        classify_result = self._json_dumps(
-            {
-                "intent": ticket.intent.value,
-                "risk": ticket.risk_level.value,
-                "agent_status": ticket.status.value,
-                "summary": ticket.summary,
-            }
-        )
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(ticket_no_sql, (ticket.ticket_id,))
-                row = cur.fetchone()
-                if row:
-                    return int(row[0])
-
-                cur.execute(existing_sql, (order_db_id,))
-                row = cur.fetchone()
-                if row:
-                    cur.execute(
-                        "UPDATE order_info SET status = 'AFTERSALE', update_time = NOW() WHERE id = %s AND deleted = 0",
-                        (order_db_id,),
-                    )
-                    conn.commit()
-                    return int(row[0])
-
-                cur.execute(order_sql, (order_db_id,))
-                order_row = cur.fetchone()
-                merchant_id = int(order_row[0]) if order_row and order_row[0] is not None else None
-                merchant_code = str(order_row[1] or "MERCHANT_DEMO") if order_row else "MERCHANT_DEMO"
-                ticket_id = self._new_id()
-                cur.execute(
-                    insert_sql,
-                    (
-                        ticket_id,
-                        ticket.ticket_id,
-                        order_db_id,
-                        order_no,
-                        user_id,
-                        merchant_id,
-                        merchant_code,
-                        product_name[:200],
-                        after_sale_type,
-                        reason,
-                        (description or ticket.summary)[:500],
-                        description or ticket.summary,
-                        refund_amount,
-                        classify_result[:200],
-                        Decimal(str(max(0.0, min(1.0, confidence)))),
-                        recommend_type,
-                        db_status,
-                        1 if db_status == "PROCESSING" else 0,
-                        audit_opinion[:500],
-                        None,
-                        max(1, int(ticket.expected_hours or 24)),
-                    ),
-                )
-                if db_status == "PROCESSING":
-                    cur.execute(
-                        "UPDATE after_sales_ticket SET audit_time = NOW() WHERE id = %s",
-                        (ticket_id,),
-                    )
-                cur.execute(
-                    "UPDATE order_info SET status = 'AFTERSALE', update_time = NOW() WHERE id = %s AND deleted = 0",
-                    (order_db_id,),
                 )
                 conn.commit()
                 return ticket_id
@@ -471,57 +487,49 @@ class MySQLRepository:
         user_id: int,
         order_db_id: int | None,
         ticket_id: int | None,
+        policy_code: str | None,
+        policy_version: str | None,
         source_channel: str = "H5",
     ) -> dict[str, Any]:
         query_sql = """
-        SELECT id, session_no, status, merchant_code, ticket_id
+        SELECT id, session_no, status, merchant_code, policy_code, policy_version
         FROM chat_session
         WHERE user_id = %s
-          AND (
-            (ticket_id = %s)
-            OR (order_id = %s)
-            OR (%s IS NULL AND %s IS NULL AND order_id IS NULL AND ticket_id IS NULL)
-          )
+          AND ((order_id = %s) OR (%s IS NULL AND order_id IS NULL))
+          AND ((ticket_id = %s) OR (%s IS NULL AND ticket_id IS NULL))
           AND deleted = 0
+          AND status IN ('ACTIVE', 'WAITING')
         ORDER BY update_time DESC, create_time DESC
         LIMIT 1
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
                 merchant_id, merchant_code = self._resolve_session_merchant(cur, order_db_id, ticket_id)
-                cur.execute(query_sql, (user_id, ticket_id, order_db_id, order_db_id, ticket_id))
+                cur.execute(query_sql, (user_id, order_db_id, order_db_id, ticket_id, ticket_id))
                 row = cur.fetchone()
                 if row:
-                    next_status = "ACTIVE" if row[2] == "CLOSED" else row[2]
-                    if not row[3] or (ticket_id is not None and row[4] is None):
+                    if not row[3] or not row[4] or not row[5]:
                         cur.execute(
                             """
                             UPDATE chat_session
-                            SET merchant_id = %s, merchant_code = %s, ticket_id = COALESCE(ticket_id, %s),
-                                status = %s, resolved = 0, update_time = NOW()
+                            SET merchant_id = %s,
+                                merchant_code = %s,
+                                policy_code = COALESCE(%s, policy_code),
+                                policy_version = COALESCE(%s, policy_version),
+                                update_time = NOW()
                             WHERE id = %s
                             """,
-                            (merchant_id, merchant_code, ticket_id, next_status, row[0]),
+                            (merchant_id, merchant_code, policy_code, policy_version, row[0]),
                         )
                         conn.commit()
-                    elif row[2] == "CLOSED":
-                        cur.execute(
-                            """
-                            UPDATE chat_session
-                            SET status = 'ACTIVE', resolved = 0, update_time = NOW()
-                            WHERE id = %s
-                            """,
-                            (row[0],),
-                        )
-                        conn.commit()
-                    return {"id": int(row[0]), "session_no": row[1], "session_status": next_status}
+                    return {"id": int(row[0]), "session_no": row[1], "session_status": row[2]}
 
                 session_no = f"S{datetime.now():%Y%m%d%H%M%S}{uuid4().hex[:4].upper()}"
                 insert_sql = """
                 INSERT INTO chat_session (
-                    id, session_no, user_id, merchant_id, merchant_code, order_id, ticket_id, mode, status,
+                    id, session_no, user_id, merchant_id, merchant_code, policy_code, policy_version, order_id, ticket_id, mode, status,
                     user_query, resolved, create_time, update_time, deleted
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'AI', 'ACTIVE', %s, 0, NOW(), NOW(), 0)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'AI', 'ACTIVE', %s, 0, NOW(), NOW(), 0)
                 """
                 session_id = self._new_id()
                 cur.execute(
@@ -532,6 +540,8 @@ class MySQLRepository:
                         user_id,
                         merchant_id,
                         merchant_code,
+                        policy_code,
+                        policy_version,
                         order_db_id,
                         ticket_id,
                         f"{source_channel} 会话",
@@ -584,6 +594,8 @@ class MySQLRepository:
         ticket_id: int | None,
         summary: str,
         emotion_label: str = "NEUTRAL",
+        emotion_score: float | None = None,
+        emotion_confidence: float | None = None,
     ) -> None:
         sql = """
         UPDATE chat_session
@@ -591,6 +603,8 @@ class MySQLRepository:
             status = 'WAITING',
             ticket_id = COALESCE(%s, ticket_id),
             emotion_label = %s,
+            emotion_score = %s,
+            emotion_confidence = %s,
             user_query = %s,
             resolved = 0,
             update_time = NOW()
@@ -598,7 +612,10 @@ class MySQLRepository:
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (ticket_id, emotion_label, summary[:500], session_id))
+                cur.execute(
+                    sql,
+                    (ticket_id, emotion_label, emotion_score, emotion_confidence, summary[:500], session_id),
+                )
                 conn.commit()
 
     def insert_chat_message(
@@ -609,20 +626,47 @@ class MySQLRepository:
         sender_role: str,
         content: str,
         ai_intent: str | None,
+        confidence: float | None = None,
         emotion_label: str = "NEUTRAL",
+        emotion_score: float | None = None,
+        emotion_confidence: float | None = None,
+        knowledge_query: str | None = None,
+        knowledge_retrieval_mode: str | None = None,
+        knowledge_hit_count: int | None = None,
+        knowledge_hits_json: str | None = None,
+        knowledge_trace_json: str | None = None,
         message_type: str = "TEXT",
     ) -> int:
         del sender_id, ai_intent
         sql = """
         INSERT INTO chat_message (
-            id, session_id, role, content, message_type, emotion_label, create_time
-        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            id, session_id, role, content, message_type, confidence, emotion_label, emotion_score, emotion_confidence,
+            knowledge_query, knowledge_retrieval_mode, knowledge_hit_count, knowledge_hits_json, knowledge_trace_json, create_time
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """
         role = self._map_chat_role(sender_role)
         message_id = self._new_id()
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (message_id, session_id, role, content, message_type, emotion_label))
+                cur.execute(
+                    sql,
+                    (
+                        message_id,
+                        session_id,
+                        role,
+                        content,
+                        message_type,
+                        confidence,
+                        emotion_label,
+                        emotion_score,
+                        emotion_confidence,
+                        knowledge_query,
+                        knowledge_retrieval_mode,
+                        knowledge_hit_count,
+                        knowledge_hits_json,
+                        knowledge_trace_json,
+                    ),
+                )
                 conn.commit()
                 return message_id
 
@@ -658,6 +702,9 @@ class MySQLRepository:
         session_id: int,
         last_message_content: str,
         ai_summary: str | None = None,
+        emotion_label: str | None = None,
+        emotion_score: float | None = None,
+        emotion_confidence: float | None = None,
         increase_service_unread: bool = False,
         increase_user_unread: bool = False,
     ) -> None:
@@ -666,12 +713,18 @@ class MySQLRepository:
         sql = """
         UPDATE chat_session
         SET user_query = %s,
+            emotion_label = COALESCE(%s, emotion_label),
+            emotion_score = COALESCE(%s, emotion_score),
+            emotion_confidence = COALESCE(%s, emotion_confidence),
             update_time = NOW()
         WHERE id = %s
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (summary[:500], session_id))
+                cur.execute(
+                    sql,
+                    (summary[:500], emotion_label, emotion_score, emotion_confidence, session_id),
+                )
                 conn.commit()
 
     def insert_ticket_log(
@@ -760,6 +813,7 @@ class MySQLRepository:
                 db_id,
                 order_no,
                 user_id,
+                merchant_code,
                 total_amount,
                 pay_amount,
                 order_status,
@@ -798,6 +852,7 @@ class MySQLRepository:
                 Order(
                     order_id=str(order_no),
                     user_id=str(user_id),
+                    merchant_code=str(merchant_code or "MERCHANT_DEMO"),
                     status=self._map_order_status(str(order_status)),
                     amount=float(self._to_float(pay_amount or total_amount)),
                     created_at=self._ensure_datetime(create_time) or datetime.now(),
@@ -919,6 +974,9 @@ class MySQLRepository:
             "SHIPPED": OrderStatus.SHIPPED,
             "RECEIVED": OrderStatus.DELIVERED,
             "CLOSED": OrderStatus.COMPLETED,
+            # Legacy value kept only for backward-compatible reads.
+            "AFTERSALE": OrderStatus.DELIVERED,
+            "REFUNDED": OrderStatus.REFUNDED,
         }
         return mapping.get(value.upper(), OrderStatus.PAID)
 
@@ -934,7 +992,7 @@ class MySQLRepository:
             "APPROVED": AfterSalesStatus.APPROVED,
             "REJECTED": AfterSalesStatus.REJECTED,
             "COMPLETED": AfterSalesStatus.COMPLETED,
-            "CLOSED": AfterSalesStatus.HUMAN_PROCESSING,
+            "CLOSED": AfterSalesStatus.CLOSED,
         }
         return mapping.get(ticket_status, AfterSalesStatus.NOT_APPLIED)
 
@@ -945,40 +1003,84 @@ class MySQLRepository:
         mapping = {
             "REFUND_ONLY": AfterSalesType.REFUND_ONLY,
             "REFUND_RETURN": AfterSalesType.RETURN_AND_REFUND,
-            "EXCHANGE": AfterSalesType.EXCHANGE,
-            "REPAIR": AfterSalesType.REPAIR,
+            "RETURN_REFUND": AfterSalesType.RETURN_AND_REFUND,
+            "REPAIR": AfterSalesType.RETURN_AND_REFUND,
+            "REISSUE": AfterSalesType.REISSUE,
+            "RESEND": AfterSalesType.REISSUE,
+            "EXCHANGE": AfterSalesType.REISSUE,
+            "PARTIAL_REFUND": AfterSalesType.PARTIAL_REFUND,
         }
         return mapping.get(value.upper())
 
     @staticmethod
-    def _map_agent_ticket_status(value: str) -> str:
+    def _db_after_sales_type(value: Any) -> str:
+        raw = getattr(value, "name", None) or getattr(value, "value", None) or str(value or "")
+        normalized = raw.strip().upper()
         mapping = {
-            "waiting_user": "PENDING",
-            "pending_review": "PENDING",
+            "REFUND_ONLY": "REFUND_ONLY",
+            "RETURN_REFUND": "RETURN_REFUND",
+            "RETURN_AND_REFUND": "RETURN_REFUND",
+            "RETURN_REFUND": "RETURN_REFUND",
+            "REISSUE": "REISSUE",
+            "EXCHANGE": "REISSUE",
+            "PARTIAL_REFUND": "PARTIAL_REFUND",
+            "REPAIR": "RETURN_REFUND",
+            "REFUND_ONLY": "REFUND_ONLY",
+        }
+        value_mapping = {
+            "REFUND_ONLY": "REFUND_ONLY",
+            "RETURN_REFUND": "RETURN_REFUND",
+            "RETURN_AND_REFUND": "RETURN_REFUND",
+            "REISSUE": "REISSUE",
+            "PARTIAL_REFUND": "PARTIAL_REFUND",
+            "REPAIR": "RETURN_REFUND",
+        }
+        normalized_value = str(getattr(value, "value", "") or "").strip().upper()
+        if normalized in mapping:
+            return mapping[normalized]
+        if normalized_value in value_mapping:
+            return value_mapping[normalized_value]
+        return "RETURN_REFUND"
+
+    @staticmethod
+    def _db_reason(intent_value: str | None) -> str:
+        normalized = str(intent_value or "").strip().lower()
+        mapping = {
+            "refund_only": "OTHER",
+            "refund_progress": "OTHER",
+            "return_logistics": "DAMAGE",
+            "supplement_evidence": "OTHER",
+            "merchant_rejected": "OTHER",
+            "exchange_repair": "QUALITY",
+            "human_service": "OTHER",
+            "complaint": "OTHER",
+            "apply_after_sales": "QUALITY",
+        }
+        return mapping.get(normalized, "OTHER")
+
+    @staticmethod
+    def _db_ticket_status(status_value: str | None) -> str:
+        normalized = str(status_value or "").strip().lower()
+        mapping = {
             "auto_approved": "PROCESSING",
+            "pending_review": "PENDING",
+            "waiting_user": "PENDING",
             "human_handoff": "PENDING",
             "closed": "CLOSED",
         }
-        return mapping.get(str(value or "").lower(), "PENDING")
+        return mapping.get(normalized, "PENDING")
 
     @staticmethod
-    def _map_agent_after_sale_type(value: str) -> str:
-        mapping = {
-            "refund_only": "REFUND_ONLY",
-            "return_and_refund": "REFUND_RETURN",
-            "exchange": "EXCHANGE",
-            "repair": "REPAIR",
-        }
-        return mapping.get(str(value or "").lower(), "REFUND_RETURN")
-
-    @staticmethod
-    def _map_agent_reason(summary: str) -> str:
-        text = str(summary or "")
-        if any(marker in text for marker in ("破", "裂", "损", "碎", "坏", "damage")):
-            return "DAMAGE"
-        if any(marker in text for marker in ("少", "漏", "错", "wrong", "missing")):
-            return "WRONG_ITEM"
-        return "QUALITY"
+    def _normalize_decimal_score(value: float | int | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return None
+        if score > 1:
+            score = score / 100.0
+        return max(0.0, min(1.0, score))
 
     @staticmethod
     def _normalize_attachment_type(value: str) -> str:

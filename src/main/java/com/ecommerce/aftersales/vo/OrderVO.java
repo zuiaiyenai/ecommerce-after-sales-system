@@ -21,6 +21,10 @@ public class OrderVO {
     private String receiverAddress;
     private String trackingCompany;
     private String trackingNo;
+    private Boolean hasOpenAfterSales;
+    private String afterSalesStatus;
+    private String afterSalesStatusText;
+    private String latestAfterSalesTicketNo;
     private LocalDateTime payTime;
     private LocalDateTime shipTime;
     private LocalDateTime receiveTime;

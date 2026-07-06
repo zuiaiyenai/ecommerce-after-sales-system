@@ -1,0 +1,279 @@
+{
+  "catalog_version": "2026-07-03-v1",
+  "after_sales_schemes": {
+    "REFUND_ONLY": {
+      "code": "REFUND_ONLY",
+      "display_name": "仅退款"
+    },
+    "RETURN_REFUND": {
+      "code": "RETURN_REFUND",
+      "display_name": "退货退款"
+    },
+    "REISSUE": {
+      "code": "REISSUE",
+      "display_name": "补发"
+    },
+    "PARTIAL_REFUND": {
+      "code": "PARTIAL_REFUND",
+      "display_name": "部分退款"
+    }
+  },
+  "reply_templates": {
+    "quality_issue.ask_for_detail": "您好，当前只有概括性的质量问题描述，图片也暂时无法直接确认具体异常。请补充实际表现，例如没有声音、无法开机、充电异常、按键失灵等，我再继续帮您处理。",
+    "quality_issue.ask_for_detail_progress": "等待用户补充具体异常表现后继续判断。",
+    "quality_issue.visual_handoff": "您好，已记录您的异常表现。当前图片暂时无法自动确认问题，我这边为您转客服进一步核实处理。",
+    "quality_issue.visual_handoff_progress": "已记录异常描述，但图片无法自动核验，转客服进一步核实。",
+    "quality_issue.auto_approved_progress": "图片核验通过，AI 已自动审核并进入处理中状态。"
+  },
+  "merchants": {
+    "MERCHANT_DEMO": {
+      "merchant_code": "MERCHANT_DEMO",
+      "policy_code": "DEFAULT_POLICY",
+      "policy_version": "2026-07-02-v3",
+      "display_name": "Default after-sales policy",
+      "merchant_type": "SKU-GENERAL-001",
+      "state_policy": {
+        "submission_entry_status": "merchant_review",
+        "requires_platform_review": false,
+        "supports_auto_approve": true,
+        "rejected_resolution": "appeal",
+        "auto_review_hours": 12,
+        "manual_review_hours": 24,
+        "state_rules": {
+          "not_applied": ["提交售后申请"],
+          "submitted": ["进入商家审核", "要求补充凭证"],
+          "waiting_evidence": ["上传凭证"],
+          "merchant_review": ["等待商家审核", "转人工"],
+          "platform_review": ["等待平台复核", "转人工"],
+          "approved": ["自动通过", "退款处理", "待用户退货", "执行售后方案"],
+          "rejected": ["申诉", "转人工"],
+          "waiting_return": ["填写退货物流"],
+          "refund_processing": ["查询退款进度"],
+          "exchange_processing": ["查询方案处理进度"],
+          "completed": ["查看结果", "评价"],
+          "human_processing": ["等待人工处理"]
+        },
+        "intent_actions": {
+          "apply_after_sales": ["提交售后申请"],
+          "refund_progress": ["查询退款进度", "等待商家审核", "等待平台复核"],
+          "return_logistics": ["填写退货物流", "查看结果"],
+          "supplement_evidence": ["上传凭证", "要求补充凭证"],
+          "merchant_rejected": ["申诉", "平台复核", "转人工"],
+          "refund_only": ["提交售后申请", "退款处理", "自动通过"],
+          "exchange_repair": ["按商家方案处理", "提交售后申请"],
+          "human_service": ["转人工"],
+          "complaint": ["转人工", "平台复核"],
+          "general": []
+        }
+      },
+      "evidence_policy": {
+        "default_scene_evidence": {
+          "product_damage": ["破损照片", "问题描述"],
+          "package_damage": ["外包装照片", "问题描述"],
+          "wrong_or_missing_items": ["商品照片", "问题描述"],
+          "quality_issue": ["问题描述"],
+          "logistics_issue": ["问题描述"],
+          "progress_query": [],
+          "general": ["问题描述"]
+        },
+        "required_evidence_overrides": {},
+        "quality_issue_requires_detail": true,
+        "allow_visual_auto_approve": true
+      },
+      "risk_policy": {
+        "auto_refund_limit": 50.0,
+        "high_value_amount": 300.0,
+        "history_after_sales_threshold": 3
+      },
+      "handoff_policy": {
+        "emotion_handoff_min_level": "angry",
+        "complaint_to_human": true,
+        "human_request_threshold": 2,
+        "visual_review_failed_to_human": true
+      },
+      "reply_templates": {
+        "state_reply.merchant_review": "您好，当前售后申请仍在商家审核中，审核通过后才会进入下一步处理。",
+        "state_reply.platform_review": "您好，当前售后申请正在平台复核中，请您耐心等待处理结果。",
+        "state_reply.refund_processing": "您好，退款正在处理中，具体到账时间以支付渠道实际入账为准。",
+        "state_reply.completed": "您好，当前售后已经处理完成，您可以查看处理结果。",
+        "state_reply.default": "您好，当前状态暂不支持该操作，请按页面提示继续处理。",
+        "status.waiting_evidence": "您好，当前售后申请还需要补充材料，提交完成后平台会继续审核。",
+        "status.refund_processing": "您好，退款正在处理中，具体到账时间以支付渠道入账时间为准，请您留意进度更新。",
+        "status.waiting_return": "您好，当前待您补充退货物流信息，现有物流状态为{logistics}。",
+        "status.high_risk": "您好，当前问题还需要进一步核验，建议您耐心等待处理结果，必要时我也可以继续帮您跟进。",
+        "status.recorded": "您好，当前售后信息已经记录，您可以继续关注处理进度。",
+        "merchant_review.stalled": "您好，当前处理时间比平时稍长，确实让您久等了。我会继续帮您跟进审核进度，必要时也会协助您发起催办。",
+        "merchant_review.anxious": "您好，理解您着急等待退款的心情。目前申请还在商家审核中，暂时还没到退款打款阶段。我会继续帮您跟进，状态更新后第一时间通知您。",
+        "merchant_review.default": "您好，已经收到您的退款申请了，目前正在由商家审核。审核通过后会立即进入退款流程，状态一有更新系统会第一时间通知您，您这边先不用重复提交。",
+        "ticket_reply.package_damage": "您好，已为您记录包装破损问题并生成售后申请 {ticket_id}。我会按包装补偿流程继续推进；如果商品本体也有异常，您也可以继续补充商品照片。",
+        "ticket_reply.auto_approved": "您好，已为您提交售后申请 {ticket_id}，当前符合自动处理条件，系统会尽快推进后续流程。",
+        "ticket_reply.product_damage": "您好，已为您提交售后申请 {ticket_id}，当前会先按商品破损情况进入审核，预计 {expected_hours} 小时内更新进度。",
+        "ticket_reply.default": "您好，已为您提交售后申请 {ticket_id}，当前已进入审核流程，预计 {expected_hours} 小时内更新进度。",
+        "progress.submitted": "{product_name} 已提交售后申请，下一步进入商家审核。",
+        "progress.waiting_evidence": "{product_name} 当前待补充材料，补齐后进入审核。",
+        "progress.merchant_review": "{product_name} 当前处于商家审核中。",
+        "progress.refund_processing": "{product_name} 当前进入退款处理阶段。",
+        "progress.human_processing": "{product_name} 当前已转人工处理。",
+        "progress.default": "{product_name} 当前售后状态为 {status_value}。"
+      },
+      "after_sales_scheme_map": {
+        "refund_only": "REFUND_ONLY",
+        "apply_after_sales": "RETURN_REFUND",
+        "merchant_rejected": "RETURN_REFUND",
+        "exchange_repair": "RETURN_REFUND"
+      }
+    },
+    "DIGITAL_STRICT": {
+      "merchant_code": "DIGITAL_STRICT",
+      "policy_code": "DIGITAL_STRICT",
+      "policy_version": "2026-07-02-v3",
+      "display_name": "Digital products strict review",
+      "merchant_type": "SKU-DIGITAL-001",
+      "state_policy": {
+        "submission_entry_status": "platform_review",
+        "requires_platform_review": true,
+        "supports_auto_approve": false,
+        "rejected_resolution": "appeal",
+        "auto_review_hours": 12,
+        "manual_review_hours": 48,
+        "state_rules": {
+          "not_applied": ["提交售后申请"],
+          "submitted": ["进入平台复核", "要求补充凭证"],
+          "waiting_evidence": ["上传凭证"],
+          "merchant_review": ["等待商家审核", "平台复核", "转人工"],
+          "platform_review": ["等待平台复核", "转人工"],
+          "approved": ["退款处理", "待用户退货", "执行售后方案"],
+          "rejected": ["申诉", "转人工"],
+          "waiting_return": ["填写退货物流"],
+          "refund_processing": ["查询退款进度"],
+          "exchange_processing": ["查询方案处理进度"],
+          "completed": ["查看结果", "评价"],
+          "human_processing": ["等待人工处理"]
+        },
+        "intent_actions": {
+          "apply_after_sales": ["提交售后申请"],
+          "refund_progress": ["查询退款进度", "等待商家审核", "等待平台复核"],
+          "return_logistics": ["填写退货物流", "查看结果"],
+          "supplement_evidence": ["上传凭证", "要求补充凭证"],
+          "merchant_rejected": ["申诉", "平台复核", "转人工"],
+          "refund_only": ["提交售后申请", "退款处理"],
+          "exchange_repair": ["按商家方案处理", "提交售后申请"],
+          "human_service": ["转人工"],
+          "complaint": ["转人工", "平台复核"],
+          "general": []
+        }
+      },
+      "evidence_policy": {
+        "default_scene_evidence": {
+          "product_damage": ["破损照片", "问题描述"],
+          "package_damage": ["外包装照片", "问题描述"],
+          "wrong_or_missing_items": ["商品照片", "问题描述"],
+          "quality_issue": ["问题描述", "故障照片或视频"],
+          "logistics_issue": ["问题描述"],
+          "progress_query": [],
+          "general": ["问题描述"]
+        },
+        "required_evidence_overrides": {
+          "quality_issue": ["问题描述", "故障照片或视频"]
+        },
+        "quality_issue_requires_detail": true,
+        "allow_visual_auto_approve": false
+      },
+      "risk_policy": {
+        "auto_refund_limit": 30.0,
+        "high_value_amount": 200.0,
+        "history_after_sales_threshold": 2
+      },
+      "handoff_policy": {
+        "emotion_handoff_min_level": "dissatisfied",
+        "complaint_to_human": true,
+        "human_request_threshold": 2,
+        "visual_review_failed_to_human": true
+      },
+      "reply_templates": {},
+      "after_sales_scheme_map": {
+        "refund_only": "REFUND_ONLY",
+        "apply_after_sales": "RETURN_REFUND",
+        "merchant_rejected": "RETURN_REFUND",
+        "exchange_repair": "RETURN_REFUND"
+      }
+    },
+    "FASHION_FAST": {
+      "merchant_code": "FASHION_FAST",
+      "policy_code": "FASHION_FAST",
+      "policy_version": "2026-07-02-v3",
+      "display_name": "Fashion fast-service policy",
+      "merchant_type": "SKU-FASHION-001",
+      "state_policy": {
+        "submission_entry_status": "merchant_review",
+        "requires_platform_review": false,
+        "supports_auto_approve": true,
+        "rejected_resolution": "appeal",
+        "auto_review_hours": 6,
+        "manual_review_hours": 12,
+        "state_rules": {
+          "not_applied": ["提交售后申请"],
+          "submitted": ["进入商家审核", "要求补充凭证"],
+          "waiting_evidence": ["上传凭证"],
+          "merchant_review": ["等待商家审核", "转人工"],
+          "platform_review": ["等待平台复核", "转人工"],
+          "approved": ["自动通过", "退款处理", "待用户退货", "执行售后方案"],
+          "rejected": ["申诉", "转人工"],
+          "waiting_return": ["填写退货物流"],
+          "refund_processing": ["查询退款进度"],
+          "exchange_processing": ["查询方案处理进度"],
+          "completed": ["查看结果", "评价"],
+          "human_processing": ["等待人工处理"]
+        },
+        "intent_actions": {
+          "apply_after_sales": ["提交售后申请"],
+          "refund_progress": ["查询退款进度", "等待商家审核", "等待平台复核"],
+          "return_logistics": ["填写退货物流", "查看结果"],
+          "supplement_evidence": ["上传凭证", "要求补充凭证"],
+          "merchant_rejected": ["申诉", "平台复核", "转人工"],
+          "refund_only": ["提交售后申请", "退款处理", "自动通过"],
+          "exchange_repair": ["按商家方案处理", "提交售后申请"],
+          "human_service": ["转人工"],
+          "complaint": ["转人工", "平台复核"],
+          "general": []
+        }
+      },
+      "evidence_policy": {
+        "default_scene_evidence": {
+          "product_damage": ["破损照片", "问题描述"],
+          "package_damage": ["外包装照片", "问题描述"],
+          "wrong_or_missing_items": ["商品照片", "问题描述"],
+          "quality_issue": ["问题描述"],
+          "logistics_issue": ["问题描述"],
+          "progress_query": [],
+          "general": ["问题描述"]
+        },
+        "required_evidence_overrides": {
+          "wrong_or_missing_items": ["商品照片", "问题描述"],
+          "package_damage": ["外包装照片", "问题描述"]
+        },
+        "quality_issue_requires_detail": false,
+        "allow_visual_auto_approve": true
+      },
+      "risk_policy": {
+        "auto_refund_limit": 80.0,
+        "high_value_amount": 500.0,
+        "history_after_sales_threshold": 4
+      },
+      "handoff_policy": {
+        "emotion_handoff_min_level": "angry",
+        "complaint_to_human": true,
+        "human_request_threshold": 3,
+        "visual_review_failed_to_human": true
+      },
+      "reply_templates": {},
+      "after_sales_scheme_map": {
+        "refund_only": "REFUND_ONLY",
+        "apply_after_sales": "RETURN_REFUND",
+        "merchant_rejected": "PARTIAL_REFUND",
+        "exchange_repair": "REISSUE",
+        "apply_after_sales:wrong_or_missing_items": "REISSUE"
+      }
+    }
+  }
+}

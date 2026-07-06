@@ -33,10 +33,8 @@ class HandoffAgent:
             elif evidence_result.evidence_complete:
                 has_images = bool(request.attachments)
                 if request.visual_review_failed:
-                    # 场景 D：用户已上传图片但视觉模型无法核验 → 转人工
-                    triggered_reason = "用户已上传图片凭证但系统无法自动核验，转人工客服进一步核实。"
+                    triggered_reason = "用户已上传图片，但系统无法完成自动核验，建议转人工复核。"
                 elif has_images and request.visual_evidence:
-                    # 场景 B：用户上传图片且视觉核验通过，证据完整 → 不转人工，走自动审核流程
                     triggered_reason = None
                 else:
                     triggered_reason = "用户已提供必要信息并要求人工客服介入。"

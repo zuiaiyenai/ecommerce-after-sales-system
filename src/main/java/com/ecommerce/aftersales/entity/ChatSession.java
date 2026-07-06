@@ -21,6 +21,10 @@ public class ChatSession {
 
     private String merchantCode;
 
+    private String policyCode;
+
+    private String policyVersion;
+
     private Long orderId;
 
     private Long ticketId;
@@ -32,6 +36,8 @@ public class ChatSession {
     private String status;
 
     private BigDecimal emotionScore;
+
+    private BigDecimal emotionConfidence;
 
     private String emotionLabel;
 

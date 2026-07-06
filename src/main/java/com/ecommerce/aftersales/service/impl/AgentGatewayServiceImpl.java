@@ -19,6 +19,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -66,24 +67,24 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
             return getJson(url, responseType);
         } catch (ResourceAccessException exception) {
             log.warn("Agent service unavailable: {}", url, exception);
-            throw new BizException(502, "Agent服务暂时不可用，请稍后重试");
+            throw new BizException(502, "Agent 服务暂时不可用，请稍后重试");
         } catch (RestClientException exception) {
             log.error("Failed to call Agent service: {}", url, exception);
-            throw new BizException(502, "调用Agent服务失败: " + exception.getMessage());
+            throw new BizException(502, "调用 Agent 服务失败: " + exception.getMessage());
         } catch (IOException exception) {
             log.error("IO error while calling Agent service: {}", url, exception);
-            throw new BizException(502, "Agent服务响应异常，请稍后重试");
+            throw new BizException(502, "Agent 服务响应异常，请稍后重试");
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             log.error("Interrupted while calling Agent service: {}", url, exception);
-            throw new BizException(502, "Agent服务处理中断，请稍后重试");
+            throw new BizException(502, "Agent 服务处理被中断，请稍后重试");
         }
     }
 
     private <T> T getJson(String url, Class<T> responseType) {
         T payload = agentRestTemplate.getForObject(url, responseType);
         if (payload == null) {
-            throw new BizException(502, "Agent服务返回了空响应");
+            throw new BizException(502, "Agent 服务返回了空响应");
         }
         return payload;
     }
@@ -95,16 +96,20 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
                 .build();
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .header("Content-Type", "application/json; charset=utf-8")
+                .header("Accept", "application/json; charset=utf-8")
                 .timeout(Duration.ofMillis(properties.getTimeoutMillis()))
-                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody, StandardCharsets.UTF_8))
                 .build();
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = httpClient.send(
+                request,
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new BizException(502, "Agent服务调用失败，HTTP状态码: " + response.statusCode());
+            throw new BizException(502, "Agent 服务调用失败，HTTP 状态码: " + response.statusCode());
         }
         T payload = objectMapper.readValue(response.body(), responseType);
         if (payload == null) {
-            throw new BizException(502, "Agent服务返回了空响应");
+            throw new BizException(502, "Agent 服务返回了空响应");
         }
         return payload;
     }
@@ -143,7 +148,7 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
         try {
             return objectMapper.writeValueAsString(body);
         } catch (JsonProcessingException exception) {
-            throw new BizException(500, "Agent请求序列化失败");
+            throw new BizException(500, "Agent 请求序列化失败");
         }
     }
 

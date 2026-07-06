@@ -2,6 +2,7 @@ package com.ecommerce.aftersales.common;
 
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -36,6 +37,12 @@ public class GlobalExceptionHandler {
     public ApiResponse<Void> handleConstraintViolationException(ConstraintViolationException exception) {
         log.warn("约束违反: {}", exception.getMessage());
         return ApiResponse.fail(400, exception.getMessage());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ApiResponse<Void> handleHttpMessageNotReadableException(HttpMessageNotReadableException exception) {
+        log.warn("请求体解析失败: {}", exception.getMessage());
+        return ApiResponse.fail(400, "请求体格式不正确，请检查 JSON 参数");
     }
 
     @ExceptionHandler(Exception.class)

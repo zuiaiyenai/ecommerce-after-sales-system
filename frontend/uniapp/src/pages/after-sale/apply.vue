@@ -32,7 +32,7 @@
       <textarea
         v-model="description"
         class="desc-input"
-        placeholder="请详细描述您遇到的问题，例如：商品有破损、尺码不合适等..."
+        placeholder="请尽量描述清楚异常情况，例如：耳机没有声音、收到商品破损、少发了一件配件。"
         maxlength="500"
       />
       <view class="desc-footer">
@@ -53,7 +53,7 @@
           <text class="add-text">添加图片</text>
         </view>
       </view>
-      <text class="image-tip">最多上传 5 张，支持 jpg/png 格式</text>
+      <text class="image-tip">最多上传 5 张，支持 jpg/png/webp。</text>
     </view>
 
     <button class="submit-btn" :disabled="!selectedReason || submitting" @tap="submit">
@@ -66,6 +66,7 @@
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
@@ -73,7 +74,7 @@ const selectedReason = ref('')
 const description = ref('')
 const images = ref([])
 const submitting = ref(false)
-const orderId = ref(null)
+const orderId = ref('')
 const orderData = ref(null)
 
 const reasons = [
@@ -81,8 +82,8 @@ const reasons = [
   { value: 'WRONG_ITEM', label: '发错货', icon: '错' },
   { value: 'SIZE_ISSUE', label: '尺码不合适', icon: '码' },
   { value: 'DAMAGE', label: '物流损坏', icon: '损' },
-  { value: 'NOT_MATCH', label: '与描述不符', icon: '异' },
-  { value: 'OTHER', label: '其他原因', icon: '…' }
+  { value: 'NOT_MATCH', label: '与描述不符', icon: '差' },
+  { value: 'OTHER', label: '其他原因', icon: '其' }
 ]
 
 function getPendingApplyKey(id) {
@@ -90,20 +91,18 @@ function getPendingApplyKey(id) {
 }
 
 onLoad(async (options) => {
-  if (options.orderId) {
-    // 后端订单 ID 是雪花 Long，必须按字符串传递，避免 JS Number 精度丢失。
-    orderId.value = String(options.orderId)
-    try {
-      orderData.value = await request({ url: '/orders/' + orderId.value })
-      if (orderData.value && orderData.value.status === 'AFTERSALE') {
-        uni.showToast({ title: '该订单已在售后中', icon: 'none' })
-        setTimeout(() => {
-          uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
-        }, 800)
-      }
-    } catch (error) {
-      orderData.value = null
+  if (!options.orderId) return
+  orderId.value = String(options.orderId)
+  try {
+    orderData.value = await request({ url: '/orders/' + orderId.value })
+    if (orderData.value && resolveOrderAfterSalesSnapshot(orderData.value).hasAnyAfterSales) {
+      uni.showToast({ title: '该订单已有售后记录', icon: 'none' })
+      setTimeout(() => {
+        uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
+      }, 800)
     }
+  } catch (error) {
+    orderData.value = null
   }
 })
 
@@ -175,7 +174,7 @@ async function submit() {
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 24rpx 28rpx;
+  padding: 24rpx 28rpx 60rpx;
   background: #f0eeea;
 }
 
@@ -221,93 +220,80 @@ async function submit() {
 }
 
 .card-title {
-  display: block;
-  font-size: 28rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1a1a1a;
 }
 
 .divider {
   height: 1rpx;
-  margin: 20rpx 0;
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.06));
+  background: rgba(0, 0, 0, 0.06);
+  margin: 24rpx 0;
 }
 
 .reason-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16rpx;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20rpx;
 }
 
 .reason-item {
   position: relative;
-  display: flex;
-  align-items: center;
   padding: 24rpx 20rpx;
-  background: #f5f3ef;
-  border-radius: 16rpx;
+  border-radius: 20rpx;
+  background: #f8f6f2;
   border: 2rpx solid transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
 }
 
 .reason-item.active {
   border-color: #c97b5a;
-  background: #fff5f0;
+  background: #fff4ef;
 }
 
 .reason-icon {
-  width: 52rpx;
-  height: 52rpx;
-  line-height: 52rpx;
-  text-align: center;
-  border-radius: 14rpx;
-  background: #ffffff;
-  color: #1a1a1a;
-  font-size: 24rpx;
-  font-weight: 800;
-  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.04);
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 16rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(201, 123, 90, 0.12);
+  color: #c97b5a;
+  font-weight: 700;
 }
 
 .reason-label {
-  flex: 1;
-  margin-left: 14rpx;
   font-size: 26rpx;
-  font-weight: 600;
   color: #1a1a1a;
+  font-weight: 600;
 }
 
 .reason-check {
   position: absolute;
-  top: 8rpx;
-  right: 8rpx;
-  width: 32rpx;
-  height: 32rpx;
-  line-height: 32rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: #c97b5a;
-  color: #ffffff;
-  font-size: 20rpx;
+  top: 18rpx;
+  right: 18rpx;
+  color: #c97b5a;
+  font-size: 28rpx;
 }
 
 .desc-input {
   width: 100%;
-  height: 240rpx;
-  padding: 20rpx;
-  background: #f5f3ef;
-  border-radius: 16rpx;
+  min-height: 220rpx;
   font-size: 26rpx;
+  line-height: 1.7;
   color: #1a1a1a;
-  box-sizing: border-box;
-  line-height: 1.6;
 }
 
 .desc-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 12rpx;
 }
 
-.char-count {
+.char-count,
+.image-tip {
   font-size: 22rpx;
   color: #999;
 }
@@ -318,79 +304,65 @@ async function submit() {
   gap: 16rpx;
 }
 
-.image-item {
+.image-item,
+.add-image {
+  width: 180rpx;
+  height: 180rpx;
+  border-radius: 20rpx;
+  overflow: hidden;
   position: relative;
-  width: 160rpx;
-  height: 160rpx;
 }
 
 .preview-img {
   width: 100%;
   height: 100%;
-  border-radius: 14rpx;
-  border: 1rpx solid rgba(0, 0, 0, 0.04);
 }
 
 .delete-btn {
   position: absolute;
-  top: -10rpx;
-  right: -10rpx;
+  top: 10rpx;
+  right: 10rpx;
   width: 36rpx;
   height: 36rpx;
-  line-height: 36rpx;
-  text-align: center;
-  border-radius: 50%;
+  border-radius: 18rpx;
   background: rgba(0, 0, 0, 0.6);
-  color: #ffffff;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 24rpx;
 }
 
 .add-image {
-  width: 160rpx;
-  height: 160rpx;
+  background: #f8f6f2;
+  border: 2rpx dashed rgba(201, 123, 90, 0.35);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #f5f3ef;
-  border-radius: 14rpx;
-  border: 2rpx dashed rgba(0, 0, 0, 0.1);
+  gap: 10rpx;
 }
 
 .add-icon {
-  font-size: 52rpx;
-  color: #999;
-  font-weight: 300;
+  font-size: 44rpx;
+  color: #c97b5a;
 }
 
 .add-text {
-  margin-top: 8rpx;
-  font-size: 20rpx;
-  color: #999;
-}
-
-.image-tip {
-  display: block;
-  margin-top: 16rpx;
-  font-size: 22rpx;
-  color: #999;
+  font-size: 24rpx;
+  color: #8a776c;
 }
 
 .submit-btn {
-  margin-top: 32rpx;
-  height: 88rpx;
-  line-height: 88rpx;
-  border-radius: 20rpx;
-  background: linear-gradient(135deg, #c97b5a, #b86a4a);
-  color: #ffffff;
-  font-size: 30rpx;
+  margin-top: 36rpx;
+  border-radius: 999rpx;
+  background: #c97b5a;
+  color: #fff;
+  font-size: 28rpx;
   font-weight: 700;
-  border: none;
-  box-shadow: 0 4rpx 16rpx rgba(244, 90, 11, 0.3);
 }
 
 .submit-btn[disabled] {
-  opacity: 0.5;
-  box-shadow: none;
+  opacity: 0.45;
 }
 </style>

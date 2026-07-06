@@ -7,12 +7,8 @@ import com.ecommerce.aftersales.common.annotation.CurrentUserId;
 import com.ecommerce.aftersales.config.ChatWebSocketHandler;
 import com.ecommerce.aftersales.dto.UserChatDtos.ChatHistoryResponse;
 import com.ecommerce.aftersales.dto.UserChatDtos.ChatMessageView;
-import com.ecommerce.aftersales.dto.UserChatDtos.ChatSessionListResponse;
-import com.ecommerce.aftersales.dto.UserChatDtos.ChatSessionSummary;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionResponse;
-import com.ecommerce.aftersales.dto.UserChatDtos.EvaluationRequest;
-import com.ecommerce.aftersales.dto.UserChatDtos.HideSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageResponse;
 import com.ecommerce.aftersales.dto.WsChatMessage;
@@ -20,20 +16,15 @@ import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.OrderInfo;
-import com.ecommerce.aftersales.entity.ReviewInfo;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
-import com.ecommerce.aftersales.mapper.ReviewInfoMapper;
 import com.ecommerce.aftersales.service.NotificationService;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -42,8 +33,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/chat")
@@ -55,35 +44,27 @@ public class UserChatController {
     private static final String STATUS_AI_ACTIVE = "AI_ACTIVE";
     private static final String STATUS_WAITING = "WAITING";
     private static final String STATUS_CLOSED = "CLOSED";
-    private static final String STATUS_AWAITING_EVALUATION = "AWAITING_EVALUATION";
-    private static final String STATUS_READY_TO_CLOSE = "READY_TO_CLOSE";
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final ChatSessionMapper chatSessionMapper;
     private final ChatMessageMapper chatMessageMapper;
     private final AfterSalesTicketMapper afterSalesTicketMapper;
     private final OrderInfoMapper orderInfoMapper;
-    private final ReviewInfoMapper reviewInfoMapper;
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final NotificationService notificationService;
-    private final ObjectMapper objectMapper;
 
     public UserChatController(ChatSessionMapper chatSessionMapper,
                               ChatMessageMapper chatMessageMapper,
                               AfterSalesTicketMapper afterSalesTicketMapper,
                               OrderInfoMapper orderInfoMapper,
-                              ReviewInfoMapper reviewInfoMapper,
                               ChatWebSocketHandler chatWebSocketHandler,
-                              NotificationService notificationService,
-                              ObjectMapper objectMapper) {
+                              NotificationService notificationService) {
         this.chatSessionMapper = chatSessionMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.afterSalesTicketMapper = afterSalesTicketMapper;
         this.orderInfoMapper = orderInfoMapper;
-        this.reviewInfoMapper = reviewInfoMapper;
         this.chatWebSocketHandler = chatWebSocketHandler;
         this.notificationService = notificationService;
-        this.objectMapper = objectMapper;
     }
 
     @PostMapping("/session")
@@ -104,18 +85,6 @@ public class UserChatController {
             session.setDeleted(0);
             chatSessionMapper.insert(session);
             created = true;
-        } else if (STATUS_CLOSED.equals(session.getStatus())) {
-            session.setStatus(MODE_HUMAN.equals(session.getMode()) ? STATUS_WAITING : STATUS_AI_ACTIVE);
-            session.setResolved(0);
-            if (request.getAfterSaleId() != null && session.getTicketId() == null) {
-                fillBusinessContext(session, userId, request);
-            }
-            session.setUpdateTime(LocalDateTime.now());
-            chatSessionMapper.updateById(session);
-        } else if (request.getAfterSaleId() != null && session.getTicketId() == null) {
-            fillBusinessContext(session, userId, request);
-            session.setUpdateTime(LocalDateTime.now());
-            chatSessionMapper.updateById(session);
         }
         if (created) {
             addMessage(session.getId(), "SYSTEM", welcomeMessage(session), "TEXT");
@@ -124,7 +93,7 @@ public class UserChatController {
             addMessage(session.getId(), "USER", request.getMessage(), "TEXT");
         }
         CreateSessionResponse response = new CreateSessionResponse();
-        response.setSessionId(String.valueOf(session.getId()));
+        response.setSessionId(session.getId());
         response.setSessionNo(session.getSessionNo());
         response.setMerchantCode(session.getMerchantCode());
         response.setMode(session.getMode());
@@ -145,12 +114,6 @@ public class UserChatController {
         ChatSession session = chatSessionMapper.selectById(request.getSessionId());
         if (session == null || !userId.equals(session.getUserId())) {
             throw new BizException(404, "会话不存在");
-        }
-        if (STATUS_CLOSED.equals(session.getStatus())) {
-            session.setStatus(MODE_HUMAN.equals(session.getMode()) ? STATUS_WAITING : STATUS_AI_ACTIVE);
-            session.setResolved(0);
-            session.setUpdateTime(LocalDateTime.now());
-            chatSessionMapper.updateById(session);
         }
 
         String messageType = StringUtils.hasText(request.getMessageType()) ? request.getMessageType() : "TEXT";
@@ -184,105 +147,6 @@ public class UserChatController {
         return ApiResponse.success("发送成功", response);
     }
 
-    @GetMapping("/sessions")
-    public ApiResponse<ChatSessionListResponse> sessions(@CurrentUserId Long userId) {
-        List<ChatSessionSummary> list = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
-                        .eq(ChatSession::getUserId, userId)
-                        .ne(ChatSession::getStatus, STATUS_CLOSED)
-                        .orderByDesc(ChatSession::getUpdateTime))
-                .stream()
-                .map(this::toSessionSummary)
-                .toList();
-        ChatSessionListResponse response = new ChatSessionListResponse();
-        response.setList(list);
-        return ApiResponse.success("获取成功", response);
-    }
-
-    @PutMapping("/session/hide")
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResponse<Void> hideSession(@CurrentUserId Long userId, @RequestBody HideSessionRequest request) {
-        if (request.getSessionId() == null) {
-            throw new BizException("会话ID不能为空");
-        }
-        ChatSession session = chatSessionMapper.selectById(request.getSessionId());
-        if (session == null || !userId.equals(session.getUserId())) {
-            throw new BizException(404, "会话不存在");
-        }
-        session.setStatus(STATUS_CLOSED);
-        session.setCloseTime(LocalDateTime.now());
-        session.setUpdateTime(LocalDateTime.now());
-        chatSessionMapper.updateById(session);
-        return ApiResponse.success("已移除", null);
-    }
-
-    @PostMapping("/evaluation")
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResponse<Void> submitEvaluation(@CurrentUserId Long userId, @RequestBody EvaluationRequest request) {
-        if (request.getSessionId() == null) {
-            throw new BizException("会话ID不能为空");
-        }
-        ChatSession session = chatSessionMapper.selectById(request.getSessionId());
-        if (session == null || !userId.equals(session.getUserId())) {
-            throw new BizException(404, "会话不存在");
-        }
-        if (!STATUS_AWAITING_EVALUATION.equals(session.getStatus())) {
-            throw new BizException("当前会话不在待评价状态");
-        }
-        session.setResolved(1);
-        int rating = normalizeRating(request.getRating());
-        session.setSatisfaction(rating);
-        session.setStatus("RESOLVED");
-        session.setCloseTime(LocalDateTime.now());
-        session.setUpdateTime(LocalDateTime.now());
-        chatSessionMapper.updateById(session);
-        saveReviewInfo(session, request, rating);
-        addMessage(session.getId(), "SYSTEM", "感谢您的评价，本次售后服务已完成。", "TEXT");
-        return ApiResponse.success("评价成功", null);
-    }
-
-    private int normalizeRating(Integer rating) {
-        if (rating == null) {
-            return 5;
-        }
-        return Math.max(1, Math.min(5, rating));
-    }
-
-    private void saveReviewInfo(ChatSession session, EvaluationRequest request, int rating) {
-        int responseSpeed = normalizeRating(request.getResponseSpeedScore());
-        int serviceAttitude = normalizeRating(request.getServiceAttitudeScore());
-        int professional = normalizeRating(request.getProfessionalScore());
-        int efficiency = normalizeRating(request.getEfficiencyScore());
-        int serviceScore = Math.round((responseSpeed + serviceAttitude + professional + efficiency) / 4.0f);
-        ReviewInfo review = new ReviewInfo();
-        review.setOrderId(session.getOrderId());
-        review.setUserId(session.getUserId());
-        review.setProductScore(rating);
-        review.setLogisticsScore(responseSpeed);
-        review.setServiceScore(serviceScore);
-        review.setAfterSaleScore(efficiency);
-        review.setOverallScore(rating);
-        review.setContent(StringUtils.hasText(request.getContent()) ? request.getContent().trim() : null);
-        review.setTopics(reviewTopics(rating, responseSpeed, serviceAttitude, professional, efficiency));
-        review.setIsAnonymous(0);
-        review.setStatus(1);
-        review.setDeleted(0);
-        reviewInfoMapper.insert(review);
-    }
-
-    private String reviewTopics(int overall, int responseSpeed, int serviceAttitude, int professional, int efficiency) {
-        try {
-            return objectMapper.writeValueAsString(Map.of(
-                    "overallScore", overall,
-                    "responseSpeedScore", responseSpeed,
-                    "serviceAttitudeScore", serviceAttitude,
-                    "professionalScore", professional,
-                    "efficiencyScore", efficiency
-            ));
-        } catch (JsonProcessingException e) {
-            return null;
-        }
-    }
-
     @GetMapping("/history")
     public ApiResponse<ChatHistoryResponse> history(@CurrentUserId Long userId, @RequestParam Long sessionId) {
         ChatSession session = chatSessionMapper.selectById(sessionId);
@@ -296,7 +160,7 @@ public class UserChatController {
                 .map(this::toMessageView)
                 .toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
-        response.setSessionId(String.valueOf(sessionId));
+        response.setSessionId(sessionId);
         response.setList(messages);
         return ApiResponse.success("获取成功", response);
     }
@@ -320,15 +184,11 @@ public class UserChatController {
         LambdaQueryWrapper<ChatSession> wrapper = new LambdaQueryWrapper<ChatSession>()
                 .eq(ChatSession::getUserId, userId)
                 .eq(ChatSession::getMerchantCode, resolveMerchantCode(request))
+                .ne(ChatSession::getStatus, STATUS_CLOSED)
                 .orderByDesc(ChatSession::getCreateTime)
                 .last("limit 1");
         if (request.getAfterSaleId() != null) {
-            wrapper.and(inner -> {
-                inner.eq(ChatSession::getTicketId, request.getAfterSaleId());
-                if (request.getOrderId() != null) {
-                    inner.or().eq(ChatSession::getOrderId, request.getOrderId());
-                }
-            });
+            wrapper.eq(ChatSession::getTicketId, request.getAfterSaleId());
         } else if (request.getOrderId() != null) {
             wrapper.eq(ChatSession::getOrderId, request.getOrderId());
         } else {
@@ -457,44 +317,11 @@ public class UserChatController {
 
     private ChatMessageView toMessageView(ChatMessage message) {
         ChatMessageView view = new ChatMessageView();
-        view.setId(String.valueOf(message.getId()));
+        view.setId(message.getId());
         view.setRole("USER".equals(message.getRole()) ? "user" : "service");
         view.setContent(message.getContent());
         view.setMessageType(message.getMessageType());
         view.setCreateTime(message.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(message.getCreateTime()));
         return view;
-    }
-
-    private ChatSessionSummary toSessionSummary(ChatSession session) {
-        ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
-        ChatSessionSummary view = new ChatSessionSummary();
-        view.setSessionId(String.valueOf(session.getId()));
-        view.setSessionNo(session.getSessionNo());
-        view.setOrderId(session.getOrderId() == null ? null : String.valueOf(session.getOrderId()));
-        view.setAfterSaleId(session.getTicketId() == null ? null : String.valueOf(session.getTicketId()));
-        view.setTitle(Optional.ofNullable(session.getUserQuery()).orElse("售后咨询"));
-        view.setLastMessage(lastMessage == null ? welcomeMessage(session) : lastMessage.getContent());
-        view.setLastMessageTime(lastMessage == null || lastMessage.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(lastMessage.getCreateTime()));
-        view.setMode(session.getMode());
-        view.setStatus(session.getStatus());
-        view.setEvaluationStatus(evaluationStatus(session));
-        return view;
-    }
-
-    private Optional<ChatMessage> lastMessage(Long sessionId) {
-        return Optional.ofNullable(chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .orderByDesc(ChatMessage::getCreateTime)
-                .last("limit 1")));
-    }
-
-    private String evaluationStatus(ChatSession session) {
-        if (session.getSatisfaction() != null) {
-            return "SUBMITTED";
-        }
-        if (STATUS_AWAITING_EVALUATION.equals(session.getStatus())) {
-            return "PENDING";
-        }
-        return null;
     }
 }

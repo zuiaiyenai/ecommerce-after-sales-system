@@ -4,7 +4,7 @@
       <view class="back-btn" @tap="goBack">
         <text class="back-icon">←</text>
       </view>
-      <text class="nav-title">智能售后助手</text>
+      <text class="nav-title">{{ sessionMode === 'HUMAN' ? '人工客服' : '智能售后助手' }}</text>
       <view class="nav-right"></view>
     </view>
 
@@ -23,7 +23,7 @@
 
       <view class="service-header">
         <view class="service-info">
-          <text class="service-name">售后助手在线</text>
+          <text class="service-name">{{ sessionMode === 'HUMAN' ? '人工客服' : '售后助手在线' }}</text>
           <view class="online-dot">
             <view class="dot"></view>
             <text class="online-text">{{ agentStatusText }}</text>
@@ -36,8 +36,15 @@
       <view v-for="(msg, index) in messages" :key="index" class="msg-group">
         <text v-if="msg.time" class="msg-time">{{ msg.time }}</text>
         <view class="message" :class="msg.role">
-          <view class="msg-bubble">
-            <text class="msg-text">{{ msg.content }}</text>
+          <view class="msg-bubble" :class="{ 'image-bubble': msg.type === 'IMAGE' }">
+            <image
+              v-if="msg.type === 'IMAGE'"
+              class="msg-image"
+              :src="normalizeImageUrl(msg.content)"
+              mode="aspectFill"
+              @tap="previewMessageImage(msg.content)"
+            />
+            <text v-else class="msg-text">{{ msg.content }}</text>
             <text v-if="msg.meta" class="msg-meta">{{ msg.meta }}</text>
           </view>
         </view>
@@ -119,6 +126,7 @@ const sending = ref(false)
 const agentStatusText = ref('连接中')
 const sessionId = ref(null)
 const humanRequestCount = ref(0)
+const sessionMode = ref('AI')
 const processingPendingApply = ref(false)
 const deferredReviewRunning = ref(false)
 const lastImageReview = ref(null)
@@ -158,10 +166,54 @@ function addMessage(role, content, meta = '') {
   messages.value.push({
     role,
     content,
+    type: 'TEXT',
     meta,
     time: getNowTime()
   })
   scrollToBottom()
+}
+
+function addImageMessage(role, imagePath) {
+  messages.value.push({
+    role,
+    content: imagePath,
+    type: 'IMAGE',
+    meta: '',
+    time: getNowTime()
+  })
+  scrollToBottom()
+}
+
+function collectLocalImageMessages() {
+  const saved = loadConversationState(getConversationKey())
+  const candidates = [
+    ...messages.value,
+    ...(Array.isArray(saved?.messages) ? saved.messages : [])
+  ]
+  const seen = new Set()
+  return candidates.filter((message) => {
+    if (message?.type !== 'IMAGE' || !message.content) return false
+    const key = `${message.role || 'user'}:${message.content}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function mergeLocalImageMessages(remoteMessages, localImages) {
+  const merged = [...remoteMessages]
+  localImages.forEach((imageMessage) => {
+    const exists = merged.some((message) => message.type === 'IMAGE' && message.content === imageMessage.content)
+    if (exists) return
+
+    const imageTime = imageMessage.time || ''
+    const insertIndex = merged.findIndex((message) => {
+      if (imageTime && message.time && message.time < imageTime) return false
+      return message.role === imageMessage.role
+    })
+    merged.splice(insertIndex >= 0 ? insertIndex : merged.length, 0, imageMessage)
+  })
+  return merged
 }
 
 function goBack() {
@@ -190,7 +242,7 @@ function buildFallbackOrder(options = {}) {
     id: options.orderId || '',
     orderNo,
     payAmount: options.amount || item.price || '0.00',
-    status: decodeURIComponent(options.status || 'AFTERSALE'),
+    status: decodeURIComponent(options.status || 'RECEIVED'),
     statusText: decodeURIComponent(options.statusText || '售后中'),
     items: [item]
   }
@@ -239,15 +291,23 @@ async function initAgentStatus() {
   }
 }
 
+function updateAgentStatusForMode() {
+  if (sessionMode.value === 'HUMAN') {
+    agentStatusText.value = '人工客服接入中'
+  }
+}
+
 function restoreConversation() {
   const saved = loadConversationState(getConversationKey())
   if (!saved) return false
   sessionId.value = saved.sessionId || null
   humanRequestCount.value = saved.humanRequestCount || 0
+  sessionMode.value = saved.sessionMode || 'AI'
   messages.value = Array.isArray(saved.messages) ? saved.messages : []
   attachments.value = Array.isArray(saved.attachments) ? saved.attachments : []
   lastImageReview.value = saved.lastImageReview || null
   scrollToBottom()
+  updateAgentStatusForMode()
   return messages.value.length > 0
 }
 
@@ -255,6 +315,7 @@ function persistConversation() {
   saveConversationState(getConversationKey(), {
     sessionId: sessionId.value,
     humanRequestCount: humanRequestCount.value,
+    sessionMode: sessionMode.value,
     messages: messages.value,
     attachments: attachments.value,
     lastImageReview: lastImageReview.value
@@ -264,14 +325,17 @@ function persistConversation() {
 async function loadSessionHistory(id) {
   if (!id) return false
   try {
+    const localImages = collectLocalImageMessages()
     const result = await getChatHistory(id)
     sessionId.value = String(id)
-    messages.value = (result.list || []).map(item => ({
+    const remoteMessages = (result.list || []).map(item => ({
       role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
       content: item.content,
+      type: item.messageType === 'IMAGE' || item.type === 'IMAGE' ? 'IMAGE' : 'TEXT',
       meta: '',
       time: item.createTime ? String(item.createTime).slice(11, 16) : ''
     }))
+    messages.value = mergeLocalImageMessages(remoteMessages, localImages)
     scrollToBottom()
     return true
   } catch (error) {
@@ -328,6 +392,13 @@ function previewImage(index) {
   })
 }
 
+function previewMessageImage(imagePath) {
+  uni.previewImage({
+    current: normalizeImageUrl(imagePath),
+    urls: [normalizeImageUrl(imagePath)]
+  })
+}
+
 async function reviewSelectedImages(order, imagePaths = attachments.value) {
   if (!imagePaths.length) return null
   const attachmentPayload = await buildAttachments(imagePaths)
@@ -365,7 +436,7 @@ function mergeUploadedEvidence(extraEvidence, imageReview) {
 }
 
 function buildRecentHistoryPayload() {
-  return messages.value.slice(-8).map((message) => ({
+  return messages.value.filter((message) => message.type !== 'IMAGE').slice(-8).map((message) => ({
     role: message.role === 'service' ? 'assistant' : message.role,
     content: message.content || ''
   })).filter((message) => message.role && message.content)
@@ -380,6 +451,12 @@ async function applyChatResult(result) {
   }
   if (result?.fallback_need_human) {
     humanRequestCount.value = Math.max(humanRequestCount.value, 2)
+    sessionMode.value = 'HUMAN'
+    updateAgentStatusForMode()
+  }
+  if (result?.session_mode === 'HUMAN') {
+    sessionMode.value = 'HUMAN'
+    updateAgentStatusForMode()
   }
   if (sessionId.value) {
     const loaded = await loadSessionHistory(sessionId.value)
@@ -388,9 +465,10 @@ async function applyChatResult(result) {
       return
     }
   }
-  addMessage('service', result?.assistant_reply || '已收到您的问题', buildReplyMeta(result))
-  if (result?.fallback_need_human) {
-    addMessage('service', 'AI 已建议转人工，等待客服接入。')
+  if (sessionMode.value === 'HUMAN') {
+    addMessage('service', result?.assistant_reply || '已接入人工客服，请稍候')
+  } else {
+    addMessage('service', result?.assistant_reply || '已收到您的问题', buildReplyMeta(result))
   }
   persistConversation()
 }
@@ -421,15 +499,17 @@ async function sendAgentMessage({
   const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
   let attachmentPayload = []
   let imageReview = null
-  let skipImageReview = !hasImages
+  let skipImageReview = !hasImages || sessionMode.value === 'HUMAN'
 
-  if (hasImages && orderData.value) {
+  if (hasImages && orderData.value && sessionMode.value !== 'HUMAN') {
     const reviewResult = await reviewSelectedImages(orderData.value, imagePaths)
     attachmentPayload = reviewResult ? reviewResult.attachments : []
     imageReview = reviewResult ? reviewResult.imageReview : null
     if (hasSuccessfulImageReview(imageReview)) {
       lastImageReview.value = imageReview
     }
+  } else if (hasImages && attachmentPayload.length === 0) {
+    attachmentPayload = await buildAttachments(imagePaths)
   } else if (lastImageReview.value) {
     imageReview = lastImageReview.value
   }
@@ -459,7 +539,6 @@ async function sendAgentMessage({
     return result
   } catch (error) {
     if (hasImages && allowFallbackToDeferredReview) {
-      addMessage('service', '已收到图片，我先结合您的描述开始处理。')
       const fallbackResult = await chat(
         buildChatPayload({
           order: orderData.value,
@@ -495,37 +574,35 @@ async function consumePendingApply(orderId) {
   processingPendingApply.value = true
   uni.removeStorageSync(key)
 
-  if (messages.value.length === 0) {
-    addMessage('service', '已收到您的信息，我先帮您进入对话并继续处理。')
-  }
-
-  addMessage('user', pending.initialMessage)
-  if (pending.description && pending.description !== pending.initialMessage) {
-    addMessage('user', `补充说明：${pending.description}`)
-  }
-  if (Array.isArray(pending.imagePaths) && pending.imagePaths.length > 0) {
-    addMessage('service', '图片已收到，我会结合订单和材料继续处理。')
-  } else {
-    addMessage('service', '我先根据您补充的描述继续处理。')
-  }
+  const imagePaths = Array.isArray(pending.imagePaths) ? pending.imagePaths : []
+  const userProblem = String(pending.description || pending.initialMessage || pending.reasonLabel || '').trim()
 
   try {
     const result = await sendAgentMessage({
-      text: pending.initialMessage,
-      description: pending.description,
-      imagePaths: pending.imagePaths || [],
+      text: userProblem || pending.initialMessage || pending.reasonLabel || '申请售后',
+      description: userProblem || pending.reasonLabel || '',
+      imagePaths,
       selectedOrderExtra: {
         hasOpenAfterSales: false,
         afterSalesStatus: 'not_applied',
-        uploadedEvidence: (pending.imagePaths || []).length > 0 ? ['商品照片'] : []
+        uploadedEvidence: imagePaths.length > 0 ? ['商品照片'] : [],
+        forceAfterSalesApply: true
       }
     })
 
-    if (pending.orderId && result?.ticket?.ticket_id) {
-      await request({ url: `/orders/${pending.orderId}/status?status=AFTERSALE`, method: 'PUT' })
+    const persistedTicketNo = result?.persistence?.ticket_no
+    if (pending.orderId && persistedTicketNo && orderData.value) {
+      orderData.value = {
+        ...orderData.value,
+        hasOpenAfterSales: true,
+        afterSalesStatus: result?.ticket?.status || 'PENDING',
+        afterSalesStatusText: result?.ticket?.status_text || '待审核',
+        latestAfterSalesTicketNo: persistedTicketNo
+      }
+      applyOrderToView(orderData.value)
     }
 
-    if (result?.ticket?.ticket_id) {
+    if (persistedTicketNo) {
       uni.showToast({ title: '已进入售后对话', icon: 'success' })
     }
   } catch (error) {
@@ -546,15 +623,8 @@ async function sendMessage() {
   }
 
   const imagePaths = [...attachments.value]
-  if (typedText) {
-    addMessage('user', text)
-  }
   inputText.value = ''
   sending.value = true
-
-  if (imagePaths.length > 0) {
-    addMessage('service', '图片已收到，我会结合订单和材料继续处理。')
-  }
 
   try {
     await sendAgentMessage({
@@ -786,11 +856,13 @@ onLoad(async (options) => {
   display: block;
   text-align: center;
   color: #bbb;
-  margin: 4rpx 0 10rpx;
+  font-size: 22rpx;
+  margin: 12rpx 0 14rpx;
 }
 
 .message {
   display: flex;
+  margin-bottom: 10rpx;
 }
 
 .message.user {
@@ -801,6 +873,7 @@ onLoad(async (options) => {
   max-width: 76%;
   padding: 18rpx 22rpx;
   border-radius: 18rpx;
+  word-break: break-all;
 }
 
 .message.service .msg-bubble {
@@ -811,17 +884,32 @@ onLoad(async (options) => {
   background: #fff5f0;
 }
 
+.msg-image {
+  display: block;
+  width: 200rpx;
+  height: 200rpx;
+  border-radius: 16rpx;
+  background: #f5f3ef;
+}
+
+.image-bubble {
+  padding: 8rpx;
+  max-width: 60%;
+  background: transparent;
+}
+
 .msg-text {
   display: block;
-  font-size: 26rpx;
-  line-height: 1.6;
+  font-size: 28rpx;
+  line-height: 1.7;
   color: #1a1a1a;
   overflow-wrap: anywhere;
 }
 
 .msg-meta {
   display: block;
-  margin-top: 12rpx;
+  margin-top: 10rpx;
+  font-size: 22rpx;
   color: #8d6e63;
   line-height: 1.5;
 }

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..models import AfterSalesRequest, Intent, Order, RiskAssessmentResult, RiskLevel
-from ..models import EvidenceCheckResult
+from ..models import AfterSalesRequest, EvidenceCheckResult, Intent, Order, RiskAssessmentResult, RiskLevel
 
 
 @dataclass(frozen=True)
@@ -71,6 +70,6 @@ class RiskAgent:
             risk_level=risk_level,
             allow_auto_refund=allow_auto_refund,
             need_human_review=need_human_review,
-            reason="，".join(reasons) or "规则命中较少，按常规流程处理。",
+            reason="；".join(reasons) or "规则命中较少，按常规流程处理。",
             score=score,
         )

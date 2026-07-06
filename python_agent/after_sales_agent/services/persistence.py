@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from typing import Any
 
-from .conversation import ConversationContext, build_after_sales_request
-from ..infra.db import MySQLRepository
 from ..agents.emotion_agent import EmotionAgent
+from ..infra.db import MySQLRepository
+from ..merchant_policy import MerchantPolicyRegistry
+from .conversation import ConversationContext, build_after_sales_request
 from .qwen_service import LLMConversationResult
 
 
@@ -23,6 +26,7 @@ class ConversationPersistenceService:
     def __init__(self, repository: MySQLRepository) -> None:
         self.repository = repository
         self.emotion_agent = EmotionAgent()
+        self.policy_registry = MerchantPolicyRegistry.from_env()
 
     def persist_interaction(
         self,
@@ -34,6 +38,16 @@ class ConversationPersistenceService:
         if context.selected_order is None:
             return None
 
+        request = build_after_sales_request(context)
+        policy_resolution = self.policy_registry.resolve_with_context(
+            order=context.selected_order,
+            request=request,
+        )
+        service_policy = policy_resolution.service_policy
+        knowledge_base = policy_resolution.knowledge_base
+        policy_code = service_policy.policy_code
+        policy_version = service_policy.policy_version
+
         order_db_id = self.repository.resolve_order_db_id(context.selected_order.order_id)
         user_id = None
         if order_db_id is not None:
@@ -43,19 +57,21 @@ class ConversationPersistenceService:
                 user_id = int(context.selected_order.user_id)
             except (TypeError, ValueError):
                 return None
+
         ticket_id = None
         if order_db_id and result.fallback_result.ticket is not None:
-            ticket = result.fallback_result.ticket
             ticket_id = self.repository.find_or_create_agent_ticket(
                 order_db_id=order_db_id,
                 order_no=context.selected_order.order_id,
                 user_id=user_id,
+                policy_code=policy_code,
+                policy_version=policy_version,
                 product_name=context.selected_order.items[0].product_name
                 if context.selected_order.items
                 else "售后商品",
                 refund_amount=context.selected_order.amount,
                 description=self._handoff_problem_description(context, result),
-                ticket=ticket,
+                ticket=result.fallback_result.ticket,
                 confidence=self._conversation_confidence(result),
                 audit_note=result.fallback_result.audit_note,
             )
@@ -64,12 +80,15 @@ class ConversationPersistenceService:
                 order_db_id=order_db_id,
                 order_no=context.selected_order.order_id,
                 user_id=user_id,
+                policy_code=policy_code,
+                policy_version=policy_version,
                 product_name=context.selected_order.items[0].product_name
                 if context.selected_order.items
                 else "售后商品",
                 refund_amount=context.selected_order.amount,
                 description=self._handoff_problem_description(context, result),
                 ai_summary=result.fallback_result.handoff_summary,
+                ai_confidence=self._conversation_confidence(result),
             )
         elif order_db_id:
             ticket_id = self.repository.resolve_recent_ticket_id(order_db_id)
@@ -79,17 +98,55 @@ class ConversationPersistenceService:
             user_id=user_id,
             order_db_id=order_db_id,
             ticket_id=ticket_id,
+            policy_code=policy_code,
+            policy_version=policy_version,
             source_channel=source_channel,
         )
+
         user_emotion = self.emotion_agent.analyze(
-            build_after_sales_request(context),
+            request,
             context.selected_order,
             recent_user_messages=tuple(
                 message.content for message in context.recent_history if message.role == "user"
             ),
+            knowledge_base=knowledge_base,
+            handoff_min_level=service_policy.emotion_handoff_min_level,
+        )
+        user_emotion_label = self._map_emotion_label(user_emotion.label.value)
+        user_emotion_score = self._normalize_emotion_score(user_emotion.score)
+        user_emotion_confidence = self._normalize_confidence(user_emotion.confidence)
+
+        assistant_emotion = result.fallback_result.emotion or user_emotion
+        assistant_emotion_label = self._map_emotion_label(assistant_emotion.label.value)
+        assistant_emotion_score = self._normalize_emotion_score(assistant_emotion.score)
+        assistant_emotion_confidence = self._normalize_confidence(
+            getattr(assistant_emotion, "confidence", 0.8)
         )
 
-        user_message_ids = []
+        user_message_ids: list[int] = []
+        attachment_url_map: dict[str, str] = {}
+        if isinstance(result.raw, dict):
+            attachment_url_map = result.raw.get("_attachment_urls") or {}
+
+        for attachment in context.attachments:
+            if not attachment.source:
+                continue
+            saved_url = attachment_url_map.get(attachment.name)
+            content = saved_url if saved_url else attachment.source
+            user_message_ids.append(
+                self.repository.insert_chat_message(
+                    session_id=session["id"],
+                    sender_id=user_id,
+                    sender_role="USER",
+                    content=content,
+                    ai_intent=result.intent,
+                    emotion_label=user_emotion_label,
+                    emotion_score=user_emotion_score,
+                    emotion_confidence=user_emotion_confidence,
+                    message_type="IMAGE",
+                )
+            )
+
         for user_content in self._user_message_contents(context):
             user_message_ids.append(
                 self.repository.insert_chat_message(
@@ -98,14 +155,20 @@ class ConversationPersistenceService:
                     sender_role="USER",
                     content=user_content,
                     ai_intent=result.intent,
-                    emotion_label=self._map_emotion_label(user_emotion.label.value),
+                    emotion_label=user_emotion_label,
+                    emotion_score=user_emotion_score,
+                    emotion_confidence=user_emotion_confidence,
                 )
             )
+
         user_message_id = user_message_ids[0]
         self.repository.update_session_snapshot(
             session_id=session["id"],
             last_message_content=self._user_message_contents(context)[-1],
             ai_summary=f"用户意图={result.intent}; 建议动作={result.suggested_action}",
+            emotion_label=user_emotion_label,
+            emotion_score=user_emotion_score,
+            emotion_confidence=user_emotion_confidence,
             increase_service_unread=True,
         )
 
@@ -115,40 +178,34 @@ class ConversationPersistenceService:
             sender_role="AI",
             content=result.assistant_reply,
             ai_intent=result.intent,
-            emotion_label=self._map_emotion_label(result.fallback_result.emotion.label.value if result.fallback_result.emotion else "calm"),
+            confidence=self._conversation_confidence(result),
+            emotion_label=assistant_emotion_label,
+            emotion_score=assistant_emotion_score,
+            emotion_confidence=assistant_emotion_confidence,
+            knowledge_query=self._knowledge_query(result),
+            knowledge_retrieval_mode=self._knowledge_retrieval_mode(result),
+            knowledge_hit_count=self._knowledge_hit_count(result),
+            knowledge_hits_json=self._knowledge_hits_json(result),
+            knowledge_trace_json=self._knowledge_trace_json(result),
         )
         self.repository.update_session_snapshot(
             session_id=session["id"],
             last_message_content=result.assistant_reply,
             ai_summary=self._build_ai_summary(context, result),
+            emotion_label=user_emotion_label,
+            emotion_score=user_emotion_score,
+            emotion_confidence=user_emotion_confidence,
             increase_user_unread=True,
         )
 
         if result.fallback_result.need_human:
-            handoff_message = "AI 已建议转人工，等待客服接入。"
             self.repository.mark_session_waiting_human(
                 session_id=session["id"],
                 ticket_id=ticket_id,
                 summary=self._build_human_session_summary(context, result),
-                emotion_label=self._map_emotion_label(
-                    result.fallback_result.emotion.label.value
-                    if result.fallback_result.emotion
-                    else "calm"
-                ),
-            )
-            self.repository.insert_chat_message(
-                session_id=session["id"],
-                sender_id=0,
-                sender_role="SYSTEM",
-                content=handoff_message,
-                ai_intent=result.intent,
-                emotion_label="NEUTRAL",
-            )
-            self.repository.update_session_snapshot(
-                session_id=session["id"],
-                last_message_content=handoff_message,
-                ai_summary=self._build_human_session_summary(context, result),
-                increase_user_unread=True,
+                emotion_label=assistant_emotion_label,
+                emotion_score=assistant_emotion_score,
+                emotion_confidence=assistant_emotion_confidence,
             )
 
         ticket_log_id = None
@@ -192,6 +249,30 @@ class ConversationPersistenceService:
             "angry": "ANGRY",
         }
         return mapping.get(label, "NEUTRAL")
+
+    @staticmethod
+    def _normalize_emotion_score(score: float | int | None) -> float | None:
+        if score is None:
+            return None
+        try:
+            normalized = float(score)
+        except (TypeError, ValueError):
+            return None
+        if normalized > 1:
+            normalized = normalized / 100.0
+        return max(0.0, min(1.0, normalized))
+
+    @staticmethod
+    def _normalize_confidence(value: float | int | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return None
+        if confidence > 1:
+            confidence = confidence / 100.0
+        return max(0.0, min(1.0, confidence))
 
     @staticmethod
     def _build_ai_summary(context: ConversationContext, result: LLMConversationResult) -> str:
@@ -239,9 +320,22 @@ class ConversationPersistenceService:
         if ticket is not None:
             if ticket.status.value == "auto_approved":
                 return "PROCESSING"
-            if ticket.status.value == "pending_review":
+            if ticket.status.value in {"pending_review", "waiting_user", "human_handoff"}:
                 return "PENDING"
-        return result.fallback_result.current_status.value.upper()
+            if ticket.status.value == "closed":
+                return "CLOSED"
+        status_value = result.fallback_result.current_status.value.upper()
+        mapping = {
+            "MERCHANT_REVIEW": "PENDING",
+            "PLATFORM_REVIEW": "PENDING",
+            "WAITING_EVIDENCE": "PENDING",
+            "WAITING_RETURN": "PROCESSING",
+            "REFUND_PROCESSING": "PROCESSING",
+            "EXCHANGE_PROCESSING": "PROCESSING",
+            "COMPLETED": "COMPLETED",
+            "REJECTED": "REJECTED",
+        }
+        return mapping.get(status_value, "PENDING")
 
     @staticmethod
     def _build_human_session_summary(context: ConversationContext, result: LLMConversationResult) -> str:
@@ -252,9 +346,70 @@ class ConversationPersistenceService:
         )[:500]
 
     @staticmethod
+    def _knowledge_payload(result: LLMConversationResult) -> dict[str, Any] | None:
+        if not isinstance(result.raw, dict):
+            return None
+        payload = result.raw.get("retrieved_knowledge")
+        return payload if isinstance(payload, dict) else None
+
+    @classmethod
+    def _knowledge_query(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        query = str(payload.get("query") or "").strip()
+        return query or None
+
+    @classmethod
+    def _knowledge_retrieval_mode(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        mode = str(payload.get("retrieval_mode") or payload.get("mode") or "").strip()
+        return mode or None
+
+    @classmethod
+    def _knowledge_hit_count(cls, result: LLMConversationResult) -> int | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        total_hits = payload.get("total_hits")
+        try:
+            return int(total_hits)
+        except (TypeError, ValueError):
+            hits = payload.get("hits")
+            return len(hits) if isinstance(hits, list) else None
+
+    @classmethod
+    def _knowledge_hits_json(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        hits = payload.get("hits")
+        if not isinstance(hits, list):
+            return None
+        try:
+            return json.dumps(hits, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _knowledge_trace_json(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        trace = payload.get("trace")
+        if not isinstance(trace, dict):
+            return None
+        try:
+            return json.dumps(trace, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _build_ticket_log_desc(context: ConversationContext, result: LLMConversationResult) -> str:
         return (
             f"AI识别用户问题“{context.message}”，"
             f"判断意图为 {result.intent}，"
-            f"给出回复：{result.assistant_reply}"
+            f"生成回复“{result.assistant_reply[:200]}”"
         )
