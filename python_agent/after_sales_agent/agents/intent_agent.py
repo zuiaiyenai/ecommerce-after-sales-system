@@ -51,9 +51,8 @@ class IntentAgent:
             and getattr(order.after_sales_status, "value", order.after_sales_status)
             == AfterSalesStatus.NOT_APPLIED.value
         ):
-            request = request.__class__(
-                **{**request.__dict__, "llm_intent": Intent.APPLY_AFTER_SALES}
-            )
+            request = request.__class__(**{**request.__dict__, "llm_intent": Intent.APPLY_AFTER_SALES})
+
         scene = request.llm_scene or self._infer_scene(text)
         scored_intents = self._score_all_rules(text, order, scene)
 
@@ -77,13 +76,23 @@ class IntentAgent:
             return llm_override
 
         if not scored_intents:
-            return self._fallback_result()
+            heuristic = self._heuristic_fallback(text, scene, order)
+            return heuristic or self._fallback_result()
 
         top = scored_intents[0]
         second = scored_intents[1] if len(scored_intents) > 1 else None
 
+        if (
+            scene == AfterSalesScene.WRONG_OR_MISSING_ITEMS
+            and top.rule.intent == Intent.EXCHANGE_REPAIR
+            and second is not None
+            and second.rule.intent == Intent.APPLY_AFTER_SALES
+        ):
+            return self._to_intent_result(top)
+
         if top.score < self.fallback_threshold:
-            return self._fallback_result(score=top.score)
+            heuristic = self._heuristic_fallback(text, scene, order)
+            return heuristic or self._fallback_result(score=top.score)
 
         if second and top.score >= self.threshold and second.score >= self.threshold:
             if self._should_clarify(text, top, second):
@@ -103,7 +112,8 @@ class IntentAgent:
         if top.score >= self.threshold:
             return self._to_intent_result(top)
 
-        return self._fallback_result(score=top.score)
+        heuristic = self._heuristic_fallback(text, scene, order)
+        return heuristic or self._fallback_result(score=top.score)
 
     def infer_scene(self, request: AfterSalesRequest, intent: Intent) -> str:
         scene = self.infer_scene_enum(request, intent)
@@ -111,7 +121,7 @@ class IntentAgent:
             AfterSalesScene.PRODUCT_DAMAGE: "商品破损",
             AfterSalesScene.PACKAGE_DAMAGE: "包装破损",
             AfterSalesScene.QUALITY_ISSUE: "质量问题/功能异常",
-            AfterSalesScene.WRONG_OR_MISSING_ITEMS: "少发漏发/错发",
+            AfterSalesScene.WRONG_OR_MISSING_ITEMS: "少发错发",
             AfterSalesScene.LOGISTICS_ISSUE: "物流异常",
             AfterSalesScene.PROGRESS_QUERY: "进度查询",
             AfterSalesScene.GENERAL: "普通咨询",
@@ -128,8 +138,7 @@ class IntentAgent:
             return AfterSalesScene.PROGRESS_QUERY
         if request.llm_scene is not None:
             return request.llm_scene
-        scene = self._infer_scene(text)
-        return scene
+        return self._infer_scene(text)
 
     @staticmethod
     def normalize_text(text: str) -> str:
@@ -164,7 +173,8 @@ class IntentAgent:
 
         is_active = bool(
             order
-            and order.after_sales_status not in {
+            and order.after_sales_status
+            not in {
                 AfterSalesStatus.NOT_APPLIED,
                 AfterSalesStatus.COMPLETED,
                 AfterSalesStatus.CLOSED,
@@ -200,16 +210,16 @@ class IntentAgent:
                 Intent.HUMAN_SERVICE,
                 "人工升级",
                 120,
-                ("人工客服", "转人工", "真人客服"),
+                ("人工客服", "真人客服", "转人工"),
                 ("人工", "真人", "客服"),
                 high_priority=True,
             ),
             IntentRule(
                 Intent.COMPLAINT,
-                "人工升级",
+                "投诉处理",
                 110,
-                ("投诉", "差评", "举报", "报警"),
-                ("太慢", "生气", "不满意"),
+                ("投诉", "举报", "差评", "12315", "黑猫"),
+                ("太差", "不满意", "离谱", "骗人", "生气"),
                 need_human=True,
                 high_priority=True,
             ),
@@ -217,23 +227,23 @@ class IntentAgent:
                 Intent.SUPPLEMENT_EVIDENCE,
                 "证据检查",
                 100,
-                ("补充凭证", "上传凭证"),
-                ("补充", "上传", "图片", "凭证", "材料", "照片"),
+                ("补充凭证", "上传凭证", "补充材料"),
+                ("补充", "上传", "图片", "照片", "视频", "凭证", "截图"),
                 high_priority=True,
             ),
             IntentRule(
                 Intent.MERCHANT_REJECTED,
-                "争议处理",
+                "申诉处理",
                 95,
-                ("商家拒绝", "驳回申请"),
-                ("拒绝", "不同意", "驳回", "申诉"),
+                ("商家拒绝", "审核驳回"),
+                ("驳回", "不同意", "被拒", "申诉"),
             ),
             IntentRule(
                 Intent.REFUND_PROGRESS,
-                "退款/状态查询",
+                "进度查询",
                 90,
-                ("退款什么时候到账", "多久到账", "退款进度", "审核到哪", "还没到账"),
-                ("退款", "到账", "退钱", "进度", "审核", "更新"),
+                ("退款到哪了", "退款进度", "多久到账", "还没到账", "审核到哪了"),
+                ("退款", "到账", "进度", "审核", "更新"),
                 require_active_after_sales=True,
                 high_priority=True,
             ),
@@ -241,8 +251,8 @@ class IntentAgent:
                 Intent.RETURN_LOGISTICS,
                 "退货物流",
                 85,
-                ("物流异常", "没收到货", "未收到货", "物流没更新"),
-                ("物流", "快递", "寄回", "运费", "单号", "没收到", "未收到"),
+                ("物流异常", "没收到货", "退货地址", "寄回地址"),
+                ("物流", "快递", "单号", "寄回"),
                 high_priority=True,
             ),
             IntentRule(
@@ -250,14 +260,14 @@ class IntentAgent:
                 "仅退款规则",
                 80,
                 ("仅退款",),
-                ("只退款",),
+                ("只退款", "不要退货"),
                 require_active_after_sales=False,
             ),
             IntentRule(
                 Intent.EXCHANGE_REPAIR,
-                "换货/维修",
+                "换货维修",
                 75,
-                ("换货", "维修", "修理"),
+                ("换货", "维修", "修理", "补发"),
                 ("换新", "返修"),
                 require_active_after_sales=False,
             ),
@@ -266,57 +276,32 @@ class IntentAgent:
                 "售后申请",
                 70,
                 (
-                    "破损",
+                    "申请售后",
+                    "售后",
+                    "退货退款",
+                    "商品有问题",
+                    "有问题",
                     "坏了",
+                    "破损",
                     "裂开",
                     "裂纹",
-                    "断裂",
                     "碎了",
-                    "质量",
+                    "质量问题",
                     "故障",
+                    "没声音",
+                    "没有声音",
+                    "无法开机",
+                    "充不进电",
+                    "按键失灵",
+                    "触控失灵",
                     "少发",
                     "漏发",
                     "错发",
-                    "花屏",
-                    "碎屏",
-                    "屏幕异常",
-                    "屏幕闪烁",
-                    "屏幕黑块",
-                    "杂音",
-                    "电流声",
-                    "无法开机",
-                    "开不了机",
-                    "充电无反应",
-                    "充不进去电",
-                    "按键失灵",
-                    "触控失灵",
-                    "漏水",
-                    "异味",
-                    "加热不工作",
                 ),
-                ("售后", "退款", "退货", "申请", "怎么处理", "还能退吗", "刚拆开", "刚拆封"),
+                ("退款", "退货", "申请", "处理", "怎么处理", "还能退吗"),
                 require_active_after_sales=False,
             ),
         )
-
-    @staticmethod
-    def _matched_apply_keywords(text: str) -> tuple[str, ...]:
-        keywords = (
-            "售后",
-            "退款",
-            "退货",
-            "申请",
-            "坏了",
-            "破损",
-            "质量",
-            "故障",
-            "花屏",
-            "杂音",
-            "少发",
-            "漏发",
-            "错发",
-        )
-        return tuple(keyword for keyword in keywords if keyword in text)
 
     def _score_all_rules(
         self,
@@ -356,7 +341,7 @@ class IntentAgent:
             Intent.REFUND_PROGRESS: "查询退款进度",
             Intent.RETURN_LOGISTICS: "查询物流问题",
             Intent.REFUND_ONLY: "仅退款",
-            Intent.EXCHANGE_REPAIR: "换货或维修",
+            Intent.EXCHANGE_REPAIR: "换货、维修或补发",
             Intent.APPLY_AFTER_SALES: "申请售后",
             Intent.GENERAL: "普通咨询",
         }
@@ -397,6 +382,51 @@ class IntentAgent:
             fallback=True,
         )
 
+    def _heuristic_fallback(
+        self,
+        text: str,
+        scene: AfterSalesScene,
+        order: Order | None,
+    ) -> IntentResult | None:
+        if scene == AfterSalesScene.LOGISTICS_ISSUE:
+            return IntentResult(
+                intent=Intent.RETURN_LOGISTICS,
+                next_agent="退货物流",
+                need_human=False,
+                keywords=("logistics_scene_heuristic",),
+                score=68,
+            )
+        if self.contains_any(text, ("退款到哪了", "多久到账", "进度", "审核")) and order is not None:
+            return IntentResult(
+                intent=Intent.REFUND_PROGRESS,
+                next_agent="进度查询",
+                need_human=False,
+                keywords=("heuristic",),
+                score=65,
+            )
+        if scene in {
+            AfterSalesScene.PRODUCT_DAMAGE,
+            AfterSalesScene.PACKAGE_DAMAGE,
+            AfterSalesScene.QUALITY_ISSUE,
+            AfterSalesScene.WRONG_OR_MISSING_ITEMS,
+        }:
+            return IntentResult(
+                intent=Intent.APPLY_AFTER_SALES,
+                next_agent="售后申请",
+                need_human=False,
+                keywords=("scene_heuristic",),
+                score=65,
+            )
+        if self.contains_any(text, ("售后", "退货", "退款", "补发", "维修", "换货")):
+            return IntentResult(
+                intent=Intent.APPLY_AFTER_SALES,
+                next_agent="售后申请",
+                need_human=False,
+                keywords=("keyword_heuristic",),
+                score=60,
+            )
+        return None
+
     def _should_clarify(
         self,
         text: str,
@@ -410,10 +440,7 @@ class IntentAgent:
 
         multi_intent_markers = ("都想", "一起", "同时", "一并")
         has_multi_marker = any(marker in text for marker in multi_intent_markers)
-        both_are_actionable = {
-            top.rule.intent,
-            second.rule.intent,
-        } <= {
+        both_are_actionable = {top.rule.intent, second.rule.intent} <= {
             Intent.REFUND_PROGRESS,
             Intent.RETURN_LOGISTICS,
             Intent.APPLY_AFTER_SALES,
@@ -429,6 +456,8 @@ class IntentAgent:
             AfterSalesScene.QUALITY_ISSUE,
             AfterSalesScene.WRONG_OR_MISSING_ITEMS,
         }:
+            return 20
+        if intent == Intent.EXCHANGE_REPAIR and scene == AfterSalesScene.WRONG_OR_MISSING_ITEMS:
             return 20
         if intent == Intent.RETURN_LOGISTICS and scene == AfterSalesScene.LOGISTICS_ISSUE:
             return 20
@@ -457,68 +486,50 @@ class IntentAgent:
 
     @classmethod
     def _infer_scene(cls, text: str) -> AfterSalesScene:
-        has_damage = cls.contains_any(
+        if cls.contains_any(text, ("退款到哪了", "多久到账", "退款进度", "进度", "审核到哪了")):
+            return AfterSalesScene.PROGRESS_QUERY
+        if cls.contains_any(text, ("包装破损", "外包装", "快递箱破", "箱子破", "封口破损")):
+            return AfterSalesScene.PACKAGE_DAMAGE
+        if cls.contains_any(text, ("少发", "漏发", "错发", "发错", "少了一件")):
+            return AfterSalesScene.WRONG_OR_MISSING_ITEMS
+        if cls.contains_any(text, ("物流", "快递", "单号", "寄回", "退货地址", "没收到货")):
+            return AfterSalesScene.LOGISTICS_ISSUE
+        if cls.contains_any(
             text,
             (
                 "破损",
                 "裂开",
                 "裂纹",
-                "断裂",
                 "碎了",
-                "坏了",
+                "磕碰",
                 "凹陷",
                 "变形",
                 "花屏",
-                "花了",
                 "碎屏",
-                "屏幕异常",
-                "屏幕闪烁",
-                "屏幕黑块",
                 "屏幕破损",
-                "玻璃裂纹",
-                "后盖破裂",
             ),
-        )
-        has_package = cls.contains_any(
-            text,
-            ("包装破损", "外包装", "快递袋破", "纸箱破", "包装盒破", "封口撕裂", "压瘪", "挤压"),
-        )
-        has_quality_issue = cls.contains_any(
+        ):
+            return AfterSalesScene.PRODUCT_DAMAGE
+        if cls.contains_any(
             text,
             (
-                "质量",
+                "质量问题",
+                "有问题",
+                "商品有问题",
                 "故障",
                 "异常",
                 "没声音",
+                "没有声音",
                 "不能用",
                 "失灵",
                 "杂音",
-                "电流声",
                 "无法开机",
-                "开不了机",
+                "充不进电",
                 "充电无反应",
-                "充不进去电",
-                "充电慢",
-                "触控失灵",
                 "按键失灵",
-                "摄像头模糊",
-                "漏水",
-                "加热不工作",
+                "触控失灵",
                 "异味",
-                "无法闭合",
             ),
-        )
-
-        if has_package:
-            return AfterSalesScene.PACKAGE_DAMAGE
-        if has_damage:
-            return AfterSalesScene.PRODUCT_DAMAGE
-        if cls.contains_any(text, ("少发", "漏发", "错发", "发错")):
-            return AfterSalesScene.WRONG_OR_MISSING_ITEMS
-        if cls.contains_any(text, ("物流", "快递", "没收到", "未收到", "单号", "运费")):
-            return AfterSalesScene.LOGISTICS_ISSUE
-        if has_quality_issue:
+        ):
             return AfterSalesScene.QUALITY_ISSUE
-        if cls.contains_any(text, ("到账", "退款进度", "审核到哪", "进度", "多久到账")):
-            return AfterSalesScene.PROGRESS_QUERY
         return AfterSalesScene.GENERAL

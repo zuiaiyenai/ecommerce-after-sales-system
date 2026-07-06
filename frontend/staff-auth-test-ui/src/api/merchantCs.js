@@ -16,6 +16,167 @@ let staffProfile = {
   maxSessionCount: 8
 };
 
+let sessions = [
+  {
+    id: 101,
+    sessionNo: 'CS20260705001',
+    merchantCode: 'MERCHANT_DEMO',
+    userId: 1001,
+    orderId: 1,
+    ticketId: 201,
+    serviceId: 1,
+    user: '王晓雪',
+    topic: '耳机没有声音，想申请售后',
+    level: '高优先级',
+    wait: '等待 00:18',
+    emotion: '着急',
+    emotionLabel: 'ANXIOUS',
+    emotionScore: 0.62,
+    emotionConfidence: 0.86,
+    sourceChannel: '小程序咨询',
+    serviceUnreadCount: 0,
+    orderNo: 'ORD20260705001',
+    product: '蓝牙降噪耳机',
+    productName: '蓝牙降噪耳机',
+    productImage: '/static/images/product-earphone.png',
+    ticketNo: 'TK20260705001',
+    lastMessageContent: '这个商品有点问题，我很着急',
+    lastMessageTime: minutesAgo(2),
+    aiSummary: '用户因质量问题申请售后，情绪偏着急',
+    status: 'PROCESSING',
+    rating: null,
+    evaluationStatus: null
+  },
+  {
+    id: 102,
+    sessionNo: 'CS20260705002',
+    merchantCode: 'MERCHANT_DEMO',
+    userId: 1002,
+    orderId: 2,
+    ticketId: 202,
+    serviceId: 1,
+    user: '陈志远',
+    topic: '少发了一件，要求补发',
+    level: '普通优先级',
+    wait: '等待 00:09',
+    emotion: '平静',
+    emotionLabel: 'CALM',
+    emotionScore: 0.22,
+    emotionConfidence: 0.81,
+    sourceChannel: '小程序咨询',
+    serviceUnreadCount: 0,
+    orderNo: 'ORD20260705002',
+    product: '运动手环',
+    productName: '运动手环',
+    productImage: '/static/images/product-phone.png',
+    ticketNo: 'TK20260705002',
+    lastMessageContent: '少发了一件，麻烦补发',
+    lastMessageTime: minutesAgo(8),
+    aiSummary: '用户因少发问题咨询补发',
+    status: 'WAITING',
+    rating: null,
+    evaluationStatus: null
+  }
+];
+
+let messagesBySession = {
+  101: [
+    {
+      id: 10001,
+      sessionId: 101,
+      senderRole: 'USER',
+      messageType: 'TEXT',
+      content: '你好，我收到耳机后发现没有声音',
+      emotionLabel: 'CALM',
+      emotionScore: 0.18,
+      emotionConfidence: 0.8,
+      createdAt: minutesAgo(14)
+    },
+    {
+      id: 10002,
+      sessionId: 101,
+      senderRole: 'SERVICE',
+      messageType: 'TEXT',
+      content: '您好，我先帮您确认一下情况，麻烦描述下具体异常表现。',
+      emotionLabel: 'CALM',
+      emotionScore: 0.18,
+      emotionConfidence: 0.8,
+      createdAt: minutesAgo(13)
+    },
+    {
+      id: 10003,
+      sessionId: 101,
+      senderRole: 'USER',
+      messageType: 'TEXT',
+      content: '我试了几次都没有声音，有点着急',
+      emotionLabel: 'ANXIOUS',
+      emotionScore: 0.45,
+      emotionConfidence: 0.84,
+      createdAt: minutesAgo(9)
+    },
+    {
+      id: 10004,
+      sessionId: 101,
+      senderRole: 'USER',
+      messageType: 'TEXT',
+      content: '这个商品有点问题，我很着急',
+      emotionLabel: 'ANXIOUS',
+      emotionScore: 0.62,
+      emotionConfidence: 0.86,
+      createdAt: minutesAgo(2)
+    }
+  ],
+  102: [
+    {
+      id: 10005,
+      sessionId: 102,
+      senderRole: 'USER',
+      messageType: 'TEXT',
+      content: '少发了一件配件，麻烦帮我补发',
+      emotionLabel: 'CALM',
+      emotionScore: 0.22,
+      emotionConfidence: 0.81,
+      createdAt: minutesAgo(8)
+    }
+  ]
+};
+
+let tickets = [
+  {
+    id: 201,
+    ticketNo: 'TK20260705001',
+    title: '蓝牙降噪耳机售后申请',
+    status: 'PENDING_REVIEW',
+    afterSalesType: 'RETURN_REFUND',
+    applyRefundAmount: '129.00',
+    priority: 'HIGH'
+  },
+  {
+    id: 202,
+    ticketNo: 'TK20260705002',
+    title: '运动手环少发补发申请',
+    status: 'PROCESSING',
+    afterSalesType: 'REISSUE',
+    applyRefundAmount: '0.00',
+    priority: 'NORMAL'
+  }
+];
+
+const overview = {
+  greeting: '早上好，客服',
+  subtitle: '当前还有 3 项任务待处理',
+  todayTodoCount: 3,
+  aiEnabled: true,
+  metrics: [],
+  timeline: []
+};
+
+const todos = [];
+
+const performance = {
+  metrics: []
+};
+
 function normalizeBaseUrl(url) {
   return url.replace(/\/+$/, '').replace(/\/api$/, '');
 }

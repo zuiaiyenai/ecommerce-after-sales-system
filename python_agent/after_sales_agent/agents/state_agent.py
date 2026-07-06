@@ -17,7 +17,9 @@ class StateMachineAgent:
     ) -> StateTransitionResult:
         current = order.after_sales_status if order else AfterSalesStatus.NOT_APPLIED
         state_rules = self._state_rules(service_policy)
-        allowed_actions = state_rules.get(current.value, self._default_state_rules()[current.value])
+        allowed_actions = state_rules.get(current.value)
+        if allowed_actions is None:
+            allowed_actions = self._default_state_rules()[current.value]
         intent_actions = self._intent_actions(service_policy, allowed_actions)
         expected_actions = intent_actions.get(intent.value, intent_actions[Intent.GENERAL.value])
         allowed = any(action in allowed_actions for action in expected_actions)
@@ -27,7 +29,7 @@ class StateMachineAgent:
                 current_status=current,
                 allowed_actions=allowed_actions,
                 allowed=True,
-                reason="当前订单尚未申请售后，可以发起申请。",
+                reason="当前订单尚未发起售后，可以提交申请。",
                 suggested_status=self._submission_entry_status(service_policy),
             )
 
@@ -36,7 +38,7 @@ class StateMachineAgent:
                 current_status=current,
                 allowed_actions=allowed_actions,
                 allowed=True,
-                reason="当前状态支持该类操作。",
+                reason="当前状态支持这类操作。",
                 suggested_status=current,
             )
 
@@ -56,7 +58,7 @@ class StateMachineAgent:
             AfterSalesStatus.WAITING_EVIDENCE.value: ("上传凭证",),
             AfterSalesStatus.MERCHANT_REVIEW.value: ("等待审核", "要求补充凭证", "上传凭证", "平台介入", "转人工"),
             AfterSalesStatus.PLATFORM_REVIEW.value: ("等待平台复核", "转人工"),
-            AfterSalesStatus.APPROVED.value: ("退款处理", "待用户退货", "换货处理"),
+            AfterSalesStatus.APPROVED.value: ("退款处理中", "待用户退货", "换货处理中"),
             AfterSalesStatus.REJECTED.value: ("申诉", "转人工"),
             AfterSalesStatus.WAITING_RETURN.value: ("填写退货物流",),
             AfterSalesStatus.REFUND_PROCESSING.value: ("查询退款进度",),
@@ -67,10 +69,9 @@ class StateMachineAgent:
         }
 
     def _state_rules(self, service_policy: MerchantServicePolicy | None) -> dict[str, tuple[str, ...]]:
-        merged = dict(self._default_state_rules())
-        if service_policy is not None:
-            merged.update(service_policy.state_rules())
-        return merged
+        if service_policy is None:
+            return {}
+        return dict(service_policy.state_rules())
 
     def _intent_actions(
         self,
@@ -83,8 +84,8 @@ class StateMachineAgent:
             Intent.RETURN_LOGISTICS.value: ("填写退货物流", "查看结果"),
             Intent.SUPPLEMENT_EVIDENCE.value: ("上传凭证", "要求补充凭证"),
             Intent.MERCHANT_REJECTED.value: ("申诉", "平台介入", "转人工"),
-            Intent.REFUND_ONLY.value: ("提交售后申请", "退款处理"),
-            Intent.EXCHANGE_REPAIR.value: ("换货处理", "提交售后申请"),
+            Intent.REFUND_ONLY.value: ("提交售后申请", "退款处理中"),
+            Intent.EXCHANGE_REPAIR.value: ("换货处理中", "提交售后申请"),
             Intent.HUMAN_SERVICE.value: ("转人工",),
             Intent.COMPLAINT.value: ("转人工", "平台介入"),
             Intent.GENERAL.value: general_allowed_actions,

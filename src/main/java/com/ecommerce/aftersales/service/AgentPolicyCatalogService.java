@@ -8,6 +8,8 @@ public interface AgentPolicyCatalogService {
 
     Map<String, Object> getCatalog();
 
+    Map<String, Object> getKnowledgeBase();
+
     Map<String, Object> resolvePolicy(AgentGatewayDtos.PolicyResolveRequest request);
 
     Map<String, Object> getMerchantPolicy(String merchantCode);

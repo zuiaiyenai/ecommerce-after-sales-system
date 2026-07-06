@@ -66,11 +66,11 @@
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot, resolveOrderDisplay } from '../../utils/orderStatus'
 
 const userInfo = ref({})
 const activeTab = ref('home')
 const allOrders = ref([])
-const allAfterSales = ref([])
 const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
@@ -79,39 +79,12 @@ const navItems = [
   { key: 'mine', label: '我的', icon: '◒' }
 ]
 
-function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
-  return map[status] || ''
-}
-
-const activeAfterSaleStatuses = ['PENDING', 'PENDING_REVIEW', 'PROCESSING', 'APPROVED']
-
-function isActiveAfterSale(status) {
-  return activeAfterSaleStatuses.includes(String(status || '').toUpperCase())
-}
-
-function getOpenAfterSaleOrderIds(afterSales) {
-  return new Set(
-    afterSales
-      .filter(a => isActiveAfterSale(a.status))
-      .map(a => a.orderId)
-      .filter(id => id !== undefined && id !== null)
-  )
-}
-
 // 从API数据计算概览
 const overview = computed(() => {
   const orders = allOrders.value
-  const aftersales = allAfterSales.value
-  const openAfterSaleOrderIds = getOpenAfterSaleOrderIds(aftersales)
-  const afterSaleOrderIds = new Set(openAfterSaleOrderIds)
-  orders
-    .filter(o => o.status === 'AFTERSALE')
-    .forEach(o => afterSaleOrderIds.add(o.id))
-
-  const received = orders.filter(o => o.status === 'RECEIVED' && !openAfterSaleOrderIds.has(o.id)).length
+  const received = orders.filter(o => o.status === 'RECEIVED' && !resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
   const shipped = orders.filter(o => o.status === 'SHIPPED').length
-  const aftersale = afterSaleOrderIds.size
+  const aftersale = orders.filter(o => resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
   const total = orders.length
   return [
     { label: '已收货订单', value: received, percent: total ? Math.round(received / total * 100) : 0 },
@@ -124,13 +97,14 @@ const overview = computed(() => {
 const orders = computed(() => {
   return allOrders.value.slice(0, RECENT_ORDER_LIMIT).map(o => {
     const item = o.items && o.items[0]
+    const display = resolveOrderDisplay(o)
     return {
       id: o.id,
       icon: item ? item.productImage : '',
       title: item ? item.productName : o.orderNo,
       desc: `${o.createTime.slice(0, 10)} | ¥${o.payAmount}`,
-      status: o.statusText,
-      statusClass: getStatusClass(o.status)
+      status: display.statusText,
+      statusClass: display.statusClass
     }
   })
 })
@@ -142,12 +116,8 @@ const initial = computed(() => {
 
 async function loadData() {
   try {
-    const [ordersData, afterSalesData] = await Promise.all([
-      request({ url: '/orders' }),
-      request({ url: '/aftersales' })
-    ])
+    const ordersData = await request({ url: '/orders' })
     allOrders.value = ordersData || []
-    allAfterSales.value = afterSalesData || []
   } catch (e) {
     console.error('加载数据失败', e)
   }

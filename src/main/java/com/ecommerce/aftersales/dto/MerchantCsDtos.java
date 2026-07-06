@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public final class MerchantCsDtos {
 
@@ -141,7 +142,24 @@ public final class MerchantCsDtos {
         private String emotionLabel;
         private BigDecimal emotionScore;
         private BigDecimal emotionConfidence;
+        private String knowledgeQuery;
+        private String knowledgeRetrievalMode;
+        private Integer knowledgeHitCount;
+        private List<KnowledgeHitView> knowledgeHits;
+        private Map<String, Object> knowledgeTrace;
         private String createdAt;
+    }
+
+    @Data
+    public static class KnowledgeHitView {
+        private String sourceType;
+        private String sourceCode;
+        private String title;
+        private String summary;
+        private String snippet;
+        private BigDecimal score;
+        private List<String> tags;
+        private Map<String, Object> metadata;
     }
 
     @Data

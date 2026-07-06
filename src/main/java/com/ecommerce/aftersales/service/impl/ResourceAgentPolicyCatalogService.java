@@ -3,11 +3,25 @@ package com.ecommerce.aftersales.service.impl;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.AgentGatewayDtos;
+import com.ecommerce.aftersales.entity.AfterSalesPolicy;
 import com.ecommerce.aftersales.entity.AfterSalesSchemeKnowledge;
 import com.ecommerce.aftersales.entity.EmotionLevelKnowledge;
+import com.ecommerce.aftersales.entity.EmotionKeywordKnowledge;
+import com.ecommerce.aftersales.entity.EmotionStrategyKnowledge;
+import com.ecommerce.aftersales.entity.Faq;
+import com.ecommerce.aftersales.entity.ProductKnowledge;
+import com.ecommerce.aftersales.entity.ReplyTemplateKnowledge;
+import com.ecommerce.aftersales.entity.ReviewInterpretationKnowledge;
 import com.ecommerce.aftersales.entity.SceneEvidenceKnowledge;
+import com.ecommerce.aftersales.mapper.AfterSalesPolicyMapper;
 import com.ecommerce.aftersales.mapper.AfterSalesSchemeKnowledgeMapper;
 import com.ecommerce.aftersales.mapper.EmotionLevelKnowledgeMapper;
+import com.ecommerce.aftersales.mapper.EmotionKeywordKnowledgeMapper;
+import com.ecommerce.aftersales.mapper.EmotionStrategyKnowledgeMapper;
+import com.ecommerce.aftersales.mapper.FaqMapper;
+import com.ecommerce.aftersales.mapper.ProductKnowledgeMapper;
+import com.ecommerce.aftersales.mapper.ReplyTemplateKnowledgeMapper;
+import com.ecommerce.aftersales.mapper.ReviewInterpretationKnowledgeMapper;
 import com.ecommerce.aftersales.mapper.SceneEvidenceKnowledgeMapper;
 import com.ecommerce.aftersales.service.AgentPolicyCatalogService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -44,8 +58,15 @@ public class ResourceAgentPolicyCatalogService implements AgentPolicyCatalogServ
 
     private final ObjectMapper objectMapper;
     private final EmotionLevelKnowledgeMapper emotionLevelKnowledgeMapper;
+    private final EmotionKeywordKnowledgeMapper emotionKeywordKnowledgeMapper;
+    private final EmotionStrategyKnowledgeMapper emotionStrategyKnowledgeMapper;
     private final AfterSalesSchemeKnowledgeMapper afterSalesSchemeKnowledgeMapper;
     private final SceneEvidenceKnowledgeMapper sceneEvidenceKnowledgeMapper;
+    private final FaqMapper faqMapper;
+    private final ProductKnowledgeMapper productKnowledgeMapper;
+    private final AfterSalesPolicyMapper afterSalesPolicyMapper;
+    private final ReplyTemplateKnowledgeMapper replyTemplateKnowledgeMapper;
+    private final ReviewInterpretationKnowledgeMapper reviewInterpretationKnowledgeMapper;
 
     private volatile Map<String, Object> cachedBaseCatalog;
     private volatile Map<String, Object> cachedKnowledgeBase;
@@ -56,6 +77,11 @@ public class ResourceAgentPolicyCatalogService implements AgentPolicyCatalogServ
         Map<String, Object> catalog = effectiveCatalog();
         catalog.put("knowledge_base", deepCopy(loadKnowledgeBase()));
         return catalog;
+    }
+
+    @Override
+    public Map<String, Object> getKnowledgeBase() {
+        return deepCopy(loadKnowledgeBase());
     }
 
     @Override
@@ -266,6 +292,47 @@ public class ResourceAgentPolicyCatalogService implements AgentPolicyCatalogServ
         }
 
         try {
+            var emotionKeywords = emotionKeywordKnowledgeMapper.selectList(
+                    Wrappers.<EmotionKeywordKnowledge>lambdaQuery()
+                            .eq(EmotionKeywordKnowledge::getStatus, 1)
+                            .orderByAsc(EmotionKeywordKnowledge::getId)
+            );
+            if (!emotionKeywords.isEmpty()) {
+                knowledgeBase.put("emotion_keyword_knowledge", emotionKeywords.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("group_code", item.getGroupCode());
+                    row.put("label", item.getGroupLabel());
+                    row.put("emotion", item.getEmotionCode());
+                    row.put("source_scope", item.getSourceScope());
+                    row.put("trigger_code", item.getTriggerCode());
+                    row.put("keywords", parseStringArray(item.getKeywordsJson()));
+                    row.put("hit_score", item.getHitScore());
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var emotionStrategies = emotionStrategyKnowledgeMapper.selectList(
+                    Wrappers.<EmotionStrategyKnowledge>lambdaQuery()
+                            .eq(EmotionStrategyKnowledge::getStatus, 1)
+                            .orderByAsc(EmotionStrategyKnowledge::getId)
+            );
+            if (!emotionStrategies.isEmpty()) {
+                knowledgeBase.put("emotion_strategy_knowledge", emotionStrategies.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("emotion", item.getEmotionCode());
+                    row.put("reply_tone", item.getReplyTone());
+                    row.put("comfort_prefix", item.getComfortPrefix());
+                    row.put("comfort_examples", parseStringArray(item.getComfortExamplesJson()));
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
             var schemes = afterSalesSchemeKnowledgeMapper.selectList(
                     Wrappers.<AfterSalesSchemeKnowledge>lambdaQuery()
                             .eq(AfterSalesSchemeKnowledge::getStatus, 1)
@@ -299,6 +366,105 @@ public class ResourceAgentPolicyCatalogService implements AgentPolicyCatalogServ
                     row.put("description", item.getDescription());
                     row.put("default_evidence", parseStringArray(item.getDefaultEvidenceJson()));
                     row.put("extra_evidence", parseStringArray(item.getExtraEvidenceJson()));
+                    row.put("example_phrases", parseStringArray(item.getExamplePhrasesJson()));
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var faqList = faqMapper.selectList(
+                    Wrappers.<Faq>lambdaQuery()
+                            .eq(Faq::getStatus, 1)
+                            .orderByAsc(Faq::getId)
+            );
+            if (!faqList.isEmpty()) {
+                knowledgeBase.put("faq_knowledge", faqList.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("question", item.getQuestion());
+                    row.put("answer", item.getAnswer());
+                    row.put("tags", parseStringArray(item.getTags()));
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var productKnowledgeList = productKnowledgeMapper.selectList(
+                    Wrappers.<ProductKnowledge>lambdaQuery()
+                            .eq(ProductKnowledge::getStatus, 1)
+                            .orderByAsc(ProductKnowledge::getId)
+            );
+            if (!productKnowledgeList.isEmpty()) {
+                knowledgeBase.put("product_knowledge", productKnowledgeList.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("product_id", item.getProductId());
+                    row.put("product_name", item.getProductName());
+                    row.put("title", item.getTitle());
+                    row.put("content", item.getContent());
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var policyList = afterSalesPolicyMapper.selectList(
+                    Wrappers.<AfterSalesPolicy>lambdaQuery()
+                            .eq(AfterSalesPolicy::getStatus, 1)
+                            .orderByAsc(AfterSalesPolicy::getId)
+            );
+            if (!policyList.isEmpty()) {
+                knowledgeBase.put("after_sales_policy_knowledge", policyList.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("policy_code", item.getPolicyCode());
+                    row.put("policy_name", item.getPolicyName());
+                    row.put("product_category", item.getProductCategory());
+                    row.put("summary", item.getSummary());
+                    row.put("content", item.getContent());
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var replyTemplates = replyTemplateKnowledgeMapper.selectList(
+                    Wrappers.<ReplyTemplateKnowledge>lambdaQuery()
+                            .eq(ReplyTemplateKnowledge::getStatus, 1)
+                            .orderByAsc(ReplyTemplateKnowledge::getId)
+            );
+            if (!replyTemplates.isEmpty()) {
+                knowledgeBase.put("reply_template_knowledge", replyTemplates.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("code", item.getTemplateCode());
+                    row.put("scene", item.getSceneCode());
+                    row.put("intent", item.getIntentCode());
+                    row.put("tone", item.getTone());
+                    row.put("template", item.getTemplateText());
+                    row.put("description", item.getDescription());
+                    return row;
+                }).toList());
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            var reviewKnowledgeList = reviewInterpretationKnowledgeMapper.selectList(
+                    Wrappers.<ReviewInterpretationKnowledge>lambdaQuery()
+                            .eq(ReviewInterpretationKnowledge::getStatus, 1)
+                            .orderByAsc(ReviewInterpretationKnowledge::getId)
+            );
+            if (!reviewKnowledgeList.isEmpty()) {
+                knowledgeBase.put("review_interpretation_knowledge", reviewKnowledgeList.stream().map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("code", item.getCode());
+                    row.put("sentiment", item.getSentiment());
+                    row.put("scene", item.getSceneCode());
+                    row.put("meaning", item.getMeaning());
+                    row.put("response_strategy", item.getResponseStrategy());
                     row.put("example_phrases", parseStringArray(item.getExamplePhrasesJson()));
                     return row;
                 }).toList());

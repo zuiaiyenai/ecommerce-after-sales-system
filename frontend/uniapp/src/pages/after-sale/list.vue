@@ -40,7 +40,7 @@
         <view class="card-footer">
           <text class="card-time">{{ item.createTime }}</text>
           <view class="card-actions">
-            <button v-if="item.status === 'PENDING' || item.status === 'PROCESSING'" class="action-btn primary" @tap.stop="goChat(item.id)">联系客服</button>
+            <button v-if="item.status === 'pending' || item.status === 'processing'" class="action-btn primary" @tap.stop="goChat(item.id)">联系客服</button>
             <button class="action-btn" @tap.stop="goDetail(item.afterSaleNo)">查看详情</button>
           </view>
         </view>
@@ -61,14 +61,10 @@
 import { ref, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveAfterSalesTicketDisplay } from '../../utils/orderStatus'
 
 const activeTab = ref('all')
 const allAfterSales = ref([])
-
-function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PENDING: 'pending', PROCESSING: 'processing', REJECTED: 'rejected', COMPLETED: 'completed' }
-  return map[status] || ''
-}
 
 const tabs = [
   { key: 'all', label: '全部' },
@@ -80,22 +76,25 @@ const tabs = [
 
 // 将API数据转换为页面需要的格式
 const afterSaleList = computed(() => {
-  return allAfterSales.value.map(a => ({
-    id: a.id,
-    afterSaleNo: a.ticketNo,
-    productName: a.productName,
-    productIcon: a.productImage || '',
-    reason: a.reason,
-    status: a.status,
-    statusText: a.statusText,
-    statusClass: getStatusClass(a.status),
-    createTime: a.createTime ? a.createTime.slice(0, 10) : ''
-  }))
+  return allAfterSales.value.map(a => {
+    const display = resolveAfterSalesTicketDisplay(a)
+    return {
+      id: a.id,
+      afterSaleNo: a.ticketNo,
+      productName: a.productName,
+      productIcon: a.productImage || '',
+      reason: a.reason,
+      status: display.statusKey,
+      statusText: display.statusText,
+      statusClass: display.statusClass,
+      createTime: a.createTime ? a.createTime.slice(0, 10) : ''
+    }
+  })
 })
 
 const filteredList = computed(() => {
   if (activeTab.value === 'all') return afterSaleList.value
-  return afterSaleList.value.filter(item => item.status.toLowerCase() === activeTab.value)
+  return afterSaleList.value.filter(item => item.status === activeTab.value)
 })
 
 async function loadAfterSales() {

@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -666,8 +667,81 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setEmotionLabel(message.getEmotionLabel());
         view.setEmotionScore(message.getEmotionScore());
         view.setEmotionConfidence(message.getEmotionConfidence());
+        view.setKnowledgeQuery(message.getKnowledgeQuery());
+        view.setKnowledgeRetrievalMode(message.getKnowledgeRetrievalMode());
+        view.setKnowledgeHitCount(message.getKnowledgeHitCount());
+        view.setKnowledgeHits(parseKnowledgeHits(message.getKnowledgeHitsJson()));
+        view.setKnowledgeTrace(parseKnowledgeTrace(message.getKnowledgeTraceJson()));
         view.setCreatedAt(format(message.getCreateTime()));
         return view;
+    }
+
+    private List<KnowledgeHitView> parseKnowledgeHits(String knowledgeHitsJson) {
+        if (!StringUtils.hasText(knowledgeHitsJson)) {
+            return List.of();
+        }
+        try {
+            List<Map<String, Object>> items = objectMapper.readValue(
+                    knowledgeHitsJson,
+                    new TypeReference<List<Map<String, Object>>>() {}
+            );
+            return items.stream().map(this::toKnowledgeHitView).toList();
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private KnowledgeHitView toKnowledgeHitView(Map<String, Object> item) {
+        KnowledgeHitView view = new KnowledgeHitView();
+        view.setSourceType(stringValue(item.get("source_type")));
+        view.setSourceCode(stringValue(item.get("source_code")));
+        view.setTitle(stringValue(item.get("title")));
+        view.setSummary(stringValue(item.get("summary")));
+        view.setSnippet(stringValue(item.get("snippet")));
+        view.setScore(decimalValue(item.get("score")));
+        view.setTags(stringList(item.get("tags")));
+        Object metadata = item.get("metadata");
+        if (metadata instanceof Map<?, ?> map) {
+            java.util.LinkedHashMap<String, Object> normalized = new java.util.LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            view.setMetadata(normalized);
+        }
+        return view;
+    }
+
+    private Map<String, Object> parseKnowledgeTrace(String knowledgeTraceJson) {
+        if (!StringUtils.hasText(knowledgeTraceJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(knowledgeTraceJson, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private BigDecimal decimalValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream().map(String::valueOf).toList();
     }
 
     private List<TicketView> allTickets() {

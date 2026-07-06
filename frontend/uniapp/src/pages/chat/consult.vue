@@ -242,7 +242,7 @@ function buildFallbackOrder(options = {}) {
     id: options.orderId || '',
     orderNo,
     payAmount: options.amount || item.price || '0.00',
-    status: decodeURIComponent(options.status || 'AFTERSALE'),
+    status: decodeURIComponent(options.status || 'RECEIVED'),
     statusText: decodeURIComponent(options.statusText || '售后中'),
     items: [item]
   }
@@ -591,8 +591,15 @@ async function consumePendingApply(orderId) {
     })
 
     const persistedTicketNo = result?.persistence?.ticket_no
-    if (pending.orderId && persistedTicketNo) {
-      await request({ url: `/orders/${pending.orderId}/status?status=AFTERSALE`, method: 'PUT' })
+    if (pending.orderId && persistedTicketNo && orderData.value) {
+      orderData.value = {
+        ...orderData.value,
+        hasOpenAfterSales: true,
+        afterSalesStatus: result?.ticket?.status || 'PENDING',
+        afterSalesStatusText: result?.ticket?.status_text || '待审核',
+        latestAfterSalesTicketNo: persistedTicketNo
+      }
+      applyOrderToView(orderData.value)
     }
 
     if (persistedTicketNo) {

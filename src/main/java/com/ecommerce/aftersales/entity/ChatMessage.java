@@ -33,6 +33,16 @@ public class ChatMessage {
     /** 情绪判断置信度(0~1)。 */
     private BigDecimal emotionConfidence;
 
+    private String knowledgeQuery;
+
+    private String knowledgeRetrievalMode;
+
+    private Integer knowledgeHitCount;
+
+    private String knowledgeHitsJson;
+
+    private String knowledgeTraceJson;
+
     private Integer tokenUsage;
 
     @TableField(fill = FieldFill.INSERT)

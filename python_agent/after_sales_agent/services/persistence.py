@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from ..agents.emotion_agent import EmotionAgent
@@ -181,6 +182,11 @@ class ConversationPersistenceService:
             emotion_label=assistant_emotion_label,
             emotion_score=assistant_emotion_score,
             emotion_confidence=assistant_emotion_confidence,
+            knowledge_query=self._knowledge_query(result),
+            knowledge_retrieval_mode=self._knowledge_retrieval_mode(result),
+            knowledge_hit_count=self._knowledge_hit_count(result),
+            knowledge_hits_json=self._knowledge_hits_json(result),
+            knowledge_trace_json=self._knowledge_trace_json(result),
         )
         self.repository.update_session_snapshot(
             session_id=session["id"],
@@ -338,6 +344,67 @@ class ConversationPersistenceService:
             f"问题={ConversationPersistenceService._handoff_problem_description(context, result)}; "
             f"原因={result.suggested_action}"
         )[:500]
+
+    @staticmethod
+    def _knowledge_payload(result: LLMConversationResult) -> dict[str, Any] | None:
+        if not isinstance(result.raw, dict):
+            return None
+        payload = result.raw.get("retrieved_knowledge")
+        return payload if isinstance(payload, dict) else None
+
+    @classmethod
+    def _knowledge_query(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        query = str(payload.get("query") or "").strip()
+        return query or None
+
+    @classmethod
+    def _knowledge_retrieval_mode(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        mode = str(payload.get("retrieval_mode") or payload.get("mode") or "").strip()
+        return mode or None
+
+    @classmethod
+    def _knowledge_hit_count(cls, result: LLMConversationResult) -> int | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        total_hits = payload.get("total_hits")
+        try:
+            return int(total_hits)
+        except (TypeError, ValueError):
+            hits = payload.get("hits")
+            return len(hits) if isinstance(hits, list) else None
+
+    @classmethod
+    def _knowledge_hits_json(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        hits = payload.get("hits")
+        if not isinstance(hits, list):
+            return None
+        try:
+            return json.dumps(hits, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _knowledge_trace_json(cls, result: LLMConversationResult) -> str | None:
+        payload = cls._knowledge_payload(result)
+        if not payload:
+            return None
+        trace = payload.get("trace")
+        if not isinstance(trace, dict):
+            return None
+        try:
+            return json.dumps(trace, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _build_ticket_log_desc(context: ConversationContext, result: LLMConversationResult) -> str:

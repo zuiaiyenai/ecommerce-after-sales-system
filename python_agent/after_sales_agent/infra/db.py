@@ -630,13 +630,19 @@ class MySQLRepository:
         emotion_label: str = "NEUTRAL",
         emotion_score: float | None = None,
         emotion_confidence: float | None = None,
+        knowledge_query: str | None = None,
+        knowledge_retrieval_mode: str | None = None,
+        knowledge_hit_count: int | None = None,
+        knowledge_hits_json: str | None = None,
+        knowledge_trace_json: str | None = None,
         message_type: str = "TEXT",
     ) -> int:
         del sender_id, ai_intent
         sql = """
         INSERT INTO chat_message (
-            id, session_id, role, content, message_type, confidence, emotion_label, emotion_score, emotion_confidence, create_time
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            id, session_id, role, content, message_type, confidence, emotion_label, emotion_score, emotion_confidence,
+            knowledge_query, knowledge_retrieval_mode, knowledge_hit_count, knowledge_hits_json, knowledge_trace_json, create_time
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """
         role = self._map_chat_role(sender_role)
         message_id = self._new_id()
@@ -654,6 +660,11 @@ class MySQLRepository:
                         emotion_label,
                         emotion_score,
                         emotion_confidence,
+                        knowledge_query,
+                        knowledge_retrieval_mode,
+                        knowledge_hit_count,
+                        knowledge_hits_json,
+                        knowledge_trace_json,
                     ),
                 )
                 conn.commit()

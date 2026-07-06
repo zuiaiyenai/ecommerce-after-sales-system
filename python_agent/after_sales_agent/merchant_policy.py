@@ -10,6 +10,9 @@ from urllib import error, request
 
 DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO"
 DEFAULT_POLICY_BASE_URL = "http://127.0.0.1:8080/api/agent/policies"
+LOCAL_POLICY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2] / "src" / "main" / "resources" / "after-sales-policy-catalog.json"
+)
 
 DEFAULT_STATE_RULES: dict[str, tuple[str, ...]] = {
     "not_applied": ("提交售后申请",),
@@ -49,42 +52,74 @@ DEFAULT_SCENE_EVIDENCE: dict[str, tuple[str, ...]] = {
     "general": ("问题描述",),
 }
 
-DEFAULT_REPLY_TEMPLATES: dict[str, str] = {
-    "quality_issue.ask_for_detail": "您好，当前只有概括性的质量问题描述，图片也暂时无法直接确认具体异常。请补充实际表现，例如没有声音、无法开机、充电异常、按键失灵等，我再继续帮您处理。",
-    "quality_issue.ask_for_detail_progress": "等待用户补充具体异常表现后继续判断。",
-    "quality_issue.visual_handoff": "您好，已记录您的异常表现。当前图片暂时无法自动确认问题，我这边为您转客服进一步核实处理。",
-    "quality_issue.visual_handoff_progress": "已记录异常描述，但图片无法自动核验，转客服进一步核实。",
-    "quality_issue.auto_approved_progress": "图片核验通过，AI 已自动审核并进入处理中状态。",
-    "state_reply.merchant_review": "您好，当前售后申请仍在商家审核中，审核通过后才会进入下一步处理。",
-    "state_reply.platform_review": "您好，当前售后申请正在平台复核中，请您耐心等待处理结果。",
-    "state_reply.refund_processing": "您好，退款正在处理中，到账时间以支付渠道实际入账为准。",
-    "state_reply.completed": "您好，当前售后已经处理完成，您可以查看处理结果。",
-    "state_reply.default": "您好，当前状态暂不支持该操作，请按页面提示继续处理。",
-    "status.waiting_evidence": "您好，当前售后申请还需要补充材料，提交完成后平台会继续审核。",
-    "status.refund_processing": "您好，退款正在处理中，到账时间以支付渠道实际入账为准，请您留意进度更新。",
-    "status.waiting_return": "您好，当前待您补充退货物流信息，现有物流状态为 {logistics}。",
-    "status.high_risk": "您好，当前问题还需要进一步核验，我会继续帮您跟进。",
-    "status.recorded": "您好，当前售后信息已经记录，您可以继续关注处理进度。",
-    "merchant_review.stalled": "您好，当前处理时间比平时略长，我会继续帮您跟进审核进度。",
-    "merchant_review.anxious": "您好，我理解您在着急等待退款，我会继续帮您跟进进度，状态更新后第一时间通知您。",
-    "merchant_review.default": "您好，您的退款申请已收到，当前正在由商家审核。",
-    "ticket_reply.package_damage": "您好，已为您记录包装破损问题并生成售后申请 {ticket_id}。我们会继续推进包装赔付流程。",
-    "ticket_reply.auto_approved": "您好，已为您提交售后申请 {ticket_id}，当前符合自动处理条件，系统会尽快推进后续流程。",
-    "ticket_reply.product_damage": "您好，已为您提交售后申请 {ticket_id}，当前会先按商品破损情况进入审核，预计 {expected_hours} 小时内更新进度。",
-    "ticket_reply.default": "您好，已为您提交售后申请 {ticket_id}，当前已进入审核流程，预计 {expected_hours} 小时内更新进度。",
-    "progress.submitted": "{product_name} 已提交售后申请，下一步进入商家审核。",
-    "progress.waiting_evidence": "{product_name} 当前待补充材料，补齐后进入审核。",
-    "progress.merchant_review": "{product_name} 当前处于商家审核中。",
-    "progress.refund_processing": "{product_name} 当前进入退款处理阶段。",
-    "progress.human_processing": "{product_name} 当前已转人工处理。",
-    "progress.default": "{product_name} 当前售后状态为 {status_value}。",
-}
+DEFAULT_REPLY_TEMPLATES: dict[str, str] = {}
 
 DEFAULT_AFTER_SALES_SCHEME_MAP: dict[str, str] = {
     "refund_only": "REFUND_ONLY",
     "apply_after_sales": "RETURN_REFUND",
     "merchant_rejected": "RETURN_REFUND",
     "exchange_repair": "RETURN_REFUND",
+}
+
+DEFAULT_AFTER_SALES_SCHEMES: dict[str, dict[str, Any]] = {
+    "REFUND_ONLY": {
+        "code": "REFUND_ONLY",
+        "display_name": "仅退款",
+        "requires_return": False,
+    },
+    "RETURN_REFUND": {
+        "code": "RETURN_REFUND",
+        "display_name": "退货退款",
+        "requires_return": True,
+    },
+    "REISSUE": {
+        "code": "REISSUE",
+        "display_name": "补发",
+        "requires_return": False,
+    },
+    "PARTIAL_REFUND": {
+        "code": "PARTIAL_REFUND",
+        "display_name": "部分退款",
+        "requires_return": False,
+    },
+}
+
+NORMALIZED_STATE_RULES: dict[str, tuple[str, ...]] = {
+    "not_applied": ("提交售后申请",),
+    "submitted": ("进入商家审核", "要求补充凭证"),
+    "waiting_evidence": ("上传凭证",),
+    "merchant_review": ("等待商家审核", "转人工"),
+    "platform_review": ("等待平台复核", "转人工"),
+    "approved": ("自动通过", "退款处理中", "待用户退货", "换货处理中"),
+    "rejected": ("申诉", "转人工"),
+    "waiting_return": ("填写退货物流",),
+    "refund_processing": ("查询退款进度",),
+    "exchange_processing": ("查询换货进度",),
+    "completed": ("查看结果", "评价"),
+    "human_processing": ("等待人工处理",),
+}
+
+NORMALIZED_INTENT_ACTIONS: dict[str, tuple[str, ...]] = {
+    "apply_after_sales": ("提交售后申请",),
+    "refund_progress": ("查询退款进度", "等待商家审核", "等待平台复核"),
+    "return_logistics": ("填写退货物流", "查看结果"),
+    "supplement_evidence": ("上传凭证", "要求补充凭证"),
+    "merchant_rejected": ("申诉", "平台复核", "转人工"),
+    "refund_only": ("提交售后申请", "退款处理中", "自动通过"),
+    "exchange_repair": ("换货处理中", "提交售后申请"),
+    "human_service": ("转人工",),
+    "complaint": ("转人工", "平台复核"),
+    "general": (),
+}
+
+NORMALIZED_SCENE_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "product_damage": ("商品破损照片", "问题描述"),
+    "package_damage": ("外包装照片", "问题描述"),
+    "wrong_or_missing_items": ("商品照片", "问题描述"),
+    "quality_issue": ("问题描述",),
+    "logistics_issue": ("问题描述",),
+    "progress_query": (),
+    "general": ("问题描述",),
 }
 
 
@@ -96,13 +131,13 @@ class StatePolicy:
     rejected_resolution: str = "appeal"
     auto_review_hours: int = 12
     manual_review_hours: int = 24
-    state_rules: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(DEFAULT_STATE_RULES))
-    intent_actions: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(DEFAULT_INTENT_ACTIONS))
+    state_rules: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(NORMALIZED_STATE_RULES))
+    intent_actions: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(NORMALIZED_INTENT_ACTIONS))
 
 
 @dataclass(frozen=True)
 class EvidencePolicy:
-    default_scene_evidence: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(DEFAULT_SCENE_EVIDENCE))
+    default_scene_evidence: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(NORMALIZED_SCENE_EVIDENCE))
     required_evidence_overrides: dict[str, tuple[str, ...]] = field(default_factory=dict)
     quality_issue_requires_detail: bool = True
     allow_visual_auto_approve: bool = True
@@ -151,6 +186,7 @@ class MerchantServicePolicy:
     escalation_keywords: tuple[str, ...] = ()
     reply_templates: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_REPLY_TEMPLATES))
     after_sales_scheme_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_AFTER_SALES_SCHEME_MAP))
+    after_sales_schemes: dict[str, dict[str, Any]] = field(default_factory=lambda: dict(DEFAULT_AFTER_SALES_SCHEMES))
 
     @property
     def auto_refund_limit(self) -> float:
@@ -235,6 +271,26 @@ class MerchantServicePolicy:
     def after_sales_scheme(self, intent_value: str, default: str) -> str:
         return self.after_sales_scheme_map.get(intent_value, default)
 
+    def resolve_after_sales_scheme(
+        self,
+        candidate_keys: tuple[str, ...],
+        default: str,
+    ) -> str:
+        for key in candidate_keys:
+            mapped = self.after_sales_scheme_map.get(key)
+            if mapped:
+                normalized = str(mapped).strip().upper()
+                if normalized in self.after_sales_schemes:
+                    return normalized
+        fallback = str(default or "").strip().upper()
+        if fallback in self.after_sales_schemes:
+            return fallback
+        return "RETURN_REFUND"
+
+    def after_sales_scheme_definition(self, scheme_code: str) -> dict[str, Any]:
+        normalized = str(scheme_code or "").strip().upper()
+        return dict(self.after_sales_schemes.get(normalized, {}))
+
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "merchant_code": self.merchant_code,
@@ -250,6 +306,7 @@ class MerchantServicePolicy:
             "escalation_keywords": list(self.escalation_keywords),
             "reply_templates": dict(self.reply_templates),
             "after_sales_scheme_map": dict(self.after_sales_scheme_map),
+            "after_sales_schemes": dict(self.after_sales_schemes),
         }
 
     def to_audit_dict(self) -> dict[str, Any]:
@@ -262,6 +319,7 @@ class MerchantServicePolicy:
         payload["escalation_keywords"] = list(self.escalation_keywords)
         payload["reply_templates"] = dict(self.reply_templates)
         payload["after_sales_scheme_map"] = dict(self.after_sales_scheme_map)
+        payload["after_sales_schemes"] = dict(self.after_sales_schemes)
         return payload
 
 
@@ -384,19 +442,28 @@ class MerchantPolicyRegistry:
         *,
         remote_base_url: str | None = None,
         remote_timeout_ms: int | None = None,
+        fallback_source: str = "registry_builtin",
     ) -> None:
         self._policies = {key.upper(): value for key, value in (policies or BUILT_IN_POLICIES).items()}
         self._remote_base_url = (remote_base_url or "").strip().rstrip("/")
         self._remote_timeout_ms = remote_timeout_ms or int(os.getenv("AFTERSALES_POLICY_TIMEOUT_MS", "3000"))
+        self._fallback_source = fallback_source
 
     @classmethod
     def from_env(cls) -> "MerchantPolicyRegistry":
         config_path = os.getenv("MERCHANT_POLICY_FILE")
         remote_base_url = os.getenv("AFTERSALES_POLICY_BASE_URL", DEFAULT_POLICY_BASE_URL)
         policies = dict(BUILT_IN_POLICIES)
+        fallback_source = "registry_builtin"
         if config_path:
             policies = _load_policy_file(Path(config_path))
-        return cls(policies, remote_base_url=remote_base_url)
+            fallback_source = "registry_file"
+        else:
+            catalog_policies = _load_catalog_policy_file(LOCAL_POLICY_CATALOG_PATH)
+            if catalog_policies:
+                policies = catalog_policies
+                fallback_source = "registry_catalog"
+        return cls(policies, remote_base_url=remote_base_url, fallback_source=fallback_source)
 
     def resolve(
         self,
@@ -430,7 +497,7 @@ class MerchantPolicyRegistry:
             return remote_policy
         return MerchantPolicyResolution(
             service_policy=self._policies.get(normalized_code, self._policies[DEFAULT_MERCHANT_CODE]),
-            source="registry_builtin",
+            source=self._fallback_source,
             knowledge_base={},
         )
 
@@ -468,12 +535,13 @@ class MerchantPolicyRegistry:
         service_policy = data.get("service_policy")
         if not isinstance(service_policy, dict):
             return None
-        knowledge_base = data.get("knowledge_base")
+        knowledge_base = _normalize_knowledge_base(data.get("knowledge_base"))
         base = self._policies.get(merchant_code, self._policies[DEFAULT_MERCHANT_CODE])
+        merged_policy = _merge_policy(base, service_policy)
         return MerchantPolicyResolution(
-            service_policy=_merge_policy(base, service_policy),
+            service_policy=_merge_reply_templates_from_knowledge_base(merged_policy, knowledge_base),
             source=str(data.get("source") or "registry_remote"),
-            knowledge_base=_normalize_knowledge_base(knowledge_base),
+            knowledge_base=knowledge_base,
         )
 
 
@@ -497,6 +565,44 @@ def _load_policy_file(path: Path) -> dict[str, MerchantServicePolicy]:
     return policies
 
 
+def _load_catalog_policy_file(path: Path) -> dict[str, MerchantServicePolicy]:
+    if not path.exists():
+        return {}
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+    merchants = raw.get("merchants")
+    if not isinstance(merchants, dict):
+        return {}
+
+    shared_templates = raw.get("reply_templates")
+    shared_schemes = raw.get("after_sales_schemes")
+    policies = dict(BUILT_IN_POLICIES)
+    for merchant_code, item in merchants.items():
+        if not isinstance(item, dict):
+            continue
+        normalized_code = str(merchant_code or item.get("merchant_code") or "").strip().upper()
+        if not normalized_code:
+            continue
+        merged_item = dict(item)
+        if isinstance(shared_templates, dict):
+            merged_item["reply_templates"] = {
+                **{str(key): str(value) for key, value in shared_templates.items()},
+                **{str(key): str(value) for key, value in dict(item.get("reply_templates") or {}).items()},
+            }
+        if isinstance(shared_schemes, dict):
+            merged_item["after_sales_schemes"] = {
+                **_normalize_scheme_definitions(shared_schemes),
+                **_normalize_scheme_definitions(item.get("after_sales_schemes")),
+            }
+        base = policies.get(normalized_code, DEFAULT_POLICY)
+        policies[normalized_code] = _merge_policy(base, merged_item)
+    return policies
+
+
 def _merge_policy(base: MerchantServicePolicy, overrides: dict[str, Any]) -> MerchantServicePolicy:
     direct_overrides = {
         key: overrides[key]
@@ -516,6 +622,11 @@ def _merge_policy(base: MerchantServicePolicy, overrides: dict[str, Any]) -> Mer
         direct_overrides["after_sales_scheme_map"] = {
             **base.after_sales_scheme_map,
             **{str(key): str(value) for key, value in dict(overrides["after_sales_scheme_map"]).items()},
+        }
+    if "after_sales_schemes" in overrides:
+        direct_overrides["after_sales_schemes"] = {
+            **base.after_sales_schemes,
+            **_normalize_scheme_definitions(overrides["after_sales_schemes"]),
         }
 
     state_overrides = _normalize_state_overrides(overrides)
@@ -587,6 +698,24 @@ def _normalize_tuple_mapping(raw_mapping: Any) -> dict[str, tuple[str, ...]]:
     }
 
 
+def _normalize_scheme_definitions(raw_mapping: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw_mapping, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for key, value in raw_mapping.items():
+        if not isinstance(value, dict):
+            continue
+        code = str(value.get("code") or key or "").strip().upper()
+        if not code:
+            continue
+        normalized[code] = {
+            field: field_value
+            for field, field_value in value.items()
+        }
+        normalized[code]["code"] = code
+    return normalized
+
+
 def _policy_to_dict(policy: Any) -> dict[str, Any]:
     payload = asdict(policy)
     for key in ("state_rules", "intent_actions", "default_scene_evidence", "required_evidence_overrides"):
@@ -602,6 +731,96 @@ def _normalize_knowledge_base(raw: Any) -> dict[str, Any]:
     for key, value in raw.items():
         normalized[str(key)] = value
     return normalized
+
+
+def _merge_reply_templates_from_knowledge_base(
+    policy: MerchantServicePolicy,
+    knowledge_base: dict[str, Any],
+) -> MerchantServicePolicy:
+    knowledge_templates = _reply_templates_from_knowledge_base(knowledge_base)
+    knowledge_schemes = _scheme_definitions_from_knowledge_base(knowledge_base)
+
+    merged_templates = dict(knowledge_templates)
+    merged_templates.update(policy.reply_templates)
+
+    merged_schemes = dict(knowledge_schemes)
+    merged_schemes.update(policy.after_sales_schemes)
+
+    if not knowledge_templates and not knowledge_schemes:
+        return policy
+    return replace(
+        policy,
+        reply_templates=merged_templates,
+        after_sales_schemes=merged_schemes,
+    )
+
+
+def _reply_templates_from_knowledge_base(knowledge_base: dict[str, Any]) -> dict[str, str]:
+    raw_items = knowledge_base.get("reply_template_knowledge")
+    if not isinstance(raw_items, list):
+        return {}
+
+    template_map: dict[str, str] = {}
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        template = str(item.get("template") or "").strip()
+        if not template:
+            continue
+
+        keys = _reply_template_keys(item)
+        for key in keys:
+            template_map.setdefault(key, template)
+    return template_map
+
+
+def _reply_template_keys(item: dict[str, Any]) -> tuple[str, ...]:
+    code = str(item.get("code") or "").strip()
+    scene = str(item.get("scene") or "").strip()
+    intent = str(item.get("intent") or "").strip()
+
+    keys: list[str] = []
+    alias = _reply_template_alias(code)
+    if alias:
+        keys.append(alias)
+    if code:
+        keys.append(f"code.{code}")
+    if scene and intent:
+        keys.append(f"scene_intent.{scene}.{intent}")
+    if scene:
+        keys.append(f"scene.{scene}")
+    if intent:
+        keys.append(f"intent.{intent}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _reply_template_alias(code: str) -> str | None:
+    alias_map = {
+        "ask_quality_detail": "quality_issue.ask_for_detail",
+        "policy_explain_review": "intent.refund_progress",
+        "reissue_fast_track": "scene_intent.wrong_or_missing_items.apply_after_sales",
+    }
+    return alias_map.get(code)
+
+
+def _scheme_definitions_from_knowledge_base(knowledge_base: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_items = knowledge_base.get("after_sales_scheme_knowledge")
+    if not isinstance(raw_items, list):
+        return {}
+
+    scheme_map: dict[str, dict[str, Any]] = {}
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().upper()
+        if not code:
+            continue
+        scheme_map[code] = {
+            key: value
+            for key, value in item.items()
+        }
+        scheme_map[code]["code"] = code
+    return scheme_map
 
 
 def _resolve_product_category(order: Any | None) -> str | None:

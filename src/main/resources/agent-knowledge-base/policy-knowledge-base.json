@@ -1,5 +1,5 @@
 {
-  "knowledge_base_version": "2026-07-05-kb-v2",
+  "knowledge_base_version": "2026-07-05-kb-v3",
   "editable_policy_fields": [
     {
       "field": "merchant_type",
@@ -7,7 +7,7 @@
       "label": "商品编号",
       "type": "string",
       "required": true,
-      "description": "当前商家主要商品或策略绑定商品编号。"
+      "description": "当前商家主要绑定的商品编号或商品标识。"
     },
     {
       "field": "auto_refund_limit",
@@ -33,103 +33,293 @@
       "code": "satisfied",
       "label": "满意",
       "rank": 0,
-      "min_score": 0,
-      "meaning": "用户情绪正向，可继续常规处理。"
+      "meaning": "用户情绪正向，可以保持标准售后节奏。"
     },
     {
       "code": "calm",
       "label": "平静",
       "rank": 1,
-      "min_score": 0,
-      "meaning": "用户表达平稳，可继续走标准流程。"
+      "meaning": "用户表达稳定，按正常流程收集信息即可。"
     },
     {
       "code": "anxious",
-      "label": "焦虑",
+      "label": "着急",
       "rank": 2,
-      "min_score": 20,
-      "meaning": "用户有明显催促或担忧，需要更快给出进度或方案。"
+      "meaning": "用户更关注时效和进展，需要更快给出下一步。"
     },
     {
       "code": "dissatisfied",
       "label": "不满",
       "rank": 3,
-      "min_score": 40,
-      "meaning": "用户已经表达负面体验，通常需要更谨慎地安抚和处理。"
+      "meaning": "用户已有明显负面体验，需要加强安抚和解释。"
     },
     {
       "code": "angry",
       "label": "愤怒",
       "rank": 4,
-      "min_score": 75,
-      "meaning": "用户处于高风险负面情绪，优先考虑人工接入。"
+      "meaning": "用户处于高风险负面情绪，应优先考虑人工介入。"
+    }
+  ],
+  "emotion_keyword_knowledge": [
+    {
+      "group_code": "complaint_keywords",
+      "label": "投诉升级词",
+      "emotion": "angry",
+      "source_scope": "conversation",
+      "trigger_code": "complaint",
+      "keywords": ["投诉", "举报", "差评", "骗人", "黑猫", "报警", "诈骗"],
+      "hit_score": 55
+    },
+    {
+      "group_code": "anger_keywords",
+      "label": "强烈不满词",
+      "emotion": "angry",
+      "source_scope": "conversation",
+      "trigger_code": "anger",
+      "keywords": ["生气", "气死", "太过分", "受不了", "你们到底", "不满意", "离谱", "火大"],
+      "hit_score": 45
+    },
+    {
+      "group_code": "anxious_keywords",
+      "label": "着急催促词",
+      "emotion": "anxious",
+      "source_scope": "conversation",
+      "trigger_code": "anxious",
+      "keywords": ["着急", "有点着急", "很着急", "有些着急", "尽快", "快一点", "快点", "麻烦快点", "抓紧", "赶紧", "催一下", "帮我催", "多久能处理好", "多久处理好", "多久能好", "什么时候处理", "什么时候能处理", "什么时候能好", "怎么还没处理", "还没处理", "一直没处理", "一直没有处理"],
+      "hit_score": 20
+    },
+    {
+      "group_code": "waiting_progress_keywords",
+      "label": "进度追问词",
+      "emotion": "anxious",
+      "source_scope": "conversation",
+      "trigger_code": "waiting_progress",
+      "keywords": ["多久", "什么时候", "还没", "一直没", "还没有", "尽快", "进度", "催"],
+      "hit_score": 6
+    },
+    {
+      "group_code": "order_delay_keywords",
+      "label": "订单延迟词",
+      "emotion": "anxious",
+      "source_scope": "order_status",
+      "trigger_code": "timeout",
+      "keywords": ["超时", "未更新", "停滞", "延迟", "异常", "过久"],
+      "hit_score": 15
+    }
+  ],
+  "emotion_strategy_knowledge": [
+    {
+      "emotion": "calm",
+      "reply_tone": "clear",
+      "comfort_prefix": "",
+      "comfort_examples": ["我先帮您看当前状态。", "这边按页面流程继续推进。"]
+    },
+    {
+      "emotion": "anxious",
+      "reply_tone": "comfort_and_progress",
+      "comfort_prefix": "您好，理解您现在比较着急，",
+      "comfort_examples": ["我先帮您确认当前进度。", "状态一更新我会第一时间同步您。"]
+    },
+    {
+      "emotion": "dissatisfied",
+      "reply_tone": "comfort_and_action",
+      "comfort_prefix": "您好，确实让您久等了，",
+      "comfort_examples": ["这边我先帮您把流程往前推进。", "我会继续帮您跟进处理结果。"]
+    },
+    {
+      "emotion": "angry",
+      "reply_tone": "priority_human_support",
+      "comfort_prefix": "您好，很抱歉给您带来不好的体验，",
+      "comfort_examples": ["我先帮您优先处理。", "如有需要也可以继续转人工跟进。"]
     }
   ],
   "after_sales_scheme_knowledge": [
     {
       "code": "REFUND_ONLY",
       "label": "仅退款",
-      "description": "无需退回商品，直接进入退款流程。"
+      "description": "无需退回商品，直接进入退款流程。",
+      "requires_return": false,
+      "typical_scenes": ["价格补偿", "轻微问题", "无需回收"]
     },
     {
       "code": "RETURN_REFUND",
       "label": "退货退款",
-      "description": "需要退回商品，再进入退款流程。"
+      "description": "需要退回商品，再完成退款处理。",
+      "requires_return": true,
+      "typical_scenes": ["质量问题", "商品破损", "不符合预期"]
     },
     {
       "code": "REISSUE",
       "label": "补发",
-      "description": "商品少发、错发或补件时优先考虑。"
+      "description": "适用于少发、错发、缺件等问题。",
+      "requires_return": false,
+      "typical_scenes": ["少发错发", "缺件漏件"]
     },
     {
       "code": "PARTIAL_REFUND",
       "label": "部分退款",
-      "description": "以差价补偿或局部补偿解决问题。"
+      "description": "以差价补偿或局部补偿解决问题。",
+      "requires_return": false,
+      "typical_scenes": ["价格差异", "轻度瑕疵", "协商补偿"]
     }
   ],
   "scene_evidence_knowledge": [
     {
       "scene": "quality_issue",
       "label": "质量问题",
+      "description": "商品功能或质量异常，如无声、无法开机、漏液、异味等。",
       "default_evidence": ["问题描述"],
-      "description": "说明具体故障表现，例如没有声音、不开机、漏液、异味等。"
+      "extra_evidence": ["故障照片", "故障视频"],
+      "example_phrases": ["耳机没有声音", "手机开不了机", "充不进去电"]
     },
     {
       "scene": "product_damage",
       "label": "商品破损",
+      "description": "商品本体存在裂痕、碎裂、变形或明显损伤。",
       "default_evidence": ["破损照片", "问题描述"],
-      "description": "适用于商品本体破裂、裂痕、外观损伤。"
+      "extra_evidence": ["开箱视频"],
+      "example_phrases": ["杯子裂了", "屏幕碎了", "收到就是坏的"]
     },
     {
       "scene": "package_damage",
       "label": "包装破损",
+      "description": "外包装或快递箱明显损坏。",
       "default_evidence": ["外包装照片", "问题描述"],
-      "description": "适用于快递包装或外箱受损。"
+      "extra_evidence": ["签收照片"],
+      "example_phrases": ["盒子压坏了", "快递外箱破了"]
     },
     {
       "scene": "wrong_or_missing_items",
       "label": "少发错发",
+      "description": "收到的商品与订单不一致，或缺少配件、漏件。",
       "default_evidence": ["商品照片", "问题描述"],
-      "description": "适用于实收商品和订单不一致。"
+      "extra_evidence": ["包装清单照片"],
+      "example_phrases": ["少发了一个配件", "收到的颜色不对"]
     },
     {
       "scene": "logistics_issue",
       "label": "物流问题",
+      "description": "物流延迟、停滞或签收异常等场景。",
       "default_evidence": ["问题描述"],
-      "description": "适用于延迟、签收异常、物流停滞等。"
+      "extra_evidence": ["物流截图"],
+      "example_phrases": ["物流一直没更新", "显示签收但我没收到"]
+    }
+  ],
+  "faq_knowledge": [
+    {
+      "question": "退款多久到账？",
+      "answer": "正常情况下，退款原路退回后会在 1 到 5 个工作日内到账；具体以支付渠道处理时效为准。",
+      "tags": ["退款", "到账时效"]
+    },
+    {
+      "question": "退货运费谁承担？",
+      "answer": "质量问题、错发少发通常由商家承担；非质量类退货是否承担运费，以商家售后政策和页面说明为准。",
+      "tags": ["退货", "运费"]
+    },
+    {
+      "question": "平台审核多久？",
+      "answer": "资料齐全时系统会优先自动审核；需要人工复核的工单一般会在 24 小时内给出处理结果。",
+      "tags": ["审核", "时效"]
+    }
+  ],
+  "after_sales_policy_knowledge": [
+    {
+      "policy_code": "NO_REASON_7D",
+      "policy_name": "7天无理由退货政策",
+      "product_category": "通用",
+      "summary": "签收后 7 天内可申请无理由退货，需保持商品完好。",
+      "content": "签收后 7 天内，在商品完好且不影响二次销售的前提下，可申请退货退款；特殊类目以商品详情页说明为准。"
+    },
+    {
+      "policy_code": "DIGITAL_FAULT_15D",
+      "policy_name": "数码类功能故障政策",
+      "product_category": "数码",
+      "summary": "数码商品功能故障优先核验故障信息，必要时进入人工复核。",
+      "content": "数码类商品若在签收后 15 天内出现非人为功能故障，可申请检测或售后处理；平台可能要求补充视频、序列号或故障描述。"
+    }
+  ],
+  "product_knowledge": [
+    {
+      "product_id": 4,
+      "product_name": "蓝牙降噪耳机",
+      "title": "耳机无声排查与保修说明",
+      "content": "若耳机出现无声，可先确认是否已完成配对、音量是否被静音、左右耳是否都已充电。非人为损坏且在保修期内的功能故障可申请售后。"
+    },
+    {
+      "product_id": 2,
+      "product_name": "手机",
+      "title": "手机功能故障售后说明",
+      "content": "手机出现无法开机、频繁重启、无法充电等问题时，建议先保留故障现象描述及必要图片或视频，再发起售后申请。"
+    }
+  ],
+  "reply_template_knowledge": [
+    {
+      "code": "ask_quality_detail",
+      "scene": "quality_issue",
+      "intent": "apply_after_sales",
+      "tone": "empathetic",
+      "template": "这边先帮您处理。为了更快判断售后方案，麻烦补充一下具体异常表现；如果方便，也可以一起上传照片或视频。",
+      "description": "质量问题首轮补充说明模板"
+    },
+    {
+      "code": "reissue_fast_track",
+      "scene": "wrong_or_missing_items",
+      "intent": "apply_after_sales",
+      "tone": "efficient",
+      "template": "已经了解是少发或错发问题了。您把收到的商品照片和问题说明发我，我这边优先帮您走补发核验。",
+      "description": "少发错发补发模板"
+    },
+    {
+      "code": "policy_explain_review",
+      "scene": null,
+      "intent": "refund_progress",
+      "tone": "neutral",
+      "template": "当前申请正在审核处理中，资料齐全时系统会优先处理；如果需要补充材料，我会第一时间告诉您。",
+      "description": "审核进度说明模板"
+    }
+  ],
+  "review_interpretation_knowledge": [
+    {
+      "code": "NEG_DELAY",
+      "sentiment": "negative",
+      "scene": "logistics_issue",
+      "meaning": "用户对物流时效或签收异常不满，关注点通常是进度不透明和承诺不明确。",
+      "response_strategy": "优先解释当前进度、给出下一步时点，必要时转人工跟进物流。",
+      "example_phrases": ["物流一直没更新", "怎么还没到", "显示签收但我没收到"]
+    },
+    {
+      "code": "NEG_QUALITY",
+      "sentiment": "negative",
+      "scene": "quality_issue",
+      "meaning": "用户对商品质量或功能异常表达负面反馈，关注点通常是是否能快速补救。",
+      "response_strategy": "优先确认问题现象和证据，再明确退货退款、补发或检测路径。",
+      "example_phrases": ["耳机没有声音", "手机开不了机", "收到就是坏的"]
+    },
+    {
+      "code": "NEG_SERVICE",
+      "sentiment": "negative",
+      "scene": null,
+      "meaning": "用户对处理态度或流程拖延不满，后续容易演变为投诉或差评。",
+      "response_strategy": "先安抚情绪，再给出明确承诺和时间点；达到阈值时优先转人工。",
+      "example_phrases": ["一直没人处理", "说了很多次了", "你们效率太低"]
     }
   ],
   "knowledge_boundary": {
     "suitable_for_knowledge_base": [
-      "字段定义与中文说明",
       "情绪等级字典",
-      "售后方案名词解释",
-      "问题场景与默认证据说明"
+      "情绪触发词表",
+      "情绪回复策略",
+      "FAQ 标准问答",
+      "售后政策说明",
+      "商品知识与保修范围",
+      "场景与证据要求",
+      "回复说明模板",
+      "评价与舆情解释"
     ],
     "still_kept_in_execution_logic": [
       "状态流转判断",
-      "是否命中自动退款",
-      "是否转人工",
+      "自动退款判断",
+      "转人工决策",
       "工单生成与主链路编排"
     ]
   }

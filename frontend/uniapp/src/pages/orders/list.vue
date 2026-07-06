@@ -46,8 +46,8 @@
           <text class="order-total">共{{ order.quantity }}件 合计：<text class="total-price">¥{{ order.totalPrice }}</text></text>
           <view class="order-actions">
             <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
-            <button v-if="order.status === 'RECEIVED' || order.status === 'SHIPPED'" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
-            <button v-if="order.status === 'AFTERSALE'" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
+            <button v-if="order.canApplyAfterSales" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
+            <button v-if="order.canContactService" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
             <button v-if="order.status === 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">去评价</button>
           </view>
         </view>
@@ -60,20 +60,16 @@
 import { ref, computed } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot, resolveOrderDisplay } from '../../utils/orderStatus'
 
 const activeTab = ref('all')
 const allOrders = ref([])
 
-function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', AWAITING_EVALUATION: 'review', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
-  return map[status] || ''
-}
-
 const tabs = computed(() => {
   const paid = allOrders.value.filter(o => o.status === 'PAID').length
   const shipped = allOrders.value.filter(o => o.status === 'SHIPPED').length
-  const received = allOrders.value.filter(o => o.status === 'RECEIVED').length
-  const aftersale = allOrders.value.filter(o => o.status === 'AFTERSALE').length
+  const received = allOrders.value.filter(o => o.status === 'RECEIVED' && !resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
+  const aftersale = allOrders.value.filter(o => resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
   const awaitingEvaluation = allOrders.value.filter(o => o.status === 'AWAITING_EVALUATION').length
   const completed = allOrders.value.filter(o => o.status === 'COMPLETED').length
   return [
@@ -91,6 +87,8 @@ const tabs = computed(() => {
 const orders = computed(() => {
   return allOrders.value.map(o => {
     const item = o.items && o.items[0]
+    const display = resolveOrderDisplay(o)
+    const afterSales = resolveOrderAfterSalesSnapshot(o)
     return {
       id: o.id,
       orderNo: o.orderNo,
@@ -101,8 +99,11 @@ const orders = computed(() => {
       quantity: o.items ? o.items.reduce((sum, i) => sum + i.quantity, 0) : 1,
       totalPrice: o.payAmount,
       status: o.status,
-      statusText: o.statusText,
-      statusClass: getStatusClass(o.status),
+      statusText: display.statusText,
+      statusClass: display.statusClass,
+      canApplyAfterSales: display.canApplyAfterSales,
+      canContactService: display.canContactService,
+      hasOpenAfterSales: afterSales.hasOpenAfterSales,
       createTime: o.createTime ? o.createTime.slice(0, 10) : ''
     }
   })
@@ -110,7 +111,7 @@ const orders = computed(() => {
 
 const filteredOrders = computed(() => {
   if (activeTab.value === 'all') return orders.value
-  if (activeTab.value === 'aftersale') return orders.value.filter(o => o.status === 'AFTERSALE')
+  if (activeTab.value === 'aftersale') return orders.value.filter(o => o.hasOpenAfterSales)
   if (activeTab.value === 'review') return orders.value.filter(o => o.status === 'AWAITING_EVALUATION')
   if (activeTab.value === 'completed') return orders.value.filter(o => o.status === 'COMPLETED')
   return orders.value.filter(o => o.status.toLowerCase() === activeTab.value)

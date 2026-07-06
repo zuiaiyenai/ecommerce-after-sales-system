@@ -8,7 +8,33 @@ from typing import Any
 from ..agents.return_agent import ReturnAgent
 from .conversation import ConversationContext, build_after_sales_request
 from ..agents.emotion_agent import EmotionAgent
+from .knowledge_retrieval import KnowledgeRetrievalClient
 from .llm import LLMError, OpenAICompatibleClient, OpenAICompatibleConfig
+from .qwen_knowledge_support import (
+    build_knowledge_answer_reply,
+    knowledge_query,
+    knowledge_sources,
+    pick_knowledge_answer_hit,
+    prompt_ready_knowledge,
+)
+from .qwen_reply_support import (
+    build_user_reply,
+    normalize_reply_text,
+    parse_bool,
+    parse_confidence,
+    parse_intent,
+    parse_scene,
+)
+from .qwen_understanding_support import (
+    apply_scene_guardrail,
+    fallback_normalized_issue,
+    has_logistics_keywords,
+    has_refund_progress_keywords,
+    is_refund_progress_query,
+    looks_like_specific_issue,
+    repair_request_without_understanding,
+    repair_understanding_choice,
+)
 from ..models import (
     AfterSalesRequest,
     AfterSalesScene,
@@ -43,10 +69,12 @@ class QwenReturnService:
         rule_agent: ReturnAgent | None = None,
     ) -> None:
         self.client = OpenAICompatibleClient(config or OpenAICompatibleConfig.from_env())
+        self.knowledge_client = KnowledgeRetrievalClient()
         self.rule_agent = rule_agent or ReturnAgent()
 
     def bind_trace(self, trace_recorder: TraceRecorder | None) -> None:
         self.client.bind_trace(trace_recorder)
+        self.knowledge_client.bind_trace(trace_recorder)
 
     def handle(self, context: ConversationContext) -> LLMConversationResult:
         request, conversation_understanding = self._build_request_with_conversation_understanding(context)
@@ -57,7 +85,17 @@ class QwenReturnService:
             request=request,
             order=context.selected_order,
         )
-        if context.selected_order is None or self._should_skip_model(fallback_result):
+        retrieved_knowledge = self._retrieve_knowledge(context, fallback_result)
+        knowledge_result = self._maybe_build_knowledge_short_circuit(
+            context=context,
+            fallback_result=fallback_result,
+            retrieved_knowledge=retrieved_knowledge,
+            mode="knowledge_short_circuit",
+            conversation_understanding=conversation_understanding,
+        )
+        if knowledge_result is not None:
+            return knowledge_result
+        if self._should_skip_model(fallback_result):
             return LLMConversationResult(
                 assistant_reply=fallback_result.user_reply,
                 intent=fallback_result.intent.value,
@@ -67,6 +105,7 @@ class QwenReturnService:
                 raw={
                     "mode": "rule_after_understanding",
                     "conversation_understanding": conversation_understanding,
+                    "retrieved_knowledge": retrieved_knowledge,
                 },
                 fallback_result=fallback_result,
             )
@@ -74,12 +113,17 @@ class QwenReturnService:
         try:
             raw = self.client.chat_json(
                 system_prompt=self._system_prompt(),
-                user_prompt=self._user_prompt(context, fallback_result),
+                user_prompt=self._user_prompt(context, fallback_result, retrieved_knowledge),
             )
             if conversation_understanding is not None:
                 raw["conversation_understanding"] = conversation_understanding
-            reply = self._build_user_reply(raw, fallback_result)
-            item_opened = self._parse_bool(raw.get("item_opened"), context.item_opened)
+            raw["retrieved_knowledge"] = retrieved_knowledge
+            reply = build_user_reply(
+                raw,
+                fallback_result,
+                use_rule_reply=self._should_skip_model(fallback_result),
+            )
+            item_opened = parse_bool(raw.get("item_opened"), context.item_opened)
             return LLMConversationResult(
                 assistant_reply=reply,
                 intent=fallback_result.intent.value,
@@ -100,6 +144,7 @@ class QwenReturnService:
                     "mode": "reply_model_unavailable",
                     "error": str(exc),
                     "conversation_understanding": conversation_understanding,
+                    "retrieved_knowledge": retrieved_knowledge,
                 },
                 fallback_result=fallback_result,
             )
@@ -122,10 +167,10 @@ class QwenReturnService:
 
         normalized_issue = str(raw.get("normalized_issue") or "")
         reason = str(raw.get("reason") or "")
-        intent = self._parse_intent(raw.get("intent"))
-        scene = self._parse_scene(raw.get("scene"))
+        intent = parse_intent(raw.get("intent"))
+        scene = parse_scene(raw.get("scene"))
         if intent is None or scene is None:
-            intent, scene = self._repair_understanding_choice(
+            intent, scene = repair_understanding_choice(
                 raw=raw,
                 request=request,
                 normalized_issue=normalized_issue,
@@ -133,16 +178,16 @@ class QwenReturnService:
                 intent=intent,
                 scene=scene,
             )
-        confidence = self._parse_confidence(raw.get("confidence"))
-        is_detailed = self._parse_bool(raw.get("quality_description_detailed"), None)
-        evidence_consistent = self._parse_bool(raw.get("evidence_consistent"), None)
+        confidence = parse_confidence(raw.get("confidence"))
+        is_detailed = parse_bool(raw.get("quality_description_detailed"), None)
+        evidence_consistent = parse_bool(raw.get("evidence_consistent"), None)
         if intent is None or scene is None:
             return request, {"mode": "invalid_model_output", "raw": raw}
-        if self._looks_like_specific_issue(request.message):
+        if looks_like_specific_issue(request.message):
             normalized_issue = str(request.message or "").strip()
         elif not normalized_issue:
-            normalized_issue = self._fallback_normalized_issue(request)
-        if self._is_refund_progress_query(context, request):
+            normalized_issue = fallback_normalized_issue(request)
+        if is_refund_progress_query(context, request):
             intent = Intent.REFUND_PROGRESS
             scene = AfterSalesScene.PROGRESS_QUERY
             normalized_issue = ""
@@ -150,9 +195,10 @@ class QwenReturnService:
             if confidence < 0.8:
                 confidence = 0.8
         if is_detailed is None and normalized_issue:
-            is_detailed = self._looks_like_specific_issue(normalized_issue)
+            is_detailed = looks_like_specific_issue(normalized_issue)
         if self._is_generic_quality_description_only(request, normalized_issue):
             is_detailed = False
+        scene = apply_scene_guardrail(scene, request, normalized_issue)
         if (
             intent == Intent.SUPPLEMENT_EVIDENCE
             and context.selected_order is not None
@@ -203,78 +249,6 @@ class QwenReturnService:
         ), review
 
     @staticmethod
-    def _fallback_normalized_issue(request: AfterSalesRequest) -> str:
-        for value in (request.message, request.description, request.reason):
-            text = str(value or "").strip()
-            if text and QwenReturnService._looks_like_specific_issue(text):
-                return text
-        return ""
-
-    @staticmethod
-    def _looks_like_specific_issue(text: str) -> bool:
-        normalized = str(text or "").strip().lower()
-        if not normalized:
-            return False
-        generic_words = ("质量问题", "商品有问题", "申请售后", "售后申请", "补充说明")
-        if normalized in generic_words:
-            return False
-        specific_markers = (
-            "破", "裂", "碎", "坏", "损", "凹", "断",
-            "没声音", "没有声音", "不响", "无法开机", "不能开机", "充电", "连接失败", "按键失灵",
-        )
-        return any(marker in normalized for marker in specific_markers)
-
-    @staticmethod
-    def _repair_understanding_choice(
-        *,
-        raw: dict[str, Any],
-        request: AfterSalesRequest,
-        normalized_issue: str,
-        reason: str,
-        intent: Intent | None,
-        scene: AfterSalesScene | None,
-    ) -> tuple[Intent | None, AfterSalesScene | None]:
-        raw_intent = str(raw.get("intent") or "").strip().lower()
-        raw_scene = str(raw.get("scene") or "").strip().lower()
-        combined = " ".join(
-            part
-            for part in (request.message, request.description, normalized_issue, reason)
-            if part
-        ).lower()
-
-        if intent is None:
-            if raw_intent == "progress_query" or QwenReturnService._has_refund_progress_keywords(combined):
-                intent = Intent.REFUND_PROGRESS
-            elif any(keyword in combined for keyword in ("人工", "客服", "真人")):
-                intent = Intent.HUMAN_SERVICE
-            elif any(keyword in combined for keyword in ("进度", "退款", "到账")):
-                intent = Intent.REFUND_PROGRESS
-            elif any(keyword in combined for keyword in ("凭证", "图片", "照片", "补充")):
-                intent = Intent.SUPPLEMENT_EVIDENCE
-            elif "|" in raw_intent and combined:
-                intent = Intent.APPLY_AFTER_SALES
-            elif "|" in raw_intent:
-                intent = Intent.GENERAL
-
-        if scene is None:
-            if raw_scene == "progress_query" or QwenReturnService._has_refund_progress_keywords(combined):
-                scene = AfterSalesScene.PROGRESS_QUERY
-            elif any(keyword in combined for keyword in ("包装", "外包装", "盒子", "快递袋")):
-                scene = AfterSalesScene.PACKAGE_DAMAGE
-            elif any(keyword in combined for keyword in ("破", "裂", "碎", "坏", "损", "外壳")):
-                scene = AfterSalesScene.PRODUCT_DAMAGE
-            elif any(keyword in combined for keyword in ("少", "漏", "错发", "数量")):
-                scene = AfterSalesScene.WRONG_OR_MISSING_ITEMS
-            elif any(keyword in combined for keyword in ("物流", "快递", "配送")):
-                scene = AfterSalesScene.LOGISTICS_ISSUE
-            elif "|" in raw_scene and combined:
-                scene = AfterSalesScene.QUALITY_ISSUE
-            elif "|" in raw_scene:
-                scene = AfterSalesScene.GENERAL
-
-        return intent, scene
-
-    @staticmethod
     def _has_valid_conversation_understanding(review: dict[str, Any] | None) -> bool:
         return bool(review and review.get("mode") == "llm")
 
@@ -284,7 +258,7 @@ class QwenReturnService:
         request: AfterSalesRequest,
         review: dict[str, Any] | None,
     ) -> LLMConversationResult:
-        fallback_request = self._repair_request_without_understanding(request, context)
+        fallback_request = repair_request_without_understanding(request, context)
         fallback_result = self.rule_agent.handle(
             request=fallback_request,
             order=context.selected_order,
@@ -296,6 +270,16 @@ class QwenReturnService:
                 f"conversation_understanding_unavailable review={review}",
             ),
         )
+        retrieved_knowledge = self._retrieve_knowledge(context, fallback_result)
+        knowledge_result = self._maybe_build_knowledge_short_circuit(
+            context=context,
+            fallback_result=fallback_result,
+            retrieved_knowledge=retrieved_knowledge,
+            mode="knowledge_short_circuit_after_understanding_fallback",
+            conversation_understanding=review,
+        )
+        if knowledge_result is not None:
+            return knowledge_result
         return LLMConversationResult(
             assistant_reply=fallback_result.user_reply,
             intent=fallback_result.intent.value,
@@ -305,77 +289,9 @@ class QwenReturnService:
             raw={
                 "mode": "understanding_unavailable",
                 "conversation_understanding": review,
+                "retrieved_knowledge": retrieved_knowledge,
             },
             fallback_result=fallback_result,
-        )
-
-    @staticmethod
-    def _repair_request_without_understanding(
-        request: AfterSalesRequest,
-        context: ConversationContext,
-    ) -> AfterSalesRequest:
-        text = QwenReturnService._combined_user_text(context, request)
-        if QwenReturnService._has_refund_progress_keywords(text):
-            return replace(
-                request,
-                llm_intent=Intent.REFUND_PROGRESS,
-                llm_scene=AfterSalesScene.PROGRESS_QUERY,
-                llm_confidence=max(request.llm_confidence, 0.8),
-            )
-        if any(keyword in text for keyword in ("人工", "真人客服", "转人工")):
-            return replace(
-                request,
-                llm_intent=Intent.HUMAN_SERVICE,
-                llm_confidence=max(request.llm_confidence, 0.8),
-            )
-        if any(keyword in text for keyword in ("补充凭证", "上传凭证", "补充图片", "上传图片", "补充照片")):
-            return replace(
-                request,
-                llm_intent=Intent.SUPPLEMENT_EVIDENCE,
-                llm_confidence=max(request.llm_confidence, 0.8),
-            )
-        return request
-
-    @staticmethod
-    def _combined_user_text(context: ConversationContext, request: AfterSalesRequest) -> str:
-        parts = [request.message or "", request.description or "", request.reason or ""]
-        parts.extend(
-            message.content
-            for message in context.recent_history[-4:]
-            if message.role == "user" and message.content
-        )
-        return "".join(parts).lower()
-
-    @staticmethod
-    def _is_refund_progress_query(
-        context: ConversationContext,
-        request: AfterSalesRequest,
-    ) -> bool:
-        current_text = "".join(
-            part for part in (request.message, request.description, request.reason) if part
-        ).lower()
-        if QwenReturnService._has_refund_progress_keywords(current_text):
-            return True
-        return QwenReturnService._has_refund_progress_keywords(
-            QwenReturnService._combined_user_text(context, request)
-        )
-
-    @staticmethod
-    def _has_refund_progress_keywords(text: str) -> bool:
-        return any(
-            keyword in text
-            for keyword in (
-                "退款进度",
-                "查看退款",
-                "查退款",
-                "退款状态",
-                "什么时候退款",
-                "什么时候退",
-                "什么时候能退",
-                "多久到账",
-                "退钱",
-                "到账",
-            )
         )
 
     @staticmethod
@@ -532,20 +448,24 @@ class QwenReturnService:
         )
 
     @staticmethod
-    def _user_prompt(context: ConversationContext, fallback_result: AgentResult) -> str:
+    def _user_prompt(
+        context: ConversationContext,
+        fallback_result: AgentResult,
+        retrieved_knowledge: dict[str, Any] | None,
+    ) -> str:
         order = context.selected_order
         image_review = context.image_review
         payload = {
             "order_info": {
-                "order_id": order.order_id,
-                "product_name": order.items[0].product_name if order.items else "",
-                "category": order.items[0].category if order.items else "",
-                "order_status": order.status.value,
-                "after_sales_status": order.after_sales_status.value,
-                "amount": order.amount,
-                "refund_status": order.refund_status,
-                "logistics_status": order.logistics_status,
-                "uploaded_evidence": list(order.uploaded_evidence),
+                "order_id": order.order_id if order else None,
+                "product_name": order.items[0].product_name if order and order.items else "",
+                "category": order.items[0].category if order and order.items else "",
+                "order_status": order.status.value if order else None,
+                "after_sales_status": order.after_sales_status.value if order else None,
+                "amount": order.amount if order else None,
+                "refund_status": order.refund_status if order else None,
+                "logistics_status": order.logistics_status if order else None,
+                "uploaded_evidence": list(order.uploaded_evidence) if order else [],
             },
             "history_summary": QwenReturnService._build_history_summary(context, fallback_result),
             "recent_history": [
@@ -579,8 +499,99 @@ class QwenReturnService:
                 "risk_level": fallback_result.risk_level.value,
                 "audit_note": fallback_result.audit_note,
             },
+            "knowledge_usage_rules": {
+                "goal": "Use retrieved knowledge only for explanation and reply grounding.",
+                "must_not_override": [
+                    "rule_result.decision",
+                    "rule_result.intent",
+                    "rule_result.missing_fields",
+                    "rule_result.need_human",
+                    "rule_result.suggested_action",
+                ],
+            },
+            "retrieved_knowledge": prompt_ready_knowledge(retrieved_knowledge),
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def _retrieve_knowledge(
+        self,
+        context: ConversationContext,
+        fallback_result: AgentResult,
+    ) -> dict[str, Any]:
+        order = context.selected_order
+        product_category = order.items[0].category if order and order.items else None
+        merchant_code = order.merchant_code if order else None
+        return self.knowledge_client.retrieve(
+            query=knowledge_query(context),
+            merchant_code=merchant_code,
+            product_category=product_category,
+            scene=fallback_result.scene.value,
+            intent=fallback_result.intent.value,
+            top_k=4,
+            sources=knowledge_sources(fallback_result),
+        )
+
+    @classmethod
+    def _maybe_build_knowledge_short_circuit(
+        cls,
+        *,
+        context: ConversationContext,
+        fallback_result: AgentResult,
+        retrieved_knowledge: dict[str, Any] | None,
+        mode: str,
+        conversation_understanding: dict[str, Any] | None,
+    ) -> LLMConversationResult | None:
+        knowledge_hit = pick_knowledge_answer_hit(
+            context,
+            fallback_result,
+            retrieved_knowledge,
+            has_logistics_keywords=has_logistics_keywords,
+        )
+        if knowledge_hit is None:
+            return None
+        reply = build_knowledge_answer_reply(
+            knowledge_hit,
+            fallback_result.user_reply,
+            normalize_reply_text=normalize_reply_text,
+        )
+        if not reply:
+            return None
+        knowledge_result = replace(
+            fallback_result,
+            decision=Decision.RESPOND,
+            user_reply=reply,
+            intent=Intent.GENERAL,
+            next_agent="知识解释",
+            need_human=False,
+            missing_fields=(),
+            suggested_action="知识解释",
+            progress_hint=None,
+            audit_note=cls._merge_note(
+                fallback_result.audit_note,
+                f"knowledge_short_circuit source={knowledge_hit.get('source_type')} title={knowledge_hit.get('title')}",
+            ),
+        )
+        return LLMConversationResult(
+            assistant_reply=reply,
+            intent=knowledge_result.intent.value,
+            item_opened=context.item_opened,
+            evidence_needed=(),
+            suggested_action=knowledge_result.suggested_action or knowledge_result.decision.value,
+            raw={
+                "mode": mode,
+                "conversation_understanding": conversation_understanding,
+                "knowledge_hit": {
+                    "source_type": knowledge_hit.get("source_type"),
+                    "source_code": knowledge_hit.get("source_code"),
+                    "title": knowledge_hit.get("title"),
+                    "summary": knowledge_hit.get("summary"),
+                    "snippet": knowledge_hit.get("snippet"),
+                    "score": knowledge_hit.get("score"),
+                },
+                "retrieved_knowledge": retrieved_knowledge,
+            },
+            fallback_result=knowledge_result,
+        )
 
     @staticmethod
     def _build_history_summary(
@@ -671,193 +682,6 @@ class QwenReturnService:
             "angry": "愤怒",
         }
         return mapping.get(emotion.label.value, "平稳")
-
-    @staticmethod
-    def _normalize_reply_text(reply: str, fallback_reply: str) -> str:
-        cleaned = " ".join(str(reply or "").split())
-        banned_phrases = (
-            "请随时联系我们",
-            "竭诚为您服务",
-            "感谢您的理解与配合",
-            "感谢您的理解和配合",
-            "感谢您的配合与理解",
-            "感谢您的理解",
-            "感谢理解",
-            "很抱歉给您带来不便",
-            "谢谢您的配合",
-            "感谢您的配合",
-            "感谢您的支持",
-            "谢谢您的支持",
-        )
-        for phrase in banned_phrases:
-            cleaned = cleaned.replace(phrase, "")
-
-        for old, new in (
-            ("。！", "。"),
-            ("。!", "。"),
-            ("！。", "！"),
-            ("!.", "!"),
-            ("，，", "，"),
-            ("。。", "。"),
-            ("！！", "！"),
-        ):
-            while old in cleaned:
-                cleaned = cleaned.replace(old, new)
-
-        tail_fragments = ("与配合", "和配合", "感谢您", "谢谢您", "感谢", "谢谢")
-        stripped = cleaned.rstrip(" ，。！？!,.、；;:：")
-        for fragment in tail_fragments:
-            if stripped.endswith(fragment):
-                stripped = stripped[: -len(fragment)].rstrip(" ，。！？!,.、；;:：")
-        cleaned = stripped
-
-        if not cleaned:
-            return fallback_reply
-        if len(cleaned) > 100:
-            return fallback_reply
-        return cleaned + "。"
-
-    @staticmethod
-    def _parse_bool(value: Any, fallback: bool | None) -> bool | None:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return fallback
-        text = str(value).strip().lower()
-        if text == "true":
-            return True
-        if text == "false":
-            return False
-        return fallback
-
-    @staticmethod
-    def _parse_intent(value: Any) -> Intent | None:
-        if isinstance(value, Intent):
-            return value
-        text = str(value or "").strip().lower()
-        for intent in Intent:
-            if intent.value == text:
-                return intent
-        alias_map = {
-            "申请售后": Intent.APPLY_AFTER_SALES,
-            "售后申请": Intent.APPLY_AFTER_SALES,
-            "查询进度": Intent.REFUND_PROGRESS,
-            "退款进度": Intent.REFUND_PROGRESS,
-            "退货物流": Intent.RETURN_LOGISTICS,
-            "补充凭证": Intent.SUPPLEMENT_EVIDENCE,
-            "转人工": Intent.HUMAN_SERVICE,
-            "人工客服": Intent.HUMAN_SERVICE,
-            "投诉": Intent.COMPLAINT,
-            "普通咨询": Intent.GENERAL,
-        }
-        return alias_map.get(text)
-
-    @staticmethod
-    def _parse_scene(value: Any) -> AfterSalesScene | None:
-        if isinstance(value, AfterSalesScene):
-            return value
-        text = str(value or "").strip().lower()
-        for scene in AfterSalesScene:
-            if scene.value == text:
-                return scene
-        alias_map = {
-            "质量问题": AfterSalesScene.QUALITY_ISSUE,
-            "功能异常": AfterSalesScene.QUALITY_ISSUE,
-            "质量问题/功能异常": AfterSalesScene.QUALITY_ISSUE,
-            "商品破损": AfterSalesScene.PRODUCT_DAMAGE,
-            "包装破损": AfterSalesScene.PACKAGE_DAMAGE,
-            "少发漏发": AfterSalesScene.WRONG_OR_MISSING_ITEMS,
-            "错发": AfterSalesScene.WRONG_OR_MISSING_ITEMS,
-            "物流异常": AfterSalesScene.LOGISTICS_ISSUE,
-            "进度查询": AfterSalesScene.PROGRESS_QUERY,
-            "普通咨询": AfterSalesScene.GENERAL,
-        }
-        return alias_map.get(text)
-
-    @staticmethod
-    def _parse_confidence(value: Any) -> float:
-        try:
-            confidence = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        return max(0.0, min(1.0, confidence))
-
-    @staticmethod
-    def _normalize_reply(reply: str, fallback_reply: str) -> str:
-        cleaned = " ".join(reply.split())
-        banned_phrases = (
-            "请随时联系我们",
-            "竭诚为您服务",
-            "感谢您的理解",
-            "感谢理解",
-            "很抱歉给您带来不便",
-            "谢谢您的配合",
-            "感谢您的配合",
-            "和支持",
-        )
-        for phrase in banned_phrases:
-            cleaned = cleaned.replace(phrase, "")
-        cleaned = cleaned.strip(" ，。")
-        if not cleaned:
-            return fallback_reply
-        if len(cleaned) > 100:
-            return fallback_reply
-        if not cleaned.endswith(("。", "！", "？")):
-            cleaned = cleaned + "。"
-        return cleaned
-
-    @classmethod
-    def _build_user_reply(cls, raw: dict[str, Any], fallback_result: AgentResult) -> str:
-        if cls._must_use_rule_reply(fallback_result):
-            return fallback_result.user_reply
-        candidate = cls._normalize_reply_text(
-            str(raw.get("assistant_reply") or fallback_result.user_reply),
-            fallback_result.user_reply,
-        )
-        if cls._should_use_fallback_reply(candidate, fallback_result.user_reply):
-            return fallback_result.user_reply
-        return candidate
-
-    @staticmethod
-    def _must_use_rule_reply(fallback_result: AgentResult) -> bool:
-        return QwenReturnService._should_skip_model(fallback_result)
-
-    @staticmethod
-    def _should_use_fallback_reply(candidate: str, fallback_reply: str) -> bool:
-        generic_markers = (
-            "请详细描述",
-            "请您详细描述",
-            "请再说明一下",
-            "请上传耳机的详细图片",
-            "请上传详细图片",
-            "以便我们更好地帮助您处理",
-            "是想申请售后",
-            "查询进度还是联系人工",
-            "联系人工客服处理呢",
-        )
-        banned_markers = (
-            "已为您提交售后申请",
-            "已帮您创建售后申请",
-            "售后申请已提交",
-            "售后编号",
-            "工单编号",
-            "工单",
-            "ticket_id",
-            "Ticket",
-            "AS",
-            "AI自动审核",
-            "自动审核",
-            "图片识别",
-            "意图识别",
-            "风险等级",
-            "策略引擎",
-            "自动化决策",
-            "当前已进入处理中状态",
-        )
-        if candidate == fallback_reply:
-            return False
-        return any(marker in candidate for marker in generic_markers + banned_markers)
-
 
 def sample_context() -> ConversationContext:
     from datetime import timedelta

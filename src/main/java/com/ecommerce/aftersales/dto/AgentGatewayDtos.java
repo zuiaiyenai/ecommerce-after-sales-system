@@ -128,6 +128,39 @@ public class AgentGatewayDtos {
     }
 
     @Data
+    public static class KnowledgeRetrieveRequest {
+        @NotBlank(message = "query不能为空")
+        private String query;
+        private String merchantCode;
+        private String productCategory;
+        private String scene;
+        private String intent;
+        private Integer topK;
+        private List<String> sources;
+    }
+
+    @Data
+    public static class KnowledgeHitDto {
+        private String source_type;
+        private String source_code;
+        private String title;
+        private String summary;
+        private String snippet;
+        private Double score;
+        private List<String> tags;
+        private Map<String, Object> metadata;
+    }
+
+    @Data
+    public static class KnowledgeRetrieveResponse {
+        private String query;
+        private String retrieval_mode;
+        private Integer total_hits;
+        private List<KnowledgeHitDto> hits;
+        private Map<String, Object> trace;
+    }
+
+    @Data
     public static class TicketDto {
         private String ticket_id;
         private String status;

@@ -117,6 +117,7 @@
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const userInfo = ref({})
 const activeTab = ref('mine')
@@ -139,39 +140,14 @@ const initial = computed(() => {
   return name.slice(0, 1)
 })
 
-const activeAfterSaleStatuses = ['PENDING', 'PENDING_REVIEW', 'PROCESSING', 'APPROVED']
-
-function isActiveAfterSale(status) {
-  return activeAfterSaleStatuses.includes(String(status || '').toUpperCase())
-}
-
-function getOpenAfterSaleOrderIds(afterSales) {
-  return new Set(
-    afterSales
-      .filter(a => isActiveAfterSale(a.status))
-      .map(a => a.orderId)
-      .filter(id => id !== undefined && id !== null)
-  )
-}
-
 async function loadBadges() {
   try {
-    const [orders, afterSales] = await Promise.all([
-      request({ url: '/orders' }),
-      request({ url: '/aftersales' })
-    ])
+    const orders = await request({ url: '/orders' })
     const orderList = orders || []
-    const afterSaleList = afterSales || []
-    const openAfterSaleOrderIds = getOpenAfterSaleOrderIds(afterSaleList)
-    const afterSaleOrderIds = new Set(openAfterSaleOrderIds)
-    orderList
-      .filter(o => o.status === 'AFTERSALE')
-      .forEach(o => afterSaleOrderIds.add(o.id))
-
     const paid = orderList.filter(o => o.status === 'PAID').length
     const shipped = orderList.filter(o => o.status === 'SHIPPED').length
-    const received = orderList.filter(o => o.status === 'RECEIVED' && !openAfterSaleOrderIds.has(o.id)).length
-    const aftersale = afterSaleOrderIds.size
+    const received = orderList.filter(o => o.status === 'RECEIVED' && !resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
+    const aftersale = orderList.filter(o => resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
 
     // 读取已读记录
     const seen = uni.getStorageSync('badgeSeen') || {}

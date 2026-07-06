@@ -62,11 +62,11 @@ class EvidenceAgent:
             kind = attachment.kind.strip()
             name = attachment.name.lower()
             normalized.add(kind)
-            if kind in {"破损照片", "外包装照片", "商品照片", "故障照片", "故障视频", "物流面单照片"}:
+            if kind in {"商品破损照片", "外包装照片", "商品照片", "故障照片", "故障视频", "物流面单照片"}:
                 continue
             if kind in {"照片", "图片"}:
-                if any(token in name for token in ("damage", "broken", "crack", "裂", "破损", "碎")):
-                    normalized.add("破损照片")
+                if any(token in name for token in ("damage", "broken", "crack", "破", "裂", "损")):
+                    normalized.add("商品破损照片")
                 if any(token in name for token in ("package", "outer", "box", "wrap", "包装")):
                     normalized.add("外包装照片")
                 if scene == AfterSalesScene.WRONG_OR_MISSING_ITEMS:
@@ -87,10 +87,13 @@ class EvidenceAgent:
         knowledge_base: dict[str, Any] | None,
     ) -> tuple[str, ...]:
         knowledge_items = self._knowledge_scene_evidence(scene, knowledge_base)
-        default_items = knowledge_items or self._default_scene_evidence(scene)
+        if knowledge_items:
+            return knowledge_items
         if service_policy is not None:
-            return service_policy.required_evidence_for_scene(scene.value, default_items)
-        return default_items
+            policy_items = service_policy.required_evidence_for_scene(scene.value, ())
+            if policy_items:
+                return policy_items
+        return self._default_scene_evidence(scene)
 
     @staticmethod
     def _knowledge_scene_evidence(
@@ -115,7 +118,7 @@ class EvidenceAgent:
     @staticmethod
     def _default_scene_evidence(scene: AfterSalesScene) -> tuple[str, ...]:
         evidence_map: dict[AfterSalesScene, tuple[str, ...]] = {
-            AfterSalesScene.PRODUCT_DAMAGE: ("破损照片", "问题描述"),
+            AfterSalesScene.PRODUCT_DAMAGE: ("商品破损照片", "问题描述"),
             AfterSalesScene.PACKAGE_DAMAGE: ("外包装照片", "问题描述"),
             AfterSalesScene.WRONG_OR_MISSING_ITEMS: ("商品照片", "问题描述"),
             AfterSalesScene.QUALITY_ISSUE: ("问题描述",),
@@ -130,8 +133,8 @@ class EvidenceAgent:
         missing_text = "、".join(missing_items)
         if scene == AfterSalesScene.QUALITY_ISSUE:
             return (
-                f"您好，当前还需要补充{missing_text}。这类功能异常单靠照片通常无法准确判断，"
-                "请尽量详细描述问题表现，我会继续帮您记录并推进处理。"
+                f"您好，当前还需要补充{missing_text}。这类功能异常通常需要更具体的现象描述，"
+                "如果方便，也可以一并上传照片或视频，我会继续帮您记录并推进处理。"
             )
         if scene == AfterSalesScene.PACKAGE_DAMAGE:
             return (
@@ -161,21 +164,20 @@ class EvidenceAgent:
             "联系人工",
             "我要人工",
             "我要客服",
-            "我要",
             "帮我转",
             "转接",
         ):
             normalized = normalized.replace(phrase, "")
 
-        normalized = "".join(ch for ch in normalized if ch not in " ，。！？.!?:;/\\|_-")
+        normalized = "".join(ch for ch in normalized if ch not in " ，。！？?!?:;/\\|_-")
         return len(normalized) >= 2
 
     @staticmethod
     def _has_required_evidence(required_item: str, existing_items: set[str]) -> bool:
         alias_map: dict[str, tuple[str, ...]] = {
-            "破损照片": ("破损照片", "商品照片", "照片", "图片", "damage_photo"),
+            "商品破损照片": ("商品破损照片", "商品照片", "照片", "图片", "damage_photo"),
             "外包装照片": ("外包装照片", "包装照片", "照片", "图片", "package_photo"),
-            "商品照片": ("商品照片", "破损照片", "照片", "图片", "product_photo"),
+            "商品照片": ("商品照片", "商品破损照片", "照片", "图片", "product_photo"),
             "故障照片或视频": ("故障照片或视频", "故障视频", "故障照片", "商品视频", "视频", "fault_video"),
             "问题描述": ("问题描述",),
         }

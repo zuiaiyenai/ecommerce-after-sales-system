@@ -41,15 +41,18 @@ def build_status_answer(
     if status == AfterSalesStatus.WAITING_EVIDENCE:
         return _template(service_policy, "status.waiting_evidence") or "您好，当前售后申请还需要补充材料，提交完成后平台会继续审核。"
     if status == AfterSalesStatus.REFUND_PROCESSING:
-        return _template(service_policy, "status.refund_processing") or "您好，退款正在处理中，到账时间以支付渠道实际入账为准。"
+        return (
+            _template(service_policy, "status.refund_processing")
+            or _template(service_policy, "intent.refund_progress")
+            or "您好，退款正在处理中，到账时间以支付渠道实际入账为准。"
+        )
     if status == AfterSalesStatus.WAITING_RETURN:
         logistics = order.logistics_status if order else "待更新"
         template = _template(service_policy, "status.waiting_return")
         return (template or "您好，请补充退货物流信息，我们会继续跟进售后进度。").format(logistics=logistics)
     if risk_level == RiskLevel.HIGH:
         return apply_emotion_prefix(
-            _template(service_policy, "status.high_risk")
-            or "您好，当前问题需要进一步核验，我会继续帮您跟进。",
+            _template(service_policy, "status.high_risk") or "您好，当前问题还需要进一步核验，我会继续帮您跟进。",
             emotion_result,
         )
     return apply_emotion_prefix(
@@ -68,12 +71,15 @@ def build_merchant_review_reply(
     normalized = text.replace(" ", "")
 
     if is_progress_stalled(order):
-        return _template(service_policy, "merchant_review.stalled") or "您好，当前处理时间比平时略长，我会继续帮您跟进。"
-
+        return _template(service_policy, "merchant_review.stalled") or "您好，当前处理时间比平时略长，我会继续帮您跟进审核进度。"
     if is_anxious_progress_request(normalized):
-        return _template(service_policy, "merchant_review.anxious") or "您好，我理解您在着急等待退款，我会继续帮您跟进进度。"
+        return _template(service_policy, "merchant_review.anxious") or "您好，我理解您在着急等待退款，这边会继续帮您跟进处理进度。"
 
-    return _template(service_policy, "merchant_review.default") or "您好，您的退款申请已收到，当前正在由商家审核。"
+    return (
+        _template(service_policy, "merchant_review.default")
+        or _template(service_policy, "intent.refund_progress")
+        or "您好，您的退款申请已收到，当前正在由商家审核。"
+    )
 
 
 def is_anxious_progress_request(text: str) -> bool:
@@ -97,31 +103,30 @@ def build_ticket_reply(
     service_policy=None,
 ) -> str:
     del risk_result, scene
-    if ticket.next_action == "等待包装补偿评估":
+    if ticket.next_action == "等待包装赔付评估":
         return (
             _template(service_policy, "ticket_reply.package_damage")
-            or f"您好，已为您记录包装破损问题并生成售后申请 {ticket.ticket_id}。"
+            or "您好，已为您记录包装破损问题并生成售后申请 {ticket_id}。我们会继续推进包装赔付流程。"
         ).format(ticket_id=ticket.ticket_id)
     if ticket.status == TicketStatus.AUTO_APPROVED:
         return (
             _template(service_policy, "ticket_reply.auto_approved")
-            or f"您好，已为您提交售后申请 {ticket.ticket_id}，系统会尽快推进后续流程。"
+            or "您好，已为您提交售后申请 {ticket_id}，当前符合自动处理条件，系统会尽快推进后续流程。"
         ).format(ticket_id=ticket.ticket_id)
     if ticket.next_action == "等待商品破损审核":
         return (
             _template(service_policy, "ticket_reply.product_damage")
-            or f"您好，已为您提交售后申请 {ticket.ticket_id}，预计 {ticket.expected_hours} 小时内更新进度。"
+            or "您好，已为您提交售后申请 {ticket_id}，当前会先按商品破损情况进入审核，预计 {expected_hours} 小时内更新进度。"
         ).format(ticket_id=ticket.ticket_id, expected_hours=ticket.expected_hours)
     return (
         _template(service_policy, "ticket_reply.default")
-        or f"您好，已为您提交售后申请 {ticket.ticket_id}，预计 {ticket.expected_hours} 小时内更新进度。"
+        or "您好，已为您提交售后申请 {ticket_id}，当前已进入审核流程，预计 {expected_hours} 小时内更新进度。"
     ).format(ticket_id=ticket.ticket_id, expected_hours=ticket.expected_hours)
 
 
 def build_quality_issue_detail_reply(*, service_policy=None) -> str:
     return _template(service_policy, "quality_issue.ask_for_detail") or (
-        "您好，当前只有概括性的质量问题描述，图片也暂时无法直接确认具体异常。"
-        "请补充实际表现，例如没有声音、无法开机、充电异常、按键失灵等，我再继续帮您处理。"
+        "这边先帮您处理。为了更快判断售后方案，麻烦补充一下具体异常表现；如果方便，也可以一起上传照片或视频。"
     )
 
 
@@ -136,21 +141,11 @@ def build_quality_issue_visual_handoff_reply(*, service_policy=None) -> str:
 
 
 def build_quality_issue_visual_handoff_progress(*, service_policy=None) -> str:
-    return _template(service_policy, "quality_issue.visual_handoff_progress") or (
-        "已记录异常描述，但图片无法自动核验，转客服进一步核实。"
-    )
+    return _template(service_policy, "quality_issue.visual_handoff_progress") or "已记录异常描述，但图片无法自动核验，转客服进一步核实。"
 
 
 def build_quality_issue_auto_approved_progress(*, service_policy=None) -> str:
-    return _template(service_policy, "quality_issue.auto_approved_progress") or (
-        "图片核验通过，AI 已自动审核并进入处理中状态。"
-    )
-
-
-def has_detailed_quality_description(request: AfterSalesRequest) -> bool:
-    if request.quality_description_detailed is not None:
-        return request.quality_description_detailed
-    return False
+    return _template(service_policy, "quality_issue.auto_approved_progress") or "图片核验通过，已自动审核并进入处理中状态。"
 
 
 def build_quality_handoff_summary(
