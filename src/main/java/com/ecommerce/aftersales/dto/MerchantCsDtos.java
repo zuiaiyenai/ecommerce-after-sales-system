@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public final class MerchantCsDtos {
 
@@ -109,23 +110,22 @@ public final class MerchantCsDtos {
         private String level;
         private String wait;
         private String emotion;
+        private String emotionLabel;
+        private BigDecimal emotionScore;
+        private BigDecimal emotionConfidence;
         private String sourceChannel;
         private Integer serviceUnreadCount;
         private String orderNo;
         private String product;
         private String productName;
-        private String productImage;
         private String ticketNo;
         private String lastMessageContent;
         private String lastMessageTime;
-        private String waitStartedAt;
-        private Long waitSeconds;
         private String aiSummary;
         private String status;
         private String evaluationRequestedAt;
         private String evaluatedAt;
         private Integer rating;
-        private String evaluationContent;
         private String evaluationStatus;
     }
 
@@ -138,8 +138,28 @@ public final class MerchantCsDtos {
         private String messageType;
         private String content;
         private String aiIntent;
+        private BigDecimal aiReplyConfidence;
         private String emotionLabel;
+        private BigDecimal emotionScore;
+        private BigDecimal emotionConfidence;
+        private String knowledgeQuery;
+        private String knowledgeRetrievalMode;
+        private Integer knowledgeHitCount;
+        private List<KnowledgeHitView> knowledgeHits;
+        private Map<String, Object> knowledgeTrace;
         private String createdAt;
+    }
+
+    @Data
+    public static class KnowledgeHitView {
+        private String sourceType;
+        private String sourceCode;
+        private String title;
+        private String summary;
+        private String snippet;
+        private BigDecimal score;
+        private List<String> tags;
+        private Map<String, Object> metadata;
     }
 
     @Data
@@ -169,6 +189,7 @@ public final class MerchantCsDtos {
         private String applyRefundAmount;
         private String approvedRefundAmount;
         private String refundStatus;
+        private BigDecimal aiConfidence;
         private String priority;
         private String responsibility;
         private Long assignedServiceId;
@@ -262,30 +283,6 @@ public final class MerchantCsDtos {
         private String content;
         private String target;
         private String readStatus;
-        private String createdAt;
-    }
-
-    @Data
-    public static class ReviewView {
-        private Long id;
-        private Long orderId;
-        private String orderNo;
-        private Long userId;
-        private String user;
-        private String productName;
-        private String productImage;
-        private String ticketNo;
-        private Integer overallScore;
-        private Integer responseSpeedScore;
-        private Integer serviceAttitudeScore;
-        private Integer professionalScore;
-        private Integer efficiencyScore;
-        private Integer productScore;
-        private Integer logisticsScore;
-        private Integer serviceScore;
-        private Integer afterSaleScore;
-        private String content;
-        private String sentiment;
         private String createdAt;
     }
 

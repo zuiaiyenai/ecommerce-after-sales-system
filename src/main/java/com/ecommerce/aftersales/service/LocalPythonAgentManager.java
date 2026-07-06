@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.env.Environment;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -23,6 +24,7 @@ public class LocalPythonAgentManager implements ApplicationRunner {
 
     private final AgentGatewayProperties properties;
     private final RestTemplate agentRestTemplate;
+    private final Environment environment;
 
     private volatile Process localAgentProcess;
 
@@ -89,6 +91,7 @@ public class LocalPythonAgentManager implements ApplicationRunner {
         builder.directory(workingDir.toFile());
         builder.redirectErrorStream(true);
         builder.inheritIO();
+        builder.environment().put("AFTERSALES_POLICY_BASE_URL", buildPolicyBaseUrl());
         try {
             localAgentProcess = builder.start();
             log.info("Local Python agent process started: {}", scriptPath);
@@ -162,5 +165,15 @@ public class LocalPythonAgentManager implements ApplicationRunner {
         } catch (IOException exception) {
             return false;
         }
+    }
+
+    private String buildPolicyBaseUrl() {
+        String port = environment.getProperty("server.port", "8080");
+        String contextPath = environment.getProperty("server.servlet.context-path", "");
+        String normalizedContextPath = contextPath == null ? "" : contextPath.trim();
+        if (!normalizedContextPath.isEmpty() && !normalizedContextPath.startsWith("/")) {
+            normalizedContextPath = "/" + normalizedContextPath;
+        }
+        return "http://127.0.0.1:" + port + normalizedContextPath + "/agent/policies";
     }
 }

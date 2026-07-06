@@ -1,8 +1,16 @@
 server:
   port: 8080
   address: 0.0.0.0
+  tomcat:
+    uri-encoding: UTF-8
   servlet:
     context-path: /api
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+      force-request: true
+      force-response: true
 
 spring:
   application:
@@ -14,6 +22,8 @@ spring:
     url: jdbc:mysql://localhost:3306/ecommerce_aftersales?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:}
+  messages:
+    encoding: UTF-8
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -40,3 +50,20 @@ app:
     script-path: ${AGENT_SCRIPT_PATH:python_agent/api_server.py}
     working-directory: ${AGENT_WORKING_DIRECTORY:.}
     startup-wait-millis: ${AGENT_STARTUP_WAIT_MILLIS:15000}
+  miniapp:
+    client:
+      environment-code: ${MINIAPP_ENV_CODE:local}
+      environment-label: ${MINIAPP_ENV_LABEL:本机开发环境}
+      api-path: /api
+      request-timeout-millis: 15000
+      agent-request-timeout-millis: 90000
+      presets:
+        - code: lan
+          label: 当前局域网调试
+          base-origin: ${MINIAPP_LAN_BASE_ORIGIN:http://10.242.0.150:8080}
+          recommended: true
+      demo-user:
+        enabled: true
+        phone: 13800138000
+        password: 123456
+        nickname: 演示用户

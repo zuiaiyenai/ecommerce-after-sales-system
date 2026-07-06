@@ -2,12 +2,16 @@ package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.PageResult;
+import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.dto.MerchantCsDtos.*;
+import com.ecommerce.aftersales.service.AgentPolicyCatalogService;
+import com.ecommerce.aftersales.service.KnowledgeRetrievalService;
 import com.ecommerce.aftersales.service.MerchantCsService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequiredArgsConstructor
@@ -15,6 +19,8 @@ import java.util.List;
 public class MerchantCsController {
 
     private final MerchantCsService merchantCsService;
+    private final AgentPolicyCatalogService agentPolicyCatalogService;
+    private final KnowledgeRetrievalService knowledgeRetrievalService;
 
     @PostMapping("/auth/login")
     public ApiResponse<LoginResponse> login(@RequestBody LoginRequest request) {
@@ -35,6 +41,41 @@ public class MerchantCsController {
     @PutMapping("/work-status")
     public ApiResponse<StaffProfile> updateWorkStatus(@RequestBody WorkStatusRequest request) {
         return ApiResponse.success("更新成功", merchantCsService.updateWorkStatus(request.getOnlineStatus()));
+    }
+
+    @GetMapping("/agent-policy")
+    public ApiResponse<Map<String, Object>> getCurrentAgentPolicy() {
+        StaffProfile staff = merchantCsService.getCurrentStaff();
+        return ApiResponse.success("获取成功", agentPolicyCatalogService.getMerchantPolicy(staff.getMerchantCode()));
+    }
+
+    @PutMapping("/agent-policy")
+    public ApiResponse<Map<String, Object>> updateCurrentAgentPolicy(
+            @RequestBody AgentGatewayDtos.PolicyConfigUpdateRequest request
+    ) {
+        StaffProfile staff = merchantCsService.getCurrentStaff();
+        return ApiResponse.success("更新成功", agentPolicyCatalogService.updateMerchantPolicy(staff.getMerchantCode(), request));
+    }
+
+    @GetMapping("/knowledge/search")
+    public ApiResponse<AgentGatewayDtos.KnowledgeRetrieveResponse> searchKnowledge(
+            @RequestParam("keyword") String keyword,
+            @RequestParam(required = false) String productCategory,
+            @RequestParam(required = false) String scene,
+            @RequestParam(required = false) String intent,
+            @RequestParam(required = false) Integer topK,
+            @RequestParam(required = false) List<String> source
+    ) {
+        StaffProfile staff = merchantCsService.getCurrentStaff();
+        AgentGatewayDtos.KnowledgeRetrieveRequest request = new AgentGatewayDtos.KnowledgeRetrieveRequest();
+        request.setQuery(keyword);
+        request.setMerchantCode(staff.getMerchantCode());
+        request.setProductCategory(productCategory);
+        request.setScene(scene);
+        request.setIntent(intent);
+        request.setTopK(topK);
+        request.setSources(source);
+        return ApiResponse.success("鑾峰彇鎴愬姛", knowledgeRetrievalService.retrieve(request));
     }
 
     @GetMapping("/dashboard/overview")
@@ -158,14 +199,6 @@ public class MerchantCsController {
     @PutMapping("/notices/{noticeId}/read")
     public ApiResponse<NoticeView> markNoticeRead(@PathVariable Long noticeId) {
         return ApiResponse.success("标记成功", merchantCsService.markNoticeRead(noticeId));
-    }
-
-    @GetMapping("/reviews")
-    public ApiResponse<PageResult<ReviewView>> listReviews(@RequestParam(defaultValue = "1") long page,
-                                                           @RequestParam(defaultValue = "10") long size,
-                                                           @RequestParam(required = false) String score,
-                                                           @RequestParam(required = false) String keyword) {
-        return ApiResponse.success("获取成功", merchantCsService.listReviews(page, size, score, keyword));
     }
 
     @GetMapping("/products")

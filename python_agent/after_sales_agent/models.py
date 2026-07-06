@@ -11,15 +11,17 @@ class OrderStatus(str, Enum):
     SHIPPED = "shipped"
     DELIVERED = "delivered"
     COMPLETED = "completed"
-    AFTER_SALES = "after_sales"
     REFUNDED = "refunded"
 
 
 class AfterSalesType(str, Enum):
     REFUND_ONLY = "refund_only"
-    RETURN_AND_REFUND = "return_and_refund"
-    EXCHANGE = "exchange"
-    REPAIR = "repair"
+    RETURN_REFUND = "return_refund"
+    RETURN_AND_REFUND = "return_refund"
+    REISSUE = "reissue"
+    EXCHANGE = "reissue"
+    PARTIAL_REFUND = "partial_refund"
+    REPAIR = "return_refund"
 
 
 class AfterSalesStatus(str, Enum):
@@ -34,6 +36,7 @@ class AfterSalesStatus(str, Enum):
     REFUND_PROCESSING = "refund_processing"
     EXCHANGE_PROCESSING = "exchange_processing"
     COMPLETED = "completed"
+    CLOSED = "closed"
     HUMAN_PROCESSING = "human_processing"
 
 
@@ -121,6 +124,7 @@ class Order:
     created_at: datetime
     shipped_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
+    merchant_code: str = "MERCHANT_DEMO"
     items: tuple[OrderItem, ...] = ()
     has_open_after_sales: bool = False
     after_sales_status: AfterSalesStatus = AfterSalesStatus.NOT_APPLIED
@@ -204,6 +208,7 @@ class HumanHandoffResult:
 class EmotionAnalysisResult:
     label: EmotionLabel
     score: int
+    confidence: float
     triggers: tuple[str, ...]
     need_human_priority: bool
     reply_tone: str

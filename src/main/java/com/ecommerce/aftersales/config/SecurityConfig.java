@@ -34,6 +34,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(registry -> registry
                         .requestMatchers("/miniapp/auth/**").permitAll()
+                        .requestMatchers("/miniapp/public/**").permitAll()
                         .requestMatchers("/products/**").permitAll()
                         .requestMatchers("/agent/**").permitAll()
                         .requestMatchers("/merchant-cs/auth/login").permitAll()

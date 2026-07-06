@@ -25,6 +25,10 @@ public class AfterSalesTicket {
 
     private String merchantCode;
 
+    private String policyCode;
+
+    private String policyVersion;
+
     private String productName;
 
     private String afterSaleType;
@@ -39,6 +43,7 @@ public class AfterSalesTicket {
 
     private String aiClassifyResult;
 
+    /** AI工单分类置信度(0~1)，表示售后类型/处理路由分类把握度。 */
     private BigDecimal aiConfidence;
 
     private String aiRecommendType;

@@ -133,7 +133,7 @@
     <!-- 底部按钮 -->
     <view class="bottom-bar">
       <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">进入客服咨询</button>
-      <button v-else-if="orderInfo.status !== 'PAID'" class="btn-primary" @tap="applyAfterSale">申请售后</button>
+      <button v-else-if="canApplyAfterSale" class="btn-primary" @tap="applyAfterSale">申请售后</button>
       <button v-else class="btn-primary disabled" disabled>未发货暂不可申请售后</button>
     </view>
   </view>
@@ -143,9 +143,11 @@
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveAfterSalesTicketDisplay, resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const pageTitle = ref('订单详情')
 const hasAfterSale = ref(false)
+const canApplyAfterSale = ref(false)
 
 const orderInfo = ref({
   id: '',
@@ -205,8 +207,6 @@ const reasonMap = {
   'OTHER': '其他原因'
 }
 
-const afterSaleOrderStatuses = ['AFTERSALE', 'PENDING', 'PROCESSING', 'REJECTED', 'COMPLETED']
-
 onLoad(async (options) => {
   if (options.ticketNo) {
     // 从售后列表进入
@@ -259,12 +259,7 @@ async function loadFromOrder(orderId) {
 }
 
 function orderHasAfterSale(order) {
-  const status = String(order.status || '').toUpperCase()
-  const statusText = String(order.statusText || '')
-  return afterSaleOrderStatuses.includes(status)
-    || Boolean(order.hasOpenAfterSales)
-    || Boolean(order.afterSalesStatus)
-    || statusText.includes('售后')
+  return resolveOrderAfterSalesSnapshot(order).hasAnyAfterSales
 }
 
 // 从售后列表进入
@@ -291,6 +286,8 @@ async function loadFromAfterSale(ticketNo) {
 
 function fillOrderInfo(order) {
   const item = order.items && order.items[0]
+  const snapshot = resolveOrderAfterSalesSnapshot(order)
+  canApplyAfterSale.value = !snapshot.hasAnyAfterSales && (order.status === 'SHIPPED' || order.status === 'RECEIVED')
   orderInfo.value = {
     id: order.id || '',
     productImage: (item && item.productImage) || '',
@@ -313,6 +310,7 @@ function fillOrderInfo(order) {
 }
 
 function fillAfterSaleInfo(ticket) {
+  const display = resolveAfterSalesTicketDisplay(ticket)
   afterSaleInfo.value = {
     id: ticket.id || '',
     ticketNo: ticket.ticketNo || '',
@@ -320,7 +318,7 @@ function fillAfterSaleInfo(ticket) {
     reasonText: reasonMap[ticket.reason] || ticket.reason || '',
     description: ticket.description || '',
     status: ticket.status || '',
-    statusText: ticket.statusText || '',
+    statusText: display.statusText,
     auditOpinion: ticket.auditOpinion || '',
     auditTime: ticket.auditTime || '',
     completeTime: ticket.completeTime || '',
@@ -332,14 +330,15 @@ function fillAfterSaleInfo(ticket) {
 }
 
 function fillAfterSaleInfoFromOrder(order) {
+  const snapshot = resolveOrderAfterSalesSnapshot(order)
   afterSaleInfo.value = {
     id: '',
     ticketNo: '',
     orderId: order.id || '',
     reasonText: '已发起售后',
     description: '该订单已有售后记录，可继续进入客服咨询跟进处理。',
-    status: 'PENDING',
-    statusText: order.statusText || '售后处理中',
+    status: snapshot.afterSalesStatus.toUpperCase(),
+    statusText: snapshot.afterSalesStatusText,
     auditOpinion: '售后申请已受理，可进入客服咨询继续补充信息。',
     auditTime: '',
     completeTime: '',
@@ -515,8 +514,12 @@ function contactService() {
 }
 
 function applyAfterSale() {
-  if (hasAfterSale.value || afterSaleOrderStatuses.includes(String(orderInfo.value.status || '').toUpperCase())) {
+  if (hasAfterSale.value || resolveOrderAfterSalesSnapshot(orderInfo.value).hasAnyAfterSales) {
     contactService()
+    return
+  }
+  if (!canApplyAfterSale.value) {
+    uni.showToast({ title: '当前订单暂不可申请售后', icon: 'none' })
     return
   }
   uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.id })

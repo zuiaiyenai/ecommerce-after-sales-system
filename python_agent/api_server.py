@@ -74,7 +74,7 @@ def load_order_cache() -> dict[str, Order]:
     return {order.order_id: order for order in sample_orders()}
 
 
-ORDER_MAP = load_order_cache()
+ORDER_MAP: dict[str, Order] = {}
 
 # Shared upload directory matching the Spring Boot FileUploadController pattern.
 # Defaults to <project-root>/uploads.  Override with the UPLOAD_DIR env variable.
@@ -199,8 +199,9 @@ def build_order_from_payload(data: dict[str, Any]) -> Order | None:
         "shipped": OrderStatus.SHIPPED,
         "delivered": OrderStatus.DELIVERED,
         "completed": OrderStatus.COMPLETED,
-        "after_sales": OrderStatus.AFTER_SALES,
         "refunded": OrderStatus.REFUNDED,
+        # Legacy value kept only for backward-compatible reads.
+        "after_sales": OrderStatus.DELIVERED,
     }
     after_sales_map = {
         "not_applied": AfterSalesStatus.NOT_APPLIED,
@@ -214,6 +215,7 @@ def build_order_from_payload(data: dict[str, Any]) -> Order | None:
         "refund_processing": AfterSalesStatus.REFUND_PROCESSING,
         "exchange_processing": AfterSalesStatus.EXCHANGE_PROCESSING,
         "completed": AfterSalesStatus.COMPLETED,
+        "closed": AfterSalesStatus.CLOSED,
         "human_processing": AfterSalesStatus.HUMAN_PROCESSING,
     }
 
@@ -232,6 +234,7 @@ def build_order_from_payload(data: dict[str, Any]) -> Order | None:
         amount=amount,
         created_at=datetime.now() - timedelta(days=5),
         shipped_at=datetime.now() - timedelta(days=4),
+        merchant_code=str(selected.get("merchant_code") or "MERCHANT_DEMO").strip() or "MERCHANT_DEMO",
         items=(
             OrderItem(
                 "sku-dynamic",
@@ -251,6 +254,41 @@ def build_order_from_payload(data: dict[str, Any]) -> Order | None:
         uploaded_evidence=tuple(selected.get("uploaded_evidence") or ()),
         merchant_rejected_before=bool(selected.get("merchant_rejected_before")),
     )
+
+
+def lookup_real_order(order_ref: Any) -> Order | None:
+    if DB_REPOSITORY is None or order_ref is None:
+        return None
+    order_text = str(order_ref).strip()
+    if not order_text:
+        return None
+    try:
+        order = DB_REPOSITORY.get_order_by_order_no(order_text)
+        if order is not None:
+            return order
+        if order_text.isdigit():
+            return DB_REPOSITORY.get_order_by_id(int(order_text))
+    except Exception:
+        return None
+    return None
+
+
+def resolve_selected_order(data: dict[str, Any], order_id: Any) -> Order | None:
+    payload_order = build_order_from_payload(data)
+    if payload_order is not None:
+        real_order = lookup_real_order(payload_order.order_id)
+        if real_order is not None:
+            return replace(
+                real_order,
+                uploaded_evidence=payload_order.uploaded_evidence or real_order.uploaded_evidence,
+                merchant_rejected_before=payload_order.merchant_rejected_before or real_order.merchant_rejected_before,
+            )
+        if DB_REPOSITORY is None:
+            return payload_order
+        return None
+    if order_id:
+        return lookup_real_order(order_id)
+    return None
 
 
 def build_attachments(payload_attachments: list[Any] | tuple[Any, ...] | None) -> tuple[Attachment, ...]:
@@ -475,9 +513,7 @@ class AgentApiHandler(BaseHTTPRequestHandler):
         image_review = parse_image_review_payload(data.get("image_review"))
         trace.set_meta(**build_trace_meta(attachments=attachments, skip_image_review=skip_image_review))
 
-        selected_order = build_order_from_payload(data)
-        if selected_order is None and order_id:
-            selected_order = ORDER_MAP.get(str(order_id))
+        selected_order = resolve_selected_order(data, order_id)
 
         order_hint = None
         if selected_order is not None:
@@ -585,7 +621,10 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                     )
             except Exception as exc:
                 persistence_result = None
-                trace.set_meta(persistence_error=exc.__class__.__name__)
+                trace.set_meta(
+                    persistence_error=exc.__class__.__name__,
+                    persistence_error_message=str(exc),
+                )
                 if must_persist:
                     self._send_json(
                         {
@@ -609,16 +648,6 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 status=500,
             )
             return
-
-        # After a successful force-apply, mark the order as AFTERSALE so the
-        # user cannot apply again from the order list.
-        if force_apply and persistence_result and persistence_result.ticket_no and DB_REPOSITORY is not None and context.selected_order is not None:
-            try:
-                order_db_id = DB_REPOSITORY.resolve_order_db_id(context.selected_order.order_id)
-                if order_db_id is not None:
-                    DB_REPOSITORY.update_order_status_to_aftersale(order_db_id)
-            except Exception:
-                pass
 
         ticket = result.fallback_result.ticket
         response_ticket_id = (
@@ -755,6 +784,7 @@ class AgentApiHandler(BaseHTTPRequestHandler):
         return {
             "label": emotion.label.value,
             "score": emotion.score,
+            "confidence": getattr(emotion, "confidence", None),
             "triggers": list(emotion.triggers),
             "need_human_priority": emotion.need_human_priority,
             "reply_tone": emotion.reply_tone,

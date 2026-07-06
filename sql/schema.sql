@@ -9,6 +9,64 @@ CREATE DATABASE IF NOT EXISTS ecommerce_aftersales
 
 USE ecommerce_aftersales;
 
+CREATE TABLE IF NOT EXISTS emotion_level_knowledge
+(
+    id              BIGINT       NOT NULL COMMENT 'ID',
+    code            VARCHAR(50)  NOT NULL COMMENT 'emotion code',
+    label           VARCHAR(50)  NOT NULL COMMENT 'emotion label',
+    rank_order      INT          NOT NULL COMMENT 'severity rank',
+    meaning         VARCHAR(500) NULL     COMMENT 'business meaning',
+    handling_advice VARCHAR(500) NULL     COMMENT 'handling advice',
+    status          TINYINT      NOT NULL DEFAULT 1 COMMENT 'enabled status',
+    deleted         TINYINT      NOT NULL DEFAULT 0 COMMENT 'logical delete',
+    create_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'create time',
+    update_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'update time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_emotion_level_code (code),
+    INDEX idx_emotion_level_status (status)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COMMENT = 'Emotion level knowledge';
+
+CREATE TABLE IF NOT EXISTS after_sales_scheme_knowledge
+(
+    id                  BIGINT       NOT NULL COMMENT 'ID',
+    scheme_code         VARCHAR(50)  NOT NULL COMMENT 'scheme code',
+    scheme_label        VARCHAR(100) NOT NULL COMMENT 'scheme label',
+    description         VARCHAR(500) NULL     COMMENT 'scheme description',
+    requires_return     TINYINT      NOT NULL DEFAULT 0 COMMENT 'requires return',
+    typical_scenes_json TEXT         NULL     COMMENT 'typical scenes json',
+    status              TINYINT      NOT NULL DEFAULT 1 COMMENT 'enabled status',
+    deleted             TINYINT      NOT NULL DEFAULT 0 COMMENT 'logical delete',
+    create_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'create time',
+    update_time         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'update time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_after_sales_scheme_code (scheme_code),
+    INDEX idx_after_sales_scheme_status (status)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COMMENT = 'After-sales scheme knowledge';
+
+CREATE TABLE IF NOT EXISTS scene_evidence_knowledge
+(
+    id                    BIGINT       NOT NULL COMMENT 'ID',
+    scene_code            VARCHAR(50)  NOT NULL COMMENT 'scene code',
+    scene_label           VARCHAR(100) NOT NULL COMMENT 'scene label',
+    description           VARCHAR(500) NULL     COMMENT 'scene description',
+    default_evidence_json TEXT         NULL     COMMENT 'default evidence json',
+    extra_evidence_json   TEXT         NULL     COMMENT 'extra evidence json',
+    example_phrases_json  TEXT         NULL     COMMENT 'example phrases json',
+    status                TINYINT      NOT NULL DEFAULT 1 COMMENT 'enabled status',
+    deleted               TINYINT      NOT NULL DEFAULT 0 COMMENT 'logical delete',
+    create_time           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'create time',
+    update_time           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'update time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_scene_evidence_code (scene_code),
+    INDEX idx_scene_evidence_status (status)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COMMENT = 'Scene evidence knowledge';
+
 -- ============================================================
 -- 第一组：用户与权限
 -- ============================================================
@@ -176,6 +234,8 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     user_id                BIGINT        NOT NULL COMMENT '用户ID',
     merchant_id            BIGINT        NULL     COMMENT '所属商家/客服主体ID(sys_user)',
     merchant_code          VARCHAR(50)   NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
+    policy_code            VARCHAR(64)   NULL     COMMENT '命中的商家策略编码',
+    policy_version         VARCHAR(32)   NULL     COMMENT '命中的商家策略版本',
     product_name           VARCHAR(200)  NULL     COMMENT '商品名称(快照)',
     after_sale_type        VARCHAR(30)   NULL     COMMENT '售后类型：REFUND_ONLY仅退款/REFUND_RETURN退货退款/EXCHANGE换货/REPAIR维修(由AI推荐或客服确认)',
     reason                 VARCHAR(50)   NOT NULL COMMENT '售后原因：QUALITY质量问题/WRONG_ITEM发错货/SIZE_ISSUE尺码不合适/DAMAGE物流损坏/NOT_MATCH与描述不符/OTHER其他',
@@ -183,7 +243,7 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     description            TEXT          NULL     COMMENT '用户问题描述',
     refund_amount          DECIMAL(10,2) NULL     COMMENT '退款金额',
     ai_classify_result     VARCHAR(200)  NULL     COMMENT 'AI分类结果(JSON)',
-    ai_confidence          DECIMAL(3,2)  NULL     COMMENT 'AI分类置信度(0~1)',
+    ai_confidence          DECIMAL(3,2)  NULL     COMMENT 'AI工单分类置信度(0~1，表示售后类型/处理路由分类把握度)',
     ai_recommend_type      VARCHAR(30)   NULL     COMMENT 'AI推荐售后类型',
     status                 VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING待审核/PROCESSING处理中/APPROVED审核通过/REJECTED审核拒绝/COMPLETED已完成/CLOSED已关闭',
     priority               TINYINT       NOT NULL DEFAULT 0 COMMENT '优先级：0普通，1紧急，2非常紧急',
@@ -253,12 +313,15 @@ CREATE TABLE IF NOT EXISTS chat_session
     user_id         BIGINT       NOT NULL COMMENT '用户ID',
     merchant_id     BIGINT       NULL     COMMENT '所属商家/客服主体ID(sys_user)',
     merchant_code   VARCHAR(50)  NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
+    policy_code     VARCHAR(64)  NULL     COMMENT '命中的商家策略编码',
+    policy_version  VARCHAR(32)  NULL     COMMENT '命中的商家策略版本',
     order_id        BIGINT       NULL     COMMENT '关联订单ID',
     ticket_id       BIGINT       NULL     COMMENT '关联工单ID',
     human_agent_id  BIGINT       NULL     COMMENT '人工客服ID(sys_user)',
     mode            VARCHAR(10)  NOT NULL DEFAULT 'AI' COMMENT '当前模式：AI智能客服/HUMAN人工客服',
     status          VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE进行中/WAITING等待人工/CLOSED已关闭',
-    emotion_score   DECIMAL(3,2) NULL     COMMENT '用户情绪分值(0~1，越低越负面)',
+    emotion_score   DECIMAL(3,2) NULL     COMMENT '用户情绪负面强度分值(0~1，越高越负面)',
+    emotion_confidence DECIMAL(3,2) NULL  COMMENT '用户情绪判断置信度(0~1)',
     emotion_label   VARCHAR(20)  NULL     COMMENT '情绪标签：NORMAL正常/ANXIETY焦虑/ANGRY愤怒',
     user_query      VARCHAR(500) NULL     COMMENT '用户初始问题摘要',
     resolved        TINYINT      NOT NULL DEFAULT 0 COMMENT '是否已解决：0未解决，1已解决',
@@ -286,9 +349,10 @@ CREATE TABLE IF NOT EXISTS chat_message
     content       TEXT         NOT NULL COMMENT '消息内容',
     message_type  VARCHAR(20)  NOT NULL DEFAULT 'TEXT' COMMENT '消息类型：TEXT文本/IMAGE图片/TOOL_CALL工具调用/TOOL_RESULT工具结果',
     tool_call_id  VARCHAR(100) NULL     COMMENT '工具调用ID(关联agent_tool_call)',
-    confidence    DECIMAL(3,2) NULL     COMMENT 'AI回复置信度(0~1)',
+    confidence    DECIMAL(3,2) NULL     COMMENT 'AI回复置信度(0~1，表示回复生成/选用把握度)',
     emotion_label VARCHAR(20)  NULL     COMMENT '该条消息情绪标签',
-    emotion_score DECIMAL(3,2) NULL     COMMENT '该条消息情绪分值',
+    emotion_score DECIMAL(3,2) NULL     COMMENT '该条消息情绪负面强度分值(0~1，越高越负面)',
+    emotion_confidence DECIMAL(3,2) NULL COMMENT '该条消息情绪判断置信度(0~1)',
     token_usage   INT          NULL     COMMENT '本次回复Token消耗量',
     create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),

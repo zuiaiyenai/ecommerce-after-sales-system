@@ -28,7 +28,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -52,7 +51,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
     private final UserMapper userMapper;
-    private final ReviewInfoMapper reviewInfoMapper;
     private final MessageNoticeMapper messageNoticeMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
@@ -282,11 +280,11 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         LocalDateTime now = LocalDateTime.now();
         session.setResolved(1);
         session.setSatisfaction(request.getRating() == null ? 5 : request.getRating());
-        session.setStatus("CLOSED");
+        session.setStatus("READY_TO_CLOSE");
         session.setCloseTime(now);
         session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
-        addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价，会话已从列表移除");
+        addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价");
         return toSessionView(session);
     }
 
@@ -294,12 +292,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Transactional(rollbackFor = Exception.class)
     public SessionView closeSession(Long sessionId) {
         ChatSession session = findSession(sessionId);
+        if (!canCloseSession(session)) {
+            throw new BizException("只有用户已评价或评价已超时的会话才能关闭");
+        }
         LocalDateTime now = LocalDateTime.now();
         session.setStatus("CLOSED");
         session.setCloseTime(now);
         session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
-        addSystemMessage(sessionId, "会话已从当前列表移除，历史内容已保留。");
+        addSystemMessage(sessionId, "会话已由客服关闭。");
         return toSessionView(session);
     }
 
@@ -395,12 +396,12 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         ticket.setAssigneeId(ensureStaff().getId());
         afterSalesTicketMapper.updateById(ticket);
         addTicketLog(ticket, oldStatus, "COMPLETED", "COMPLETE", ticket.getAuditOpinion());
-        requestEvaluationForRelatedSessions(ticket);
+        markRelatedSessionsReadyForEvaluation(ticket);
         // Notify user about completion
         notificationService.createNotification(
                 ticket.getUserId(),
                 "售后申请已处理完成",
-                "您的售后已处理完成，请对本次服务进行评价。",
+                "您的售后申请 " + ticket.getTicketNo() + " 已处理完成",
                 "AFTER_SALE",
                 ticket.getId(),
                 "TICKET"
@@ -494,19 +495,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         notice.setReadTime(LocalDateTime.now());
         messageNoticeMapper.updateById(notice);
         return toNoticeView(notice);
-    }
-
-    @Override
-    public PageResult<ReviewView> listReviews(long page, long size, String score, String keyword) {
-        List<ReviewView> records = reviewInfoMapper.selectList(new LambdaQueryWrapper<ReviewInfo>()
-                        .orderByDesc(ReviewInfo::getCreateTime))
-                .stream()
-                .map(this::toReviewView)
-                .filter(Objects::nonNull)
-                .filter(item -> !StringUtils.hasText(score) || scoreMatches(item, score))
-                .filter(item -> !StringUtils.hasText(keyword) || containsAny(keyword, item.getOrderNo(), item.getUser(), item.getProductName(), item.getTicketNo(), item.getContent()))
-                .toList();
-        return PageResult.of(records, page, size);
     }
 
     @Override
@@ -619,7 +607,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                         .orderByDesc(ChatSession::getUpdateTime))
                 .stream()
                 .map(this::toSessionView)
-                .sorted(Comparator.comparingLong((SessionView view) -> Optional.ofNullable(view.getWaitSeconds()).orElse(0L)).reversed())
                 .toList();
     }
 
@@ -628,9 +615,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
         AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
         ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
-        ChatMessage waitStartMessage = waitStartMessage(session.getId()).orElse(null);
-        ProductInfo product = order == null ? null : firstProductByOrder(order.getId()).orElse(null);
-        ReviewInfo review = latestReview(session).orElse(null);
 
         SessionView view = new SessionView();
         view.setId(session.getId());
@@ -643,38 +627,26 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setUser(userDisplayName(user));
         view.setTopic(Optional.ofNullable(session.getUserQuery()).orElse("在线咨询"));
         view.setLevel(priorityLabel(ticket));
-        view.setWait(waitText(waitStartMessage == null ? null : waitStartMessage.getCreateTime()));
-        view.setWaitStartedAt(waitStartMessage == null ? null : format(waitStartMessage.getCreateTime()));
-        view.setWaitSeconds(waitSeconds(waitStartMessage == null ? null : waitStartMessage.getCreateTime()));
+        view.setWait(waitText(session.getCreateTime()));
         view.setEmotion(emotionText(session.getEmotionLabel()));
+        view.setEmotionLabel(session.getEmotionLabel());
+        view.setEmotionScore(session.getEmotionScore());
+        view.setEmotionConfidence(session.getEmotionConfidence());
         view.setSourceChannel("小程序咨询");
-        view.setServiceUnreadCount(serviceUnreadCount(session.getId()));
+        view.setServiceUnreadCount(0);
         view.setOrderNo(order == null ? null : order.getOrderNo());
-        view.setProduct(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
-        view.setProductName(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
-        view.setProductImage(product == null ? null : product.getMainImage());
+        view.setProduct(ticket == null ? null : ticket.getProductName());
+        view.setProductName(ticket == null ? null : ticket.getProductName());
         view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
-        view.setLastMessageContent(lastMessage == null ? null : ("IMAGE".equals(lastMessage.getMessageType()) ? "[图片]" : lastMessage.getContent()));
+        view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));
         view.setAiSummary(session.getUserQuery());
         view.setStatus(toMerchantSessionStatus(session));
-        view.setRating(review == null ? session.getSatisfaction() : review.getOverallScore());
-        view.setEvaluationContent(review == null ? null : review.getContent());
+        view.setRating(session.getSatisfaction());
         view.setEvaluationRequestedAt("AWAITING_EVALUATION".equals(session.getStatus()) ? format(session.getUpdateTime()) : null);
         view.setEvaluationStatus(evaluationStatus(session));
         view.setEvaluatedAt(session.getSatisfaction() == null ? null : format(session.getCloseTime()));
         return view;
-    }
-
-    private Optional<ReviewInfo> latestReview(ChatSession session) {
-        if (session.getOrderId() == null) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(reviewInfoMapper.selectOne(new LambdaQueryWrapper<ReviewInfo>()
-                .eq(ReviewInfo::getOrderId, session.getOrderId())
-                .eq(ReviewInfo::getUserId, session.getUserId())
-                .orderByDesc(ReviewInfo::getCreateTime)
-                .last("limit 1")));
     }
 
     private Optional<ChatMessage> lastMessage(Long sessionId) {
@@ -684,38 +656,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                 .last("limit 1")));
     }
 
-    private Optional<ChatMessage> waitStartMessage(Long sessionId) {
-        ChatMessage lastServiceMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "SERVICE")
-                .orderByDesc(ChatMessage::getCreateTime)
-                .last("limit 1"));
-        LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "USER")
-                .orderByDesc(ChatMessage::getCreateTime)
-                .last("limit 1");
-        if (lastServiceMessage != null && lastServiceMessage.getCreateTime() != null) {
-            wrapper.gt(ChatMessage::getCreateTime, lastServiceMessage.getCreateTime());
-        }
-        return Optional.ofNullable(chatMessageMapper.selectOne(wrapper));
-    }
-
-    private Integer serviceUnreadCount(Long sessionId) {
-        ChatMessage lastServiceMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "SERVICE")
-                .orderByDesc(ChatMessage::getCreateTime)
-                .last("limit 1"));
-        LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, sessionId)
-                .eq(ChatMessage::getRole, "USER");
-        if (lastServiceMessage != null && lastServiceMessage.getCreateTime() != null) {
-            wrapper.gt(ChatMessage::getCreateTime, lastServiceMessage.getCreateTime());
-        }
-        return Math.toIntExact(chatMessageMapper.selectCount(wrapper));
-    }
-
     private MessageView toMessageView(ChatMessage message) {
         MessageView view = new MessageView();
         view.setId(message.getId());
@@ -723,9 +663,85 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setSenderRole("USER".equals(message.getRole()) ? "USER" : "SERVICE");
         view.setMessageType(message.getMessageType());
         view.setContent(message.getContent());
+        view.setAiReplyConfidence(message.getConfidence());
         view.setEmotionLabel(message.getEmotionLabel());
+        view.setEmotionScore(message.getEmotionScore());
+        view.setEmotionConfidence(message.getEmotionConfidence());
+        view.setKnowledgeQuery(message.getKnowledgeQuery());
+        view.setKnowledgeRetrievalMode(message.getKnowledgeRetrievalMode());
+        view.setKnowledgeHitCount(message.getKnowledgeHitCount());
+        view.setKnowledgeHits(parseKnowledgeHits(message.getKnowledgeHitsJson()));
+        view.setKnowledgeTrace(parseKnowledgeTrace(message.getKnowledgeTraceJson()));
         view.setCreatedAt(format(message.getCreateTime()));
         return view;
+    }
+
+    private List<KnowledgeHitView> parseKnowledgeHits(String knowledgeHitsJson) {
+        if (!StringUtils.hasText(knowledgeHitsJson)) {
+            return List.of();
+        }
+        try {
+            List<Map<String, Object>> items = objectMapper.readValue(
+                    knowledgeHitsJson,
+                    new TypeReference<List<Map<String, Object>>>() {}
+            );
+            return items.stream().map(this::toKnowledgeHitView).toList();
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private KnowledgeHitView toKnowledgeHitView(Map<String, Object> item) {
+        KnowledgeHitView view = new KnowledgeHitView();
+        view.setSourceType(stringValue(item.get("source_type")));
+        view.setSourceCode(stringValue(item.get("source_code")));
+        view.setTitle(stringValue(item.get("title")));
+        view.setSummary(stringValue(item.get("summary")));
+        view.setSnippet(stringValue(item.get("snippet")));
+        view.setScore(decimalValue(item.get("score")));
+        view.setTags(stringList(item.get("tags")));
+        Object metadata = item.get("metadata");
+        if (metadata instanceof Map<?, ?> map) {
+            java.util.LinkedHashMap<String, Object> normalized = new java.util.LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            view.setMetadata(normalized);
+        }
+        return view;
+    }
+
+    private Map<String, Object> parseKnowledgeTrace(String knowledgeTraceJson) {
+        if (!StringUtils.hasText(knowledgeTraceJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(knowledgeTraceJson, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private BigDecimal decimalValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream().map(String::valueOf).toList();
     }
 
     private List<TicketView> allTickets() {
@@ -752,6 +768,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setApplyRefundAmount(money(ticket.getRefundAmount()));
         view.setApprovedRefundAmount("PROCESSING".equals(ticket.getStatus()) || "COMPLETED".equals(ticket.getStatus()) ? money(ticket.getRefundAmount()) : null);
         view.setRefundStatus("COMPLETED".equals(ticket.getStatus()) ? "SUCCESS" : "PENDING");
+        view.setAiConfidence(ticket.getAiConfidence());
         view.setPriority(toPriorityText(ticket.getPriority()));
         view.setResponsibility("MERCHANT");
         view.setAssignedServiceId(ticket.getAssigneeId());
@@ -822,93 +839,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return view;
     }
 
-    private ReviewView toReviewView(ReviewInfo review) {
-        OrderInfo order = review.getOrderId() == null ? null : orderInfoMapper.selectById(review.getOrderId());
-        if (order == null || !currentMerchantCode().equals(order.getMerchantCode())) {
-            return null;
-        }
-        User user = userMapper.selectById(review.getUserId());
-        AfterSalesTicket ticket = latestTicketByOrder(order.getId()).orElse(null);
-        ProductInfo product = firstProductByOrder(order.getId()).orElse(null);
-        ReviewView view = new ReviewView();
-        view.setId(review.getId());
-        view.setOrderId(order.getId());
-        view.setOrderNo(order.getOrderNo());
-        view.setUserId(review.getUserId());
-        view.setUser(userDisplayName(user));
-        view.setProductName(ticket != null && StringUtils.hasText(ticket.getProductName()) ? ticket.getProductName() : (product == null ? null : product.getProductName()));
-        view.setProductImage(product == null ? null : product.getMainImage());
-        view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
-        view.setOverallScore(review.getOverallScore());
-        Map<String, Integer> detailScores = reviewDetailScores(review);
-        view.setResponseSpeedScore(detailScores.get("responseSpeedScore"));
-        view.setServiceAttitudeScore(detailScores.get("serviceAttitudeScore"));
-        view.setProfessionalScore(detailScores.get("professionalScore"));
-        view.setEfficiencyScore(detailScores.get("efficiencyScore"));
-        view.setProductScore(review.getProductScore());
-        view.setLogisticsScore(review.getLogisticsScore());
-        view.setServiceScore(review.getServiceScore());
-        view.setAfterSaleScore(review.getAfterSaleScore());
-        view.setContent(review.getContent());
-        view.setSentiment(review.getSentiment());
-        view.setCreatedAt(format(review.getCreateTime()));
-        return view;
-    }
-
-    private Map<String, Integer> reviewDetailScores(ReviewInfo review) {
-        if (StringUtils.hasText(review.getTopics())) {
-            try {
-                Map<String, Integer> scores = objectMapper.readValue(review.getTopics(), new TypeReference<>() {
-                });
-                return Map.of(
-                        "responseSpeedScore", scoreOrDefault(scores.get("responseSpeedScore"), review.getLogisticsScore()),
-                        "serviceAttitudeScore", scoreOrDefault(scores.get("serviceAttitudeScore"), review.getServiceScore()),
-                        "professionalScore", scoreOrDefault(scores.get("professionalScore"), review.getServiceScore()),
-                        "efficiencyScore", scoreOrDefault(scores.get("efficiencyScore"), review.getAfterSaleScore())
-                );
-            } catch (Exception ignored) {
-                // Fall through to legacy field mapping.
-            }
-        }
-        return Map.of(
-                "responseSpeedScore", scoreOrDefault(review.getLogisticsScore(), review.getOverallScore()),
-                "serviceAttitudeScore", scoreOrDefault(review.getServiceScore(), review.getOverallScore()),
-                "professionalScore", scoreOrDefault(review.getServiceScore(), review.getOverallScore()),
-                "efficiencyScore", scoreOrDefault(review.getAfterSaleScore(), review.getOverallScore())
-        );
-    }
-
-    private Integer scoreOrDefault(Integer value, Integer fallback) {
-        if (value != null) {
-            return value;
-        }
-        return fallback == null ? 0 : fallback;
-    }
-
-    private Optional<AfterSalesTicket> latestTicketByOrder(Long orderId) {
-        return Optional.ofNullable(afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
-                .eq(AfterSalesTicket::getOrderId, orderId)
-                .orderByDesc(AfterSalesTicket::getCreateTime)
-                .last("limit 1")));
-    }
-
-    private Optional<ProductInfo> firstProductByOrder(Long orderId) {
-        OrderItem item = orderItemMapper.selectOne(new LambdaQueryWrapper<OrderItem>()
-                .eq(OrderItem::getOrderId, orderId)
-                .last("limit 1"));
-        return item == null ? Optional.empty() : Optional.ofNullable(productInfoMapper.selectById(item.getProductId()));
-    }
-
-    private boolean scoreMatches(ReviewView item, String score) {
-        int value = item.getOverallScore() == null ? 0 : item.getOverallScore();
-        return switch (score) {
-            case "GOOD" -> value >= 5;
-            case "NORMAL" -> value == 3 || value == 4;
-            case "BAD" -> value > 0 && value <= 2;
-            default -> true;
-        };
-    }
-
     private ProductView toProductView(ProductInfo product) {
         ProductView view = new ProductView();
         view.setId(product.getId());
@@ -952,46 +882,18 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         chatMessageMapper.insert(message);
     }
 
-    private void requestEvaluationForRelatedSessions(AfterSalesTicket ticket) {
+    private void markRelatedSessionsReadyForEvaluation(AfterSalesTicket ticket) {
         List<ChatSession> sessions = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
                 .eq(ChatSession::getMerchantCode, currentMerchantCode())
-                .and(wrapper -> {
-                    wrapper.eq(ChatSession::getTicketId, ticket.getId());
-                    if (ticket.getOrderId() != null) {
-                        wrapper.or().eq(ChatSession::getOrderId, ticket.getOrderId());
-                    }
-                })
-                .notIn(ChatSession::getStatus, List.of("AWAITING_EVALUATION", "READY_TO_CLOSE")));
+                .eq(ChatSession::getMode, "HUMAN")
+                .eq(ChatSession::getTicketId, ticket.getId())
+                .ne(ChatSession::getStatus, "CLOSED"));
         for (ChatSession session : sessions) {
-            session.setStatus("AWAITING_EVALUATION");
+            session.setStatus("PROCESSING");
             session.setResolved(0);
             session.setHumanAgentId(ensureStaff().getId());
-            session.setUpdateTime(LocalDateTime.now());
             chatSessionMapper.updateById(session);
-            addSystemMessage(session.getId(), "您的售后已处理完成，请对本次服务进行评价。");
-            notificationService.createNotification(
-                    session.getUserId(),
-                    "请评价本次客服服务",
-                    "您的售后已处理完成，请对本次客服服务进行评价。",
-                    "CHAT",
-                    session.getId(),
-                    "CHAT_SESSION"
-            );
-        }
-    }
-
-    private void syncOrderAfterTicketCompleted(AfterSalesTicket ticket) {
-        if (ticket.getOrderId() == null) {
-            return;
-        }
-        OrderInfo order = orderInfoMapper.selectById(ticket.getOrderId());
-        if (order == null) {
-            return;
-        }
-        if ("AFTERSALE".equals(order.getStatus())) {
-            order.setStatus("RECEIVED");
-            order.setUpdateTime(LocalDateTime.now());
-            orderInfoMapper.updateById(order);
+            addSystemMessage(session.getId(), "售后处理已完成，客服可以发送服务评价请求。");
         }
     }
 
@@ -1152,25 +1054,19 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (createTime == null) {
             return "等待中";
         }
-        long seconds = waitSeconds(createTime);
-        return "等待 " + String.format("%02d:%02d", seconds / 60, seconds % 60);
-    }
-
-    private long waitSeconds(LocalDateTime createTime) {
-        if (createTime == null) {
-            return 0L;
-        }
-        return Math.max(Duration.between(createTime, LocalDateTime.now()).toSeconds(), 0L);
+        long minutes = Math.max(Duration.between(createTime, LocalDateTime.now()).toMinutes(), 0);
+        return "等待 " + String.format("%02d:%02d", minutes / 60, minutes % 60);
     }
 
     private String emotionText(String emotionLabel) {
         return switch (Optional.ofNullable(emotionLabel).orElse("NORMAL")) {
+            case "SATISFIED" -> "满意";
             case "ANGRY" -> "情绪预警";
-            case "ANXIETY" -> "焦虑";
+            case "ANXIOUS", "ANXIETY" -> "焦急";
+            case "DISSATISFIED" -> "不满";
             default -> "中性";
         };
     }
-
     private String priorityLabel(AfterSalesTicket ticket) {
         if (ticket == null) {
             return "普通优先级";
@@ -1199,11 +1095,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if ("READY_TO_CLOSE".equals(session.getStatus())) {
             return "READY_TO_CLOSE";
         }
-        if ("RESOLVED".equals(session.getStatus())) {
-            return "RESOLVED";
-        }
         if (Integer.valueOf(1).equals(session.getResolved())) {
-            return "RESOLVED";
+            return "READY_TO_CLOSE";
         }
         return switch (Optional.ofNullable(session.getStatus()).orElse("ACTIVE")) {
             case "WAITING" -> "WAITING";
@@ -1249,11 +1142,13 @@ public class MerchantCsServiceImpl implements MerchantCsService {
 
     private String toMerchantAfterSalesType(String type) {
         if (type == null) {
-            return "REFUND";
+            return "REFUND_ONLY";
         }
         return switch (type) {
-            case "REFUND_ONLY" -> "REFUND";
-            case "REFUND_RETURN" -> "RETURN";
+            case "REFUND", "REFUND_ONLY" -> "REFUND_ONLY";
+            case "RETURN", "REFUND_RETURN", "RETURN_REFUND", "REPAIR" -> "RETURN_REFUND";
+            case "RESEND", "REISSUE", "EXCHANGE" -> "REISSUE";
+            case "PARTIAL_REFUND" -> "PARTIAL_REFUND";
             default -> type;
         };
     }
@@ -1315,3 +1210,5 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         }
     }
 }
+
+
