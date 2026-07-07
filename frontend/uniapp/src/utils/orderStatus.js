@@ -2,6 +2,7 @@ const ORDER_STATUS_TEXT_MAP = {
   PAID: '未发货',
   SHIPPED: '配送中',
   RECEIVED: '已收货',
+  AWAITING_EVALUATION: '待评价',
   COMPLETED: '已完成',
   CLOSED: '已关闭',
   REFUNDED: '已退款'
@@ -11,6 +12,7 @@ const ORDER_STATUS_CLASS_MAP = {
   PAID: 'paid',
   SHIPPED: 'pending',
   RECEIVED: 'done',
+  AWAITING_EVALUATION: 'review',
   COMPLETED: 'completed',
   CLOSED: 'completed',
   REFUNDED: 'completed'
@@ -162,7 +164,7 @@ export function resolveOrderDisplay(order = {}) {
     statusKey: orderStatus.toLowerCase(),
     statusText: getOrderStatusText(orderStatus, order.statusText || ''),
     statusClass: getOrderStatusClass(orderStatus),
-    canApplyAfterSales: orderStatus === 'SHIPPED' || orderStatus === 'RECEIVED',
+    canApplyAfterSales: !afterSales.hasAnyAfterSales && (orderStatus === 'SHIPPED' || orderStatus === 'RECEIVED'),
     canContactService: afterSales.hasAnyAfterSales
   }
 }

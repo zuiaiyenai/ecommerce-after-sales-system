@@ -173,16 +173,28 @@ public class OrderServiceImpl implements OrderService {
                 .last("limit 1"));
         if (ticket == null) {
             vo.setHasOpenAfterSales(false);
+            vo.setHasAnyAfterSales(false);
             vo.setAfterSalesStatus(null);
             vo.setAfterSalesStatusText(null);
             vo.setLatestAfterSalesTicketNo(null);
             return;
         }
 
-        vo.setHasOpenAfterSales(!isClosedAfterSalesStatus(ticket.getStatus()));
+        boolean hasOpenAfterSales = !isClosedAfterSalesStatus(ticket.getStatus());
+        vo.setHasOpenAfterSales(hasOpenAfterSales);
+        vo.setHasAnyAfterSales(true);
         vo.setAfterSalesStatus(ticket.getStatus());
         vo.setAfterSalesStatusText(getAfterSalesStatusText(ticket.getStatus()));
         vo.setLatestAfterSalesTicketNo(ticket.getTicketNo());
+        if (hasOpenAfterSales) {
+            vo.setStatus("AFTERSALE");
+            vo.setStatusText("售后中");
+            return;
+        }
+        if ("COMPLETED".equals(ticket.getStatus())) {
+            vo.setStatus("AWAITING_EVALUATION");
+            vo.setStatusText("待评价");
+        }
     }
 
     private boolean isClosedAfterSalesStatus(String status) {
@@ -208,6 +220,7 @@ public class OrderServiceImpl implements OrderService {
             case "SHIPPED": return "配送中";
             case "RECEIVED": return "已收货";
             case "AFTERSALE": return "售后中";
+            case "AWAITING_EVALUATION": return "待评价";
             case "CLOSED": return "已关闭";
             default: return status;
         }

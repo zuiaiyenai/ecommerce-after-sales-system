@@ -22,6 +22,7 @@ public class OrderVO {
     private String trackingCompany;
     private String trackingNo;
     private Boolean hasOpenAfterSales;
+    private Boolean hasAnyAfterSales;
     private String afterSalesStatus;
     private String afterSalesStatusText;
     private String latestAfterSalesTicketNo;

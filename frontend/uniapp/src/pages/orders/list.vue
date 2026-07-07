@@ -47,7 +47,7 @@
           <view class="order-actions">
             <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
             <button v-if="order.canApplyAfterSales" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
-            <button v-if="order.canContactService" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
+            <button v-if="order.canContactService && order.status !== 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
             <button v-if="order.status === 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">去评价</button>
           </view>
         </view>
