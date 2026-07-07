@@ -230,4 +230,17 @@ public class MerchantCsController {
                                                         @RequestBody ProductStatusRequest request) {
         return ApiResponse.success("更新成功", merchantCsService.updateProductStatus(productId, request.getStatus()));
     }
+
+    @GetMapping("/reviews")
+    public ApiResponse<PageResult<ReviewView>> listReviews(@RequestParam(defaultValue = "1") long page,
+                                                           @RequestParam(defaultValue = "10") long size,
+                                                           @RequestParam(required = false) String score,
+                                                           @RequestParam(required = false) String keyword) {
+        return ApiResponse.success("获取成功", merchantCsService.listReviews(page, size, score, keyword));
+    }
+
+    @GetMapping("/reviews/{reviewId}")
+    public ApiResponse<ReviewView> getReview(@PathVariable Long reviewId) {
+        return ApiResponse.success("获取成功", merchantCsService.getReview(reviewId));
+    }
 }

@@ -1,14 +1,5 @@
 ﻿<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">我的订单</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- Tab 筛选 -->
     <scroll-view class="tabs" scroll-x>
       <view v-for="tab in tabs" :key="tab.key" class="tab-item" :class="{ active: activeTab === tab.key }" @tap="switchTab(tab.key)">
@@ -136,10 +127,6 @@ onShow(() => {
   loadOrders()
 })
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function switchTab(key) {
   activeTab.value = key
 }
@@ -184,38 +171,6 @@ async function confirmReceive(id) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
 }
 
 /* Tabs */

@@ -63,6 +63,7 @@ const iconPaths = {
 };
 
 const isOnline = computed(() => props.staff?.onlineStatus === 'ONLINE');
+const statusTone = computed(() => (props.staff?.onlineStatus || 'OFFLINE').toLowerCase());
 
 function isActive(item) {
   return route.path === item.to || route.path.startsWith(`${item.to}/`);
@@ -102,7 +103,7 @@ function isActive(item) {
         <strong>{{ staff?.realName || '未登录客服' }}</strong>
         <p>{{ staff?.staffNo || '请先登录' }}</p>
       </div>
-      <span :class="['status-pill', isOnline ? 'online' : 'offline']">
+      <span :class="['status-pill', statusTone]">
         {{ staff?.onlineStatus || 'OFFLINE' }}
       </span>
     </section>

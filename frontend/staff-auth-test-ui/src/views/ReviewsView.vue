@@ -24,10 +24,9 @@ const stats = computed(() => {
   const good = reviews.value.filter(item => Number(item.overallScore) >= 5).length;
   const low = reviews.value.filter(item => Number(item.overallScore) > 0 && Number(item.overallScore) <= 2).length;
   return [
-    { label: '评价总数', value: total, tone: 'blue' },
-    { label: '平均评分', value: avg, tone: 'orange' },
-    { label: '好评数量', value: good, tone: 'green' },
-    { label: '低分反馈', value: low, tone: 'red' }
+    { label: '平均评分', value: avg, tone: 'orange', filter: 'ALL' },
+    { label: '好评数量', value: good, tone: 'green', filter: 'GOOD' },
+    { label: '低分反馈', value: low, tone: 'red', filter: 'BAD' }
   ];
 });
 
@@ -96,8 +95,8 @@ onMounted(loadPage);
 
 <template>
   <section class="work-page reviews-page">
-    <article class="wide-panel reviews-panel">
-      <div class="review-head">
+    <article class="wide-panel reviews-panel order-query-panel">
+      <div class="review-head order-query-head">
         <div>
           <span class="eyebrow">用户评价</span>
           <h2>售后服务评价</h2>
@@ -108,29 +107,40 @@ onMounted(loadPage);
         </button>
       </div>
 
-      <div class="ticket-stat-grid">
-        <button v-for="item in stats" :key="item.label" type="button" :class="['ticket-stat-card', item.tone]">
+      <div class="review-search-row order-search-row">
+        <label class="order-search-box">
+          <span>搜索评价</span>
+          <input v-model.trim="keyword" placeholder="订单、商品、用户或评价内容" />
+        </label>
+        <span class="order-result-count">{{ loading ? '加载中' : `匹配 ${visibleReviews.length} 条` }}</span>
+      </div>
+
+      <div class="order-stat-grid review-stat-grid">
+        <button
+          v-for="item in stats"
+          :key="item.label"
+          type="button"
+          :class="['order-stat-card', item.tone]"
+          @click="activeScore = item.filter"
+        >
           <span>{{ item.label }}</span>
           <strong>{{ item.value }}</strong>
         </button>
       </div>
 
-      <div class="review-toolbar">
-        <div class="ticket-filter-row">
-          <button
-            v-for="item in scoreFilters"
-            :key="item.key"
-            type="button"
-            :class="['filter-chip', { active: activeScore === item.key }]"
-            @click="activeScore = item.key"
-          >
-            {{ item.label }}
-          </button>
-        </div>
-        <input v-model.trim="keyword" class="review-search" placeholder="搜索订单、商品、用户或评价内容" />
+      <div class="review-toolbar order-filter-row">
+        <button
+          v-for="item in scoreFilters"
+          :key="item.key"
+          type="button"
+          :class="['filter-chip', { active: activeScore === item.key }]"
+          @click="activeScore = item.key"
+        >
+          {{ item.label }}
+        </button>
       </div>
 
-      <div class="review-list">
+      <div class="review-list order-card-list">
         <button v-for="item in visibleReviews" :key="item.id" type="button" class="review-card" @click="openReview(item)">
           <span class="review-product">
             <img v-if="productImage(item)" :src="productImage(item)" alt="" />
@@ -203,67 +213,86 @@ onMounted(loadPage);
 
 <style scoped>
 .reviews-page {
-  min-height: 100%;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
 }
 
-.review-head,
-.review-toolbar,
-.review-card {
-  display: flex;
-  align-items: center;
+.reviews-panel {
+  gap: 14px;
+  min-height: 0;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  border-color: #edf0f4;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .review-head {
-  justify-content: space-between;
-  margin-bottom: 22px;
+  margin-bottom: 0;
 }
 
 .review-head h2 {
-  margin: 8px 0;
+  margin: 0;
   font-size: 26px;
 }
 
 .review-head p {
-  margin: 0;
-  color: #6b7280;
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.review-search-row {
+  margin-top: 0;
+}
+
+.review-stat-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.review-stat-grid .order-stat-card.red {
+  border-color: #ffd4ca;
+  background: #fff7f5;
+}
+
+.review-stat-grid .order-stat-card.red:hover {
+  border-color: #ffb7a8;
 }
 
 .review-toolbar {
-  justify-content: space-between;
-  gap: 16px;
-  margin: 18px 0;
-}
-
-.review-search {
-  width: 320px;
-  height: 40px;
-  padding: 0 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 14px;
+  margin: 0;
 }
 
 .review-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .review-card {
-  gap: 16px;
+  min-height: 92px;
   width: 100%;
-  padding: 18px;
+  display: grid;
+  grid-template-columns: 62px minmax(260px, 1fr) 150px 190px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
   border: 1px solid #edf0f4;
   border-radius: 8px;
   background: #ffffff;
+  color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .review-card:hover {
-  border-color: #f2c9b8;
-  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.06);
+  transform: translateY(-1px);
+  border-color: #dbeaff;
+  background: #f7fbff;
+  box-shadow: 0 10px 24px rgba(31, 38, 48, 0.08);
+}
+
+.review-card:focus-visible {
+  outline: 2px solid #ff9c4a;
+  outline-offset: 2px;
 }
 
 .review-product {
@@ -290,7 +319,6 @@ onMounted(loadPage);
 }
 
 .review-main {
-  flex: 1;
   min-width: 0;
 }
 
@@ -299,6 +327,16 @@ onMounted(loadPage);
 .review-meta strong {
   display: block;
   color: #111827;
+}
+
+.review-main strong,
+.review-main em,
+.review-meta strong,
+.review-meta em,
+.review-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-main em,
@@ -315,15 +353,19 @@ onMounted(loadPage);
 
 .review-main small {
   color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-score {
-  width: 150px;
+  min-width: 0;
   color: #c97b5a;
 }
 
 .review-score strong {
-  font-size: 28px;
+  font-size: 24px;
+  line-height: 1;
 }
 
 .review-score em {
@@ -332,12 +374,15 @@ onMounted(loadPage);
 }
 
 .review-meta {
-  width: 190px;
+  min-width: 0;
   text-align: right;
 }
 
 .review-empty {
+  min-height: 220px;
   padding: 60px 24px;
+  border: 1px dashed #dce2ea;
+  background: #fbfcfe;
 }
 
 .review-modal-mask {

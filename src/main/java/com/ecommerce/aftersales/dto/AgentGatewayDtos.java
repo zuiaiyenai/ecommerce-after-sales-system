@@ -11,8 +11,10 @@ import java.util.Map;
 public class AgentGatewayDtos {
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class HealthResponse {
         private Boolean ok;
+        private Boolean persistence_ok;
     }
 
     @Data
@@ -85,7 +87,7 @@ public class AgentGatewayDtos {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ChatRequest {
         private String order_id;
-        private Integer session_id;
+        private String session_id;
 
         @NotBlank(message = "message不能为空")
         private String message;
@@ -169,12 +171,12 @@ public class AgentGatewayDtos {
 
     @Data
     public static class PersistenceDto {
-        private Long session_id;
+        private String session_id;
         private String session_no;
-        private Long user_message_id;
-        private Long assistant_message_id;
-        private Long ticket_log_id;
-        private Long notice_id;
+        private String user_message_id;
+        private String assistant_message_id;
+        private String ticket_log_id;
+        private String notice_id;
     }
 
     @Data

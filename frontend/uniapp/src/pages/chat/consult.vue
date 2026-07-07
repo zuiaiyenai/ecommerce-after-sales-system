@@ -1,13 +1,5 @@
 <template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">{{ sessionMode === 'HUMAN' ? '人工客服' : '智能售后助手' }}</text>
-      <view class="nav-right"></view>
-    </view>
-
     <view class="fixed-context">
       <view v-if="hasOrder" class="order-card">
         <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
@@ -216,10 +208,6 @@ function mergeLocalImageMessages(remoteMessages, localImages) {
   return merged
 }
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function copyOrderNo() {
   if (!orderInfo.value.orderNo) return
   uni.setClipboardData({
@@ -285,7 +273,7 @@ async function loadOrderById(orderId, fallbackOptions = {}) {
 async function initAgentStatus() {
   try {
     const result = await checkAgentHealth()
-    agentStatusText.value = result?.ok ? '服务正常' : '服务异常'
+    agentStatusText.value = result?.ok && result?.persistence_ok !== false ? '服务正常' : '服务异常'
   } catch (error) {
     agentStatusText.value = '未连接'
   }
@@ -322,12 +310,11 @@ function persistConversation() {
   })
 }
 
-async function loadSessionHistory(id) {
+async function loadSessionHistory(id, expectedUserMessage = '') {
   if (!id) return false
   try {
     const localImages = collectLocalImageMessages()
     const result = await getChatHistory(id)
-    sessionId.value = String(id)
     const remoteMessages = (result.list || []).map(item => ({
       role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
       content: item.content,
@@ -335,6 +322,11 @@ async function loadSessionHistory(id) {
       meta: '',
       time: item.createTime ? String(item.createTime).slice(11, 16) : ''
     }))
+    const expected = String(expectedUserMessage || '').trim()
+    if (expected && !remoteMessages.some(message => message.role === 'user' && message.content === expected)) {
+      return false
+    }
+    sessionId.value = String(id)
     messages.value = mergeLocalImageMessages(remoteMessages, localImages)
     scrollToBottom()
     return true
@@ -442,9 +434,10 @@ function buildRecentHistoryPayload() {
   })).filter((message) => message.role && message.content)
 }
 
-async function applyChatResult(result) {
-  if (result?.persistence?.session_id) {
-    sessionId.value = String(result.persistence.session_id)
+async function applyChatResult(result, sentText = '') {
+  const persistedSessionId = result?.persistence?.session_id ? String(result.persistence.session_id) : ''
+  if (persistedSessionId) {
+    sessionId.value = persistedSessionId
   }
   if (result?.ticket?.ticket_id && orderData.value?.orderNo) {
     uni.setStorageSync(`after_sales_ticket:${orderData.value.orderNo}`, result.ticket)
@@ -458,8 +451,8 @@ async function applyChatResult(result) {
     sessionMode.value = 'HUMAN'
     updateAgentStatusForMode()
   }
-  if (sessionId.value) {
-    const loaded = await loadSessionHistory(sessionId.value)
+  if (persistedSessionId) {
+    const loaded = await loadSessionHistory(persistedSessionId, sentText)
     if (loaded) {
       persistConversation()
       return
@@ -533,7 +526,7 @@ async function sendAgentMessage({
       })
     )
 
-    await applyChatResult(result)
+    await applyChatResult(result, text)
     attachments.value = []
     persistConversation()
     return result
@@ -556,7 +549,7 @@ async function sendAgentMessage({
           }
         })
       )
-      await applyChatResult(fallbackResult)
+      await applyChatResult(fallbackResult, text)
       attachments.value = []
       persistConversation()
       void runDeferredImageReview(imagePaths)
@@ -692,42 +685,6 @@ onLoad(async (options) => {
   flex-direction: column;
   height: 100vh;
   background: #f0eeea;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
-}
-
-.back-btn,
-.nav-right {
-  width: 64rpx;
-  height: 64rpx;
-}
-
-.back-btn {
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon,
-.nav-title {
-  color: #1a1a1a;
-}
-
-.back-icon {
-  font-size: 32rpx;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
 }
 
 .fixed-context {

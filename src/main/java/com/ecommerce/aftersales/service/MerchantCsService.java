@@ -66,4 +66,8 @@ public interface MerchantCsService {
     ProductView updateProduct(Long productId, ProductUpsertRequest request);
 
     ProductView updateProductStatus(Long productId, String status);
+
+    PageResult<ReviewView> listReviews(long page, long size, String score, String keyword);
+
+    ReviewView getReview(Long reviewId);
 }

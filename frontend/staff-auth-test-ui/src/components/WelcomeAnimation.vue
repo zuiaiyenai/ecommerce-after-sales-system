@@ -14,7 +14,6 @@ const canvasRef = ref(null);
 const welcomeStyle = computed(() => ({
   '--welcome-duration': `${props.durationMs}ms`
 }));
-const CANVAS_FREEZE_PROGRESS = 0.76;
 
 const blobs = [
   {
@@ -136,13 +135,12 @@ function drawFrame(now) {
 
   const elapsed = reducedMotion ? props.durationMs * 0.34 : now - startTime;
   const progress = clamp(elapsed / props.durationMs, 0, 1);
-  const drawProgress = Math.min(progress, CANVAS_FREEZE_PROGRESS);
   const elapsedSeconds = elapsed / 1000;
   context.clearRect(0, 0, canvasWidth, canvasHeight);
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvasWidth, canvasHeight);
   context.globalCompositeOperation = 'source-over';
-  blobs.forEach((blob) => drawBlob(blob, drawProgress, elapsedSeconds));
+  blobs.forEach((blob) => drawBlob(blob, progress, elapsedSeconds));
 
   const vignette = context.createRadialGradient(
     canvasWidth * 0.5,
@@ -157,7 +155,7 @@ function drawFrame(now) {
   context.fillStyle = vignette;
   context.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  if (!reducedMotion && progress < CANVAS_FREEZE_PROGRESS) {
+  if (!reducedMotion && progress < 1) {
     animationId = window.requestAnimationFrame(drawFrame);
   }
 }
@@ -250,7 +248,7 @@ onBeforeUnmount(() => {
   inset: 0;
   width: 100%;
   height: 100%;
-  animation: welcomeVisualIn var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: welcomeVisualInOut var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
   backface-visibility: hidden;
   will-change: opacity;
 }
@@ -302,7 +300,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.92);
 }
 
-@keyframes welcomeVisualIn {
+@keyframes welcomeVisualInOut {
   0% {
     opacity: 0;
   }
@@ -311,8 +309,12 @@ onBeforeUnmount(() => {
     opacity: 1;
   }
 
-  100% {
+  76% {
     opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
   }
 }
 
@@ -332,19 +334,9 @@ onBeforeUnmount(() => {
     transform: translate3d(0, 0, 0) scale(1);
   }
 
-  84% {
-    opacity: 0.72;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  92% {
-    opacity: 0.32;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
   100% {
     opacity: 0;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, -6px, 0) scale(0.985);
   }
 }
 

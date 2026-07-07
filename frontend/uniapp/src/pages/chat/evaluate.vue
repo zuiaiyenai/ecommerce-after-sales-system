@@ -1,13 +1,5 @@
 <template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">售后评价</text>
-      <view class="nav-right"></view>
-    </view>
-
     <view class="card aftersale-card">
       <text class="card-title">本次售后</text>
       <view class="aftersale-row">
@@ -101,10 +93,6 @@ function nowText() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
 }
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function setScore(key, value) {
   scores[key] = value
 }
@@ -159,34 +147,6 @@ onLoad((options) => {
   min-height: 100vh;
   padding: 0 28rpx 40rpx;
   background: #f4f2ef;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 148rpx;
-  background: #ffffff;
-  margin: 0 -28rpx 28rpx;
-  padding: 0 28rpx;
-}
-
-.back-btn,
-.nav-right {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-}
-
-.back-icon {
-  font-size: 44rpx;
-  color: #111111;
-}
-
-.nav-title {
-  font-size: 34rpx;
-  font-weight: 800;
-  color: #111111;
 }
 
 .card {

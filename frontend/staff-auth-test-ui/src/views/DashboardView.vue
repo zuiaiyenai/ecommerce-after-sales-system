@@ -7,6 +7,7 @@ import {
   getSessions,
   getTickets
 } from '../api/merchantCs';
+import ServicePerformanceCard from '../components/ServicePerformanceCard.vue';
 
 const shell = inject('merchantCsShell', null);
 const loading = ref(true);
@@ -18,7 +19,6 @@ const tickets = ref([]);
 
 const activeSessions = computed(() => sessions.value.filter((item) => !['RESOLVED', 'CLOSED'].includes(item.status)));
 const pendingTickets = computed(() => tickets.value.filter((item) => item.status === 'PENDING_REVIEW'));
-const performanceBars = computed(() => performance.value?.metrics ?? []);
 
 async function loadPage() {
   loading.value = true;
@@ -98,23 +98,7 @@ onMounted(loadPage);
             </span>
           </div>
         </div>
-        <div class="performance-chart">
-          <div v-for="item in performanceBars" :key="item.label" class="performance-bar-row">
-            <span class="performance-label">{{ item.label }}</span>
-            <div class="performance-bar-track" aria-hidden="true">
-              <i
-                class="performance-bar-target"
-                :style="{ left: `${Math.min(item.targetPercent ?? 0, 100)}%` }"
-              ></i>
-              <i
-                class="performance-bar-current"
-                :style="{ width: `${Math.min(item.currentPercent ?? 0, 100)}%` }"
-              ></i>
-            </div>
-            <strong>{{ item.value }}</strong>
-            <em>{{ item.desc }}</em>
-          </div>
-        </div>
+        <ServicePerformanceCard :performance="performance" />
       </article>
     </section>
   </section>

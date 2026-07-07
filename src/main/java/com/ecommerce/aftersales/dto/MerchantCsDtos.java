@@ -94,6 +94,8 @@ public final class MerchantCsDtos {
         private String desc;
         private Integer currentPercent;
         private Integer targetPercent;
+        private Integer sampleSize;
+        private Boolean lowerIsBetter;
     }
 
     @Data
@@ -118,6 +120,7 @@ public final class MerchantCsDtos {
         private String orderNo;
         private String product;
         private String productName;
+        private String productImage;
         private String ticketNo;
         private String lastMessageContent;
         private String lastMessageTime;
@@ -256,7 +259,7 @@ public final class MerchantCsDtos {
         private String payAmount;
         private String payTime;
         private List<OrderProductItem> productItems;
-        private LogisticsInfo logistics;
+        private Map<String, String> logistics;
         private Long relatedTicketId;
     }
 
@@ -264,15 +267,9 @@ public final class MerchantCsDtos {
     public static class OrderProductItem {
         private Long productId;
         private String productName;
+        private String productImage;
         private Integer quantity;
         private String price;
-    }
-
-    @Data
-    public static class LogisticsInfo {
-        private String company;
-        private String trackingNo;
-        private String status;
     }
 
     @Data
@@ -317,5 +314,22 @@ public final class MerchantCsDtos {
     @Data
     public static class ProductStatusRequest {
         private String status;
+    }
+
+    @Data
+    public static class ReviewView {
+        private Long id;
+        private String orderNo;
+        private String user;
+        private String productName;
+        private String productImage;
+        private String ticketNo;
+        private Integer overallScore;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
+        private String content;
+        private String createdAt;
     }
 }

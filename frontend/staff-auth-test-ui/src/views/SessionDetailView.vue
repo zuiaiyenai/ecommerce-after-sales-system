@@ -79,6 +79,7 @@ const evaluationHint = computed(() => {
   return '当前会话仍在接入或处理中。';
 });
 
+const hasRelatedOrder = computed(() => Boolean(session.value?.orderId));
 const userScore = computed(() => (`${session.value?.emotion || ''}`.includes('预警') ? '4.2' : '4.8'));
 const isActionBusy = computed(() => Boolean(actionLoading.value));
 const userEmotionMessages = computed(() =>
@@ -499,13 +500,22 @@ onUnmounted(() => {
             :src="imageSrc({content: session.productImage})"
             alt="商品"
           />
-          <div v-else class="product-thumb">{{ fieldValue(session?.productName || session?.product, '商').slice(0, 1) }}</div>
+          <div v-else class="product-thumb">
+            {{ fieldValue(session?.productName || session?.product, hasRelatedOrder ? '商' : '咨').slice(0, 1) }}
+          </div>
           <div class="product-card-main">
-            <strong>{{ fieldValue(session?.product || session?.productName, '售后商品') }}</strong>
-            <span>订单号：{{ fieldValue(session?.orderNo, '--') }}</span>
+            <strong>{{ fieldValue(session?.product || session?.productName, hasRelatedOrder ? '售后商品' : '未关联订单咨询') }}</strong>
+            <span>订单号：{{ hasRelatedOrder ? fieldValue(session?.orderNo, '--') : '未关联订单' }}</span>
             <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
           </div>
-          <button type="button" aria-label="查看订单" @click="router.push(`/orders/${session?.orderId}`)">查看订单</button>
+          <button
+            type="button"
+            aria-label="查看订单"
+            :disabled="!hasRelatedOrder"
+            @click="hasRelatedOrder && router.push(`/orders/${session?.orderId}`)"
+          >
+            {{ hasRelatedOrder ? '查看订单' : '无关联订单' }}
+          </button>
         </section>
       </div>
 

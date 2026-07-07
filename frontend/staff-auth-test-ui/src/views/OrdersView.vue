@@ -9,6 +9,7 @@ const activeStatus = ref('ALL');
 const orders = ref([]);
 const loading = ref(false);
 const error = ref('');
+const errorTitle = ref('订单加载失败');
 
 const statusOptions = [
   { key: 'ALL', label: '全部订单' },
@@ -44,6 +45,7 @@ const filteredOrders = computed(() => {
 async function loadOrders() {
   loading.value = true;
   error.value = '';
+  errorTitle.value = '订单加载失败';
   try {
     const result = await getOrders({ page: 1, size: 200 });
     orders.value = result?.records || [];
@@ -74,6 +76,7 @@ function statusTone(status) {
 async function handleShip(orderId) {
   loading.value = true;
   error.value = '';
+  errorTitle.value = '发货失败';
   try {
     await shipOrder(orderId);
     await loadOrders();
@@ -82,6 +85,14 @@ async function handleShip(orderId) {
   } finally {
     loading.value = false;
   }
+}
+
+function openOrder(orderId) {
+  router.push(`/orders/${orderId}`);
+}
+
+function openTicket(ticketId) {
+  router.push(`/tickets/${ticketId}`);
 }
 
 onMounted(loadOrders);
@@ -134,32 +145,44 @@ onMounted(loadOrders);
 
       <div class="order-card-list">
         <div v-if="error" class="empty-state order-empty">
-          <h2>订单加载失败</h2>
+          <h2>{{ errorTitle }}</h2>
           <p>{{ error }}</p>
           <button type="button" class="ghost-mini" @click="loadOrders">重新加载</button>
         </div>
 
-        <div v-for="order in filteredOrders" v-else :key="order.id" class="order-card">
-          <button type="button" class="ticket-mark order" @click="router.push(`/orders/${order.id}`)">OR</button>
-          <button type="button" class="order-main-copy" @click="router.push(`/orders/${order.id}`)">
+        <div
+          v-for="order in filteredOrders"
+          v-else
+          :key="order.id"
+          class="order-card"
+          role="button"
+          tabindex="0"
+          @click="openOrder(order.id)"
+          @keydown.enter="openOrder(order.id)"
+          @keydown.space.prevent="openOrder(order.id)"
+        >
+          <span class="ticket-mark order">OR</span>
+          <span class="order-main-copy">
             <strong>{{ order.orderNo }}</strong>
             <em>{{ order.user }} · {{ order.phone }}</em>
             <small>{{ order.product }}</small>
-          </button>
+          </span>
           <span class="order-amount">¥{{ order.amount }}</span>
           <span class="order-progress">
             <span :class="['order-status', statusTone(order.status)]">{{ statusLabel(order.status) }}</span>
             <em>{{ order.logistics }}</em>
           </span>
-          <button v-if="order.status === 'PAID'" type="button" class="ghost-mini" :disabled="loading" @click="handleShip(order.id)">发货</button>
-          <button
-            v-if="order.relatedTicketId"
-            type="button"
-            class="ghost-mini"
-            @click="router.push(`/tickets/${order.relatedTicketId}`)"
-          >
-            关联申请
-          </button>
+          <span class="order-actions">
+            <button v-if="order.status === 'PAID'" type="button" class="ghost-mini" :disabled="loading" @click.stop="handleShip(order.id)">发货</button>
+            <button
+              v-if="order.relatedTicketId"
+              type="button"
+              class="ghost-mini"
+              @click.stop="openTicket(order.relatedTicketId)"
+            >
+              关联申请
+            </button>
+          </span>
         </div>
 
         <div v-if="!loading && !error && filteredOrders.length === 0" class="empty-state order-empty">

@@ -455,7 +455,10 @@ def fallback_image_review(exc: Exception) -> ImageReviewResult:
 class AgentApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self._send_json({"ok": True})
+            self._send_json({
+                "ok": True,
+                "persistence_ok": PERSISTENCE is not None,
+            })
             return
         if self.path.startswith("/api/traces"):
             self._send_json({"items": list(TRACE_HISTORY)})

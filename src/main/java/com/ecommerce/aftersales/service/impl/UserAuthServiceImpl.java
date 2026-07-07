@@ -5,6 +5,7 @@ import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.LoginRequest;
 import com.ecommerce.aftersales.dto.RegisterRequest;
 import com.ecommerce.aftersales.dto.ResetPasswordRequest;
+import com.ecommerce.aftersales.dto.UpdateUserProfileRequest;
 import com.ecommerce.aftersales.entity.User;
 import com.ecommerce.aftersales.mapper.UserMapper;
 import com.ecommerce.aftersales.service.UserAuthService;
@@ -82,6 +83,31 @@ public class UserAuthServiceImpl implements UserAuthService {
     }
 
     @Override
+    public UserProfileResponse getProfile(Long userId) {
+        return toProfile(requireUser(userId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UserProfileResponse updateProfile(Long userId, UpdateUserProfileRequest request) {
+        User user = requireUser(userId);
+        if (request != null) {
+            if (request.getNickname() != null) {
+                String nickname = request.getNickname().trim();
+                if (!StringUtils.hasText(nickname)) {
+                    throw new BizException("昵称不能为空");
+                }
+                user.setNickname(nickname);
+            }
+            if (request.getAvatarUrl() != null) {
+                user.setAvatarUrl(request.getAvatarUrl().trim());
+            }
+        }
+        userMapper.updateById(user);
+        return toProfile(user);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void resetPassword(ResetPasswordRequest request) {
         if (!request.getNewPassword().equals(request.getConfirmPassword())) {
@@ -106,6 +132,14 @@ public class UserAuthServiceImpl implements UserAuthService {
         return userMapper.selectOne(new LambdaQueryWrapper<User>()
                 .eq(User::getOpenid, openid)
                 .last("limit 1"));
+    }
+
+    private User requireUser(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException(404, "用户不存在");
+        }
+        return user;
     }
 
     private UserProfileResponse toProfile(User user) {

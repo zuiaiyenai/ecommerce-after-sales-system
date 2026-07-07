@@ -174,7 +174,35 @@ const overview = {
 const todos = [];
 
 const performance = {
-  metrics: []
+  metrics: [
+    {
+      label: '平均处理时长',
+      value: '6分30秒',
+      desc: '目标 ≤ 08:00',
+      currentPercent: 100,
+      targetPercent: 100,
+      sampleSize: 3,
+      lowerIsBetter: true
+    },
+    {
+      label: '用户满意度',
+      value: '5.0/5',
+      desc: '目标 ≥ 4.5/5',
+      currentPercent: 100,
+      targetPercent: 90,
+      sampleSize: 3,
+      lowerIsBetter: false
+    },
+    {
+      label: '好评率',
+      value: '100%',
+      desc: '目标 ≥ 90%',
+      currentPercent: 100,
+      targetPercent: 90,
+      sampleSize: 3,
+      lowerIsBetter: false
+    }
+  ]
 };
 
 function normalizeBaseUrl(url) {
@@ -218,8 +246,9 @@ function saveToken(newToken) {
 }
 
 async function request(path, options = {}) {
+  const hasBody = options.body != null || (options.method && options.method.toUpperCase() !== 'GET');
   const headers = {
-    'Content-Type': 'application/json',
+    ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {})
   };
   const response = await fetch(buildUrl(path), {
@@ -237,6 +266,25 @@ function delay(data, ms = 140) {
   return new Promise((resolve) => {
     window.setTimeout(() => resolve(structuredClone(data)), ms);
   });
+}
+
+function formatStaffNo(profile = {}) {
+  const current = profile.staffNo ? String(profile.staffNo) : '';
+  if (/^CS\d{1,6}$/.test(current)) {
+    return current;
+  }
+  const source = current.match(/^CS(\d+)$/)?.[1] || (profile.staffId == null ? '' : String(profile.staffId));
+  if (!/^\d+$/.test(source)) {
+    return current;
+  }
+  return `CS${source.slice(-4).padStart(4, '0')}`;
+}
+
+function normalizeStaffProfile(profile = {}) {
+  return {
+    ...profile,
+    staffNo: formatStaffNo(profile)
+  };
 }
 
 function formatTime(date) {
@@ -292,8 +340,8 @@ export async function login(credentials) {
     if (credentials.account !== 'cs_demo' || credentials.password !== '123456' || credentials.merchantCode !== 'MERCHANT_DEMO') {
       throw new Error('账号或密码错误');
     }
-    staffProfile = {
-      staffId: 1,
+    staffProfile = normalizeStaffProfile({
+      staffId: '1',
       staffNo: 'CS0001',
       merchantCode: credentials.merchantCode,
       account: credentials.account,
@@ -301,7 +349,7 @@ export async function login(credentials) {
       role: 'CUSTOMER_SERVICE',
       onlineStatus: 'ONLINE',
       maxSessionCount: 8
-    };
+    });
     saveToken('demo-token');
     return delay({ token: 'demo-token', staff: staffProfile });
   }
@@ -310,8 +358,8 @@ export async function login(credentials) {
     body: JSON.stringify(credentials)
   });
   saveToken(data.token);
-  staffProfile = data.staff;
-  return data;
+  staffProfile = normalizeStaffProfile(data.staff);
+  return { ...data, staff: staffProfile };
 }
 
 export async function logout() {
@@ -337,8 +385,8 @@ export async function getCurrentStaff() {
     return delay(staffProfile);
   }
   const data = await request('/api/merchant-cs/auth/me');
-  staffProfile = { ...staffProfile, ...data };
-  return data;
+  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
+  return staffProfile;
 }
 
 export async function updateWorkStatus(onlineStatus) {
@@ -350,8 +398,8 @@ export async function updateWorkStatus(onlineStatus) {
     method: 'PUT',
     body: JSON.stringify({ onlineStatus })
   });
-  staffProfile.onlineStatus = data.onlineStatus;
-  return data;
+  staffProfile = normalizeStaffProfile({ ...staffProfile, ...data });
+  return staffProfile;
 }
 
 // ==================== Dashboard ====================

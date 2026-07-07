@@ -3,7 +3,8 @@
     <!-- 顶部：头像和用户名 -->
     <view class="header" @tap="editProfile">
       <view class="user-row">
-        <view class="avatar">{{ initial }}</view>
+        <image v-if="avatarUrl" class="avatar avatar-image" :src="avatarUrl" mode="aspectFill" />
+        <view v-else class="avatar">{{ initial }}</view>
         <view class="user-info">
           <text class="user-name">{{ userInfo.nickname || '用户' }}</text>
           <text class="user-phone">{{ maskPhone(userInfo.phone) }}</text>
@@ -55,7 +56,9 @@
     <!-- 底部导航 -->
     <view class="bottom-nav">
       <view v-for="item in navItems" :key="item.key" class="nav-item" :class="{ active: activeTab === item.key }" @tap="switchTab(item.key)">
-        <text class="nav-icon">{{ item.icon }}</text>
+        <view class="nav-icon">
+          <image class="nav-icon-img" :src="item.icon" mode="aspectFit" />
+        </view>
         <text class="nav-label">{{ item.label }}</text>
       </view>
     </view>
@@ -64,7 +67,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
 import { resolveOrderAfterSalesSnapshot, resolveOrderDisplay } from '../../utils/orderStatus'
 
@@ -74,9 +77,9 @@ const allOrders = ref([])
 const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
-  { key: 'home', label: '首页', icon: '⌂' },
-  { key: 'chat', label: '咨询', icon: '◇' },
-  { key: 'mine', label: '我的', icon: '◒' }
+  { key: 'home', label: '首页', icon: '/static/images/mine/nav-home.png' },
+  { key: 'chat', label: '咨询', icon: '/static/images/mine/nav-chat.png' },
+  { key: 'mine', label: '我的', icon: '/static/images/mine/nav-mine.png' }
 ]
 
 // 从API数据计算概览
@@ -114,6 +117,22 @@ const initial = computed(() => {
   return name.slice(0, 1)
 })
 
+const avatarUrl = computed(() => normalizeImageUrl(userInfo.value.avatarUrl))
+
+async function loadUserInfo() {
+  userInfo.value = uni.getStorageSync('userInfo') || {}
+  try {
+    const profile = await request({ url: '/miniapp/user/profile' })
+    userInfo.value = {
+      ...userInfo.value,
+      ...profile
+    }
+    uni.setStorageSync('userInfo', userInfo.value)
+  } catch (e) {
+    console.error('加载用户资料失败', e)
+  }
+}
+
 async function loadData() {
   try {
     const ordersData = await request({ url: '/orders' })
@@ -124,7 +143,11 @@ async function loadData() {
 }
 
 onLoad(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
+  loadUserInfo()
+})
+
+onShow(() => {
+  loadUserInfo()
   loadData()
 })
 
@@ -208,6 +231,12 @@ function logout() {
   color: #ffffff;
   font-weight: 900;
   font-size: 32rpx;
+}
+
+.avatar-image {
+  display: block;
+  line-height: 1;
+  background: #f5f3ef;
 }
 
 .user-info {
@@ -366,6 +395,10 @@ function logout() {
   color: #c97b5a;
 }
 
+.order-status.paid {
+  color: #c97b5a;
+}
+
 .order-status.waiting {
   color: #999;
 }
@@ -412,12 +445,23 @@ function logout() {
 }
 
 .nav-icon {
-  font-size: 36rpx;
-  color: #999;
+  position: relative;
+  width: 40rpx;
+  height: 40rpx;
+  overflow: hidden;
 }
 
-.nav-item.active .nav-icon {
-  color: #c97b5a;
+.nav-icon-img {
+  position: absolute;
+  left: -28rpx;
+  top: -28rpx;
+  width: 96rpx;
+  height: 96rpx;
+  filter: grayscale(1) saturate(0) opacity(0.62);
+}
+
+.nav-item.active .nav-icon-img {
+  filter: none;
 }
 
 .nav-label {

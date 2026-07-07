@@ -5,6 +5,7 @@ import com.ecommerce.aftersales.config.AgentGatewayProperties;
 import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.service.AgentGatewayService;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +29,9 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class AgentGatewayServiceImpl implements AgentGatewayService {
+
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
+    };
 
     private final RestTemplate agentRestTemplate;
     private final AgentGatewayProperties properties;
@@ -105,13 +109,35 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
         );
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new BizException(502, "Agent 服务调用失败，HTTP 状态码: " + response.statusCode());
+            String detail = extractAgentErrorMessage(response.body());
+            String message = "Agent 服务调用失败，HTTP 状态码: " + response.statusCode();
+            if (!detail.isBlank()) {
+                message += "，原因: " + detail;
+            }
+            throw new BizException(502, message);
         }
         T payload = objectMapper.readValue(response.body(), responseType);
         if (payload == null) {
             throw new BizException(502, "Agent 服务返回了空响应");
         }
         return payload;
+    }
+
+    private String extractAgentErrorMessage(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return "";
+        }
+        try {
+            Map<String, Object> payload = objectMapper.readValue(responseBody, MAP_TYPE);
+            Object message = payload.get("message");
+            if (message != null && !String.valueOf(message).isBlank()) {
+                return String.valueOf(message);
+            }
+            Object error = payload.get("error");
+            return error == null ? "" : String.valueOf(error);
+        } catch (JsonProcessingException exception) {
+            return responseBody.length() > 160 ? responseBody.substring(0, 160) : responseBody;
+        }
     }
 
     private AgentGatewayDtos.ReviewImagesResponse buildImageReviewFallback(Exception exception) {

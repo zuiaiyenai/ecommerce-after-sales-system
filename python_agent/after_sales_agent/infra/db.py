@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 import json
+import os
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -24,7 +26,7 @@ class DatabaseConfig:
 
     @classmethod
     def from_env_file(cls, env_path: str | Path | None = None) -> "DatabaseConfig":
-        values = _read_env_file(env_path)
+        values = _read_database_values(env_path)
         return cls(
             host=values.get("MYSQL_HOST", "localhost"),
             port=int(values.get("MYSQL_PORT", "3306")),
@@ -1176,7 +1178,46 @@ class MySQLRepository:
         return value if isinstance(value, datetime) else None
 
 
-def _read_env_file(path: str | Path) -> dict[str, str]:
+def _read_database_values(path: str | Path | None) -> dict[str, str]:
+    env_values = _read_process_env()
+    file_values: dict[str, str] = {}
+    try:
+        file_values = _read_env_file(path)
+    except FileNotFoundError:
+        if path is not None:
+            raise
+
+    values = {**_read_spring_datasource_config(), **file_values, **env_values}
+    missing = [key for key in ("MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE") if key not in values]
+    if missing:
+        raise FileNotFoundError(
+            "Database config is incomplete. Missing: "
+            + ", ".join(missing)
+            + ". Provide db.local.env or Spring datasource config."
+        )
+    return values
+
+
+def _read_process_env() -> dict[str, str]:
+    mapping = {
+        "MYSQL_HOST": ("MYSQL_HOST",),
+        "MYSQL_PORT": ("MYSQL_PORT",),
+        "MYSQL_USER": ("MYSQL_USER", "DB_USERNAME"),
+        "MYSQL_PASSWORD": ("MYSQL_PASSWORD", "DB_PASSWORD"),
+        "MYSQL_DATABASE": ("MYSQL_DATABASE",),
+        "MYSQL_CHARSET": ("MYSQL_CHARSET",),
+    }
+    values: dict[str, str] = {}
+    for target, aliases in mapping.items():
+        for alias in aliases:
+            value = os.getenv(alias)
+            if value is not None:
+                values[target] = value
+                break
+    return values
+
+
+def _read_env_file(path: str | Path | None) -> dict[str, str]:
     env: dict[str, str] = {}
     file_path = _resolve_env_file(path)
     for line in file_path.read_text(encoding="utf-8").splitlines():
@@ -1186,6 +1227,79 @@ def _read_env_file(path: str | Path) -> dict[str, str]:
         key, value = stripped.split("=", 1)
         env[key.strip()] = value.strip()
     return env
+
+
+def _read_spring_datasource_config() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[3]
+    resource_dir = root / "src" / "main" / "resources"
+    application_yml = resource_dir / "application.yml"
+    application_local_yml = resource_dir / "application-local.yml"
+
+    datasource: dict[str, str] = {}
+    for file_path in (application_yml, application_local_yml):
+        datasource.update(_extract_spring_datasource(file_path))
+
+    values: dict[str, str] = {}
+    jdbc_url = datasource.get("url")
+    if jdbc_url:
+        values.update(_parse_jdbc_mysql_url(_resolve_placeholders(jdbc_url)))
+    if datasource.get("username") is not None:
+        values["MYSQL_USER"] = _resolve_placeholders(datasource["username"])
+    if datasource.get("password") is not None:
+        values["MYSQL_PASSWORD"] = _resolve_placeholders(datasource["password"])
+    return values
+
+
+def _extract_spring_datasource(file_path: Path) -> dict[str, str]:
+    if not file_path.exists():
+        return {}
+
+    result: dict[str, str] = {}
+    in_spring = False
+    in_datasource = False
+    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = raw_line.strip()
+
+        if indent == 0:
+            in_spring = stripped == "spring:"
+            in_datasource = False
+            continue
+        if in_spring and indent == 2:
+            in_datasource = stripped == "datasource:"
+            continue
+        if in_spring and in_datasource and indent >= 4 and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            result[key.strip()] = _strip_yaml_scalar(value.strip())
+    return result
+
+
+def _strip_yaml_scalar(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _resolve_placeholders(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        default = match.group(2) or ""
+        return os.getenv(key, default)
+
+    return re.sub(r"\$\{([^}:]+)(?::([^}]*))?\}", replace, value)
+
+
+def _parse_jdbc_mysql_url(url: str) -> dict[str, str]:
+    match = re.match(r"jdbc:mysql://([^:/?]+)(?::(\d+))?/([^?]+)", url)
+    if not match:
+        return {}
+    return {
+        "MYSQL_HOST": match.group(1),
+        "MYSQL_PORT": match.group(2) or "3306",
+        "MYSQL_DATABASE": match.group(3),
+    }
 
 
 def _resolve_env_file(path: str | Path | None) -> Path:

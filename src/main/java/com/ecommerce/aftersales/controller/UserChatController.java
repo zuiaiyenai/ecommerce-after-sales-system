@@ -93,7 +93,7 @@ public class UserChatController {
             addMessage(session.getId(), "USER", request.getMessage(), "TEXT");
         }
         CreateSessionResponse response = new CreateSessionResponse();
-        response.setSessionId(session.getId());
+        response.setSessionId(asIdString(session.getId()));
         response.setSessionNo(session.getSessionNo());
         response.setMerchantCode(session.getMerchantCode());
         response.setMode(session.getMode());
@@ -139,7 +139,7 @@ public class UserChatController {
         }
 
         SendMessageResponse response = new SendMessageResponse();
-        response.setSessionId(session.getId());
+        response.setSessionId(asIdString(session.getId()));
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setReply(reply);
@@ -160,7 +160,7 @@ public class UserChatController {
                 .map(this::toMessageView)
                 .toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
-        response.setSessionId(sessionId);
+        response.setSessionId(asIdString(sessionId));
         response.setList(messages);
         return ApiResponse.success("获取成功", response);
     }
@@ -169,7 +169,7 @@ public class UserChatController {
         try {
             chatWebSocketHandler.broadcastToSession(sessionId, WsChatMessage.builder()
                     .action("message")
-                    .sessionId(sessionId)
+                    .sessionId(asIdString(sessionId))
                     .role(role)
                     .content(content)
                     .messageType(messageType)
@@ -317,11 +317,15 @@ public class UserChatController {
 
     private ChatMessageView toMessageView(ChatMessage message) {
         ChatMessageView view = new ChatMessageView();
-        view.setId(message.getId());
+        view.setId(asIdString(message.getId()));
         view.setRole("USER".equals(message.getRole()) ? "user" : "service");
         view.setContent(message.getContent());
         view.setMessageType(message.getMessageType());
         view.setCreateTime(message.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(message.getCreateTime()));
         return view;
+    }
+
+    private String asIdString(Long id) {
+        return id == null ? null : id.toString();
     }
 }

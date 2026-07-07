@@ -11,7 +11,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class WsChatMessage {
     private String action;      // "subscribe", "unsubscribe", "message"
-    private Long sessionId;
+    private String sessionId;
     private String role;        // USER, ASSISTANT, SYSTEM
     private String content;
     private String messageType; // TEXT, IMAGE

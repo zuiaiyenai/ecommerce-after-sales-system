@@ -155,6 +155,11 @@ export function buildSelectedOrder(order = {}, extra = {}) {
   }
 }
 
+function normalizeSessionId(sessionId) {
+  const value = String(sessionId || '').trim()
+  return value || null
+}
+
 export function buildChatPayload({
   order,
   message,
@@ -171,7 +176,7 @@ export function buildChatPayload({
   const selectedOrder = order ? buildSelectedOrder(order, selectedOrderExtra) : null
   const payload = {
     order_id: selectedOrder ? selectedOrder.order_id : (selectedOrderExtra.orderId || ''),
-    session_id: sessionId,
+    session_id: normalizeSessionId(sessionId),
     message,
     description,
     human_request_count: humanRequestCount,

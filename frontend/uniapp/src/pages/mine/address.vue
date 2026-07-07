@@ -1,14 +1,5 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">收货地址</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 地址列表 -->
     <scroll-view class="list-area" scroll-y>
       <view v-if="addresses.length === 0" class="empty">
@@ -92,10 +83,6 @@ const form = reactive({
   detail: '',
   isDefault: false
 })
-
-function goBack() {
-  uni.navigateBack()
-}
 
 function closeForm() {
   showForm.value = false
@@ -185,48 +172,22 @@ function setDefault(id) {
 
 <style scoped>
 .page {
+  height: 100vh;
   min-height: 100vh;
   background: #f0eeea;
   display: flex;
   flex-direction: column;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
+  overflow: hidden;
 }
 
 /* 列表 */
 .list-area {
   flex: 1;
+  min-height: 0;
+  width: 100%;
   padding: 20rpx 28rpx;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .empty {
@@ -248,32 +209,46 @@ function setDefault(id) {
 
 /* 地址卡片 */
 .address-card {
+  width: 100%;
   margin-bottom: 20rpx;
   padding: 24rpx;
+  box-sizing: border-box;
   background: #ffffff;
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+  overflow: hidden;
 }
 
 .addr-header {
   display: flex;
   align-items: center;
   gap: 16rpx;
+  min-width: 0;
 }
 
 .addr-name {
+  flex-shrink: 0;
+  max-width: 160rpx;
   font-size: 30rpx;
   font-weight: 700;
   color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .addr-phone {
+  min-width: 0;
   font-size: 26rpx;
   color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .default-tag {
+  flex-shrink: 0;
   padding: 2rpx 12rpx;
   border-radius: 8rpx;
   background: #fff5f0;
@@ -288,12 +263,17 @@ function setDefault(id) {
   font-size: 26rpx;
   color: #666;
   line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .addr-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16rpx;
+  min-width: 0;
   margin-top: 20rpx;
   padding-top: 20rpx;
   border-top: 1rpx solid rgba(0,0,0,0.04);
@@ -302,6 +282,8 @@ function setDefault(id) {
 .addr-action {
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
   gap: 8rpx;
 }
 
@@ -315,12 +297,17 @@ function setDefault(id) {
 }
 
 .radio-label {
+  min-width: 0;
   font-size: 24rpx;
   color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .addr-btns {
   display: flex;
+  flex-shrink: 0;
   gap: 20rpx;
 }
 
@@ -337,13 +324,16 @@ function setDefault(id) {
 .bottom-bar {
   padding: 20rpx 28rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+  box-sizing: border-box;
   background: #ffffff;
   border-top: 1rpx solid rgba(0,0,0,0.06);
+  flex-shrink: 0;
 }
 
 .add-btn {
   height: 88rpx;
   line-height: 88rpx;
+  margin: 0;
   background: linear-gradient(135deg, #c97b5a, #b86a4a);
   border-radius: 20rpx;
   color: #ffffff;
@@ -351,6 +341,12 @@ function setDefault(id) {
   font-weight: 700;
   border: none;
   box-shadow: 0 4rpx 16rpx rgba(244,90,11,0.3);
+}
+
+.add-btn::after,
+.cancel-btn::after,
+.save-btn::after {
+  border: none;
 }
 
 /* 弹窗 */
@@ -369,6 +365,7 @@ function setDefault(id) {
 .modal-content {
   width: 100%;
   padding: 32rpx;
+  box-sizing: border-box;
   background: #ffffff;
   border-radius: 24rpx 24rpx 0 0;
 }
@@ -402,6 +399,7 @@ function setDefault(id) {
 .form-input {
   height: 80rpx;
   padding: 0 24rpx;
+  box-sizing: border-box;
   background: #f5f3ef;
   border-radius: 16rpx;
   font-size: 28rpx;
@@ -423,6 +421,7 @@ function setDefault(id) {
   flex: 1;
   height: 80rpx;
   line-height: 80rpx;
+  margin: 0;
   background: #f5f3ef;
   border-radius: 16rpx;
   color: #666;
@@ -435,6 +434,7 @@ function setDefault(id) {
   flex: 2;
   height: 80rpx;
   line-height: 80rpx;
+  margin: 0;
   background: linear-gradient(135deg, #c97b5a, #b86a4a);
   border-radius: 16rpx;
   color: #ffffff;
