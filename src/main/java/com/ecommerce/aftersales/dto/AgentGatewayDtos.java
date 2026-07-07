@@ -84,8 +84,9 @@ public class AgentGatewayDtos {
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ChatRequest {
+        private String user_id;
         private String order_id;
-        private Integer session_id;
+        private Long session_id;
 
         @NotBlank(message = "message不能为空")
         private String message;
@@ -183,6 +184,9 @@ public class AgentGatewayDtos {
         private String intent;
         private String suggested_action;
         private List<String> evidence_needed;
+        private Boolean need_human;
+        private String session_mode;
+        private List<Map<String, Object>> tool_trace;
         private Map<String, Object> confidence;
         private String fallback_decision;
         private String fallback_progress_hint;

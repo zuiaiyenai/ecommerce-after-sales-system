@@ -76,6 +76,17 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         if (order == null) {
             throw new BizException(404, "订单不存在");
         }
+
+        // 检查是否已经存在进行中的售后申请
+        LambdaQueryWrapper<AfterSalesTicket> existingWrapper = new LambdaQueryWrapper<>();
+        existingWrapper.eq(AfterSalesTicket::getOrderId, order.getId())
+                      .in(AfterSalesTicket::getStatus, "PENDING", "PROCESSING")
+                      .orderByDesc(AfterSalesTicket::getCreateTime);
+        AfterSalesTicket existingTicket = afterSalesTicketMapper.selectOne(existingWrapper);
+        if (existingTicket != null) {
+            throw new BizException(400, "该订单已有进行中的售后申请");
+        }
+
         AfterSalesTicket ticket = new AfterSalesTicket();
         // 生成工单号
         ticket.setTicketNo("AS" + System.currentTimeMillis());
@@ -90,9 +101,39 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         ticket.setReasonDetail(afterSalesVO.getReasonDetail());
         ticket.setDescription(afterSalesVO.getDescription());
         ticket.setRefundAmount(resolveRefundAmount(afterSalesVO, order));
-        ticket.setStatus("PENDING");
-        ticket.setPriority(0);
+        ticket.setAiClassifyResult(afterSalesVO.getAiClassifyResult());
+        ticket.setAiConfidence(afterSalesVO.getAiConfidence());
+        ticket.setAiRecommendType(afterSalesVO.getAiRecommendType());
+
+        // AI判断逻辑：如果autoApproved=true且证据充分，自动进入PROCESSING状态，并保存AI建议
+        Boolean autoApproved = afterSalesVO.getAutoApproved();
+        if (Boolean.TRUE.equals(autoApproved)) {
+            ticket.setStatus("PROCESSING");
+            ticket.setAuditOpinion(buildAiSuggestion(afterSalesVO));
+            ticket.setPriority(1);
+        } else {
+            ticket.setStatus("PENDING");
+            ticket.setPriority(0);
+        }
+
         afterSalesTicketMapper.insert(ticket);
+
+        // 创建日志记录
+        TicketLog log = new TicketLog();
+        log.setTicketId(ticket.getId());
+        log.setOperatorId(userId);
+        log.setOperatorType("USER");
+        log.setAction("CREATE");
+        if (Boolean.TRUE.equals(autoApproved)) {
+            log.setFromStatus(null);
+            log.setToStatus("PROCESSING");
+            log.setContent("AI客服判断证据充分，建议通过，待人工最终审核");
+        } else {
+            log.setFromStatus(null);
+            log.setToStatus("PENDING");
+            log.setContent("用户提交售后申请，等待审核");
+        }
+        ticketLogMapper.insert(log);
 
         // Save attachments
         if (afterSalesVO.getAttachmentUrls() != null && !afterSalesVO.getAttachmentUrls().isEmpty()) {
@@ -110,6 +151,23 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         }
 
         return convertToVO(ticket);
+    }
+
+    private String buildAiSuggestion(AfterSalesVO afterSalesVO) {
+        StringBuilder suggestion = new StringBuilder("AI客服建议：");
+
+        if (afterSalesVO.getAiClassifyResult() != null && afterSalesVO.getAiClassifyResult().contains("reason")) {
+            suggestion.append("建议通过售后申请。");
+        } else {
+            suggestion.append("建议通过。");
+        }
+
+        if (afterSalesVO.getReasonDetail() != null && !afterSalesVO.getReasonDetail().isEmpty()) {
+            suggestion.append(" 原因：").append(afterSalesVO.getReasonDetail());
+        }
+
+        suggestion.append(" 最终处理仍需人工审核确认。");
+        return suggestion.toString();
     }
 
     private BigDecimal resolveRefundAmount(AfterSalesVO afterSalesVO, OrderInfo order) {

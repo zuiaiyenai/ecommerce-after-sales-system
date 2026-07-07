@@ -37,6 +37,7 @@ public class SecurityConfig {
                         .requestMatchers("/miniapp/public/**").permitAll()
                         .requestMatchers("/products/**").permitAll()
                         .requestMatchers("/agent/**").permitAll()
+                        .requestMatchers("/internal/agent-tools/**").permitAll()
                         .requestMatchers("/merchant-cs/auth/login").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/static/**").permitAll()

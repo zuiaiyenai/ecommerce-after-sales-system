@@ -130,6 +130,22 @@
       </view>
     </view>
 
+    <!-- AI评估结果（状态为PROCESSING时显示） -->
+    <view class="card ai-eval-card" v-if="hasAfterSale && afterSaleInfo.status === 'PROCESSING' && afterSaleInfo.auditOpinion">
+      <view class="ai-eval-header">
+        <text class="ai-icon">🤖</text>
+        <text class="card-title">AI评估结果</text>
+      </view>
+      <view class="divider"></view>
+      <view class="ai-eval-content">
+        <text class="ai-eval-text">{{ afterSaleInfo.auditOpinion }}</text>
+        <view class="ai-eval-note">
+          <text class="note-icon">ℹ️</text>
+          <text class="note-text">AI评估仅供参考，最终处理结果以人工审核为准</text>
+        </view>
+      </view>
+    </view>
+
     <!-- 底部按钮 -->
     <view class="bottom-bar">
       <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">进入客服咨询</button>
@@ -452,8 +468,8 @@ function buildAfterSaleSteps(ticket) {
     ],
     PROCESSING: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
-      { title: '审核通过', desc: ticket.auditOpinion || '已通过审核', time: auditTime, done: true, active: false },
-      { title: '处理中', desc: '退款/换货处理中', time: '', done: false, active: true },
+      { title: 'AI初步评估', desc: ticket.auditOpinion || 'AI客服判断证据充分，建议通过', time: auditTime, done: true, active: false },
+      { title: '人工审核中', desc: '最终处理需人工审核确认', time: '', done: false, active: true },
       { title: '已完成', desc: '售后已完结', time: '', done: false, active: false }
     ],
     REJECTED: [
@@ -561,6 +577,55 @@ function applyAfterSale() {
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+}
+
+.ai-eval-card {
+  background: linear-gradient(135deg, #fff9f0 0%, #fff4e8 100%);
+  border: 2rpx solid #f4d9b8;
+}
+
+.ai-eval-header {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.ai-icon {
+  font-size: 32rpx;
+}
+
+.ai-eval-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.ai-eval-text {
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: #1a1a1a;
+}
+
+.ai-eval-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8rpx;
+  padding: 16rpx;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 12rpx;
+  border: 1rpx solid rgba(201, 123, 90, 0.2);
+}
+
+.note-icon {
+  font-size: 24rpx;
+  flex-shrink: 0;
+}
+
+.note-text {
+  flex: 1;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #8a776c;
 }
 
 .card-title { display: block; font-size: 28rpx; font-weight: 700; color: #1a1a1a; }

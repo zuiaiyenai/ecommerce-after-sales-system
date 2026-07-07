@@ -151,7 +151,8 @@ export function buildSelectedOrder(order = {}, extra = {}) {
     refund_status: String(extra.refundStatus || order.refundStatus || '未进入退款流程'),
     logistics_status: String(extra.logisticsStatus || order.statusText || '待更新'),
     has_open_after_sales: hasOpenAfterSales,
-    uploaded_evidence: uploadedEvidence
+    uploaded_evidence: uploadedEvidence,
+    existing_ticket_no: String(extra.existingTicketNo || order.latestAfterSalesTicketNo || '')
   }
 }
 
@@ -170,6 +171,7 @@ export function buildChatPayload({
 }) {
   const selectedOrder = order ? buildSelectedOrder(order, selectedOrderExtra) : null
   const payload = {
+    user_id: selectedOrder ? selectedOrder.user_id : String(selectedOrderExtra.userId || getCurrentUserId()),
     order_id: selectedOrder ? selectedOrder.order_id : (selectedOrderExtra.orderId || ''),
     session_id: sessionId,
     message,

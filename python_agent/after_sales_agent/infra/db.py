@@ -242,6 +242,62 @@ class MySQLRepository:
                 row = cur.fetchone()
         return str(row[0]) if row else None
 
+    def get_chat_session_by_id(self, session_id: int) -> dict[str, Any] | None:
+        sql = """
+        SELECT id, session_no, user_id, order_id, ticket_id, mode, status
+        FROM chat_session
+        WHERE id = %s AND deleted = 0
+        LIMIT 1
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (session_id,))
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row[0]),
+            "session_no": row[1],
+            "user_id": int(row[2]) if row[2] is not None else None,
+            "order_id": int(row[3]) if row[3] is not None else None,
+            "ticket_id": int(row[4]) if row[4] is not None else None,
+            "mode": row[5],
+            "status": row[6],
+        }
+
+    def find_human_session_for_order(self, order_no: str, user_id: int | None = None) -> dict[str, Any] | None:
+        order_db_id = self.resolve_order_db_id(order_no)
+        if order_db_id is None:
+            return None
+        sql = """
+        SELECT id, session_no, user_id, order_id, ticket_id, mode, status
+        FROM chat_session
+        WHERE order_id = %s
+          AND (%s IS NULL OR user_id = %s)
+          AND deleted = 0
+          AND (
+            mode = 'HUMAN'
+            OR status IN ('WAITING', 'PROCESSING', 'AWAITING_EVALUATION', 'READY_TO_CLOSE')
+          )
+        ORDER BY update_time DESC, create_time DESC
+        LIMIT 1
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (order_db_id, user_id, user_id))
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row[0]),
+            "session_no": row[1],
+            "user_id": int(row[2]) if row[2] is not None else None,
+            "order_id": int(row[3]) if row[3] is not None else None,
+            "ticket_id": int(row[4]) if row[4] is not None else None,
+            "mode": row[5],
+            "status": row[6],
+        }
+
     def find_or_create_agent_ticket(
         self,
         *,
@@ -498,7 +554,7 @@ class MySQLRepository:
           AND ((order_id = %s) OR (%s IS NULL AND order_id IS NULL))
           AND ((ticket_id = %s) OR (%s IS NULL AND ticket_id IS NULL))
           AND deleted = 0
-          AND status IN ('ACTIVE', 'WAITING')
+          AND status IN ('ACTIVE', 'WAITING', 'PROCESSING', 'AWAITING_EVALUATION', 'READY_TO_CLOSE')
         ORDER BY update_time DESC, create_time DESC
         LIMIT 1
         """

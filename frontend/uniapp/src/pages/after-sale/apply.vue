@@ -27,7 +27,10 @@
     </view>
 
     <view class="card">
-      <text class="card-title">问题描述</text>
+      <view class="title-row">
+        <text class="card-title">问题描述</text>
+        <text class="required-badge">必填</text>
+      </view>
       <view class="divider"></view>
       <textarea
         v-model="description"
@@ -36,12 +39,16 @@
         maxlength="500"
       />
       <view class="desc-footer">
+        <text class="desc-tip">请描述至少20字，以便AI客服准确判断</text>
         <text class="char-count">{{ description.length }}/500</text>
       </view>
     </view>
 
     <view class="card">
-      <text class="card-title">上传凭证</text>
+      <view class="title-row">
+        <text class="card-title">上传凭证</text>
+        <text class="required-badge">建议上传</text>
+      </view>
       <view class="divider"></view>
       <view class="image-grid">
         <view v-for="(img, index) in images" :key="index" class="image-item">
@@ -53,7 +60,7 @@
           <text class="add-text">添加图片</text>
         </view>
       </view>
-      <text class="image-tip">最多上传 5 张，支持 jpg/png/webp。</text>
+      <text class="image-tip">建议上传商品照片、破损照片或包装照片，最多 5 张。AI客服会根据图片快速判断。</text>
     </view>
 
     <button class="submit-btn" :disabled="!selectedReason || submitting" @tap="submit">
@@ -141,6 +148,10 @@ async function submit() {
     uni.showToast({ title: '请选择售后原因', icon: 'none' })
     return
   }
+  if (!description.value.trim() || description.value.trim().length < 20) {
+    uni.showToast({ title: '问题描述至少需要20字，以便AI客服准确判断', icon: 'none' })
+    return
+  }
   if (!orderData.value || !orderId.value) {
     uni.showToast({ title: '订单信息加载失败', icon: 'none' })
     return
@@ -149,15 +160,35 @@ async function submit() {
   submitting.value = true
   try {
     const reasonLabel = reasons.find((item) => item.value === selectedReason.value)?.label || selectedReason.value
+
+    // 直接调用后端创建售后申请（状态=PENDING）
+    const afterSalesData = {
+      orderId: orderId.value,
+      afterSaleType: 'RETURN_REFUND',
+      reason: selectedReason.value,
+      reasonDetail: reasonLabel,
+      description: description.value.trim(),
+      refundAmount: null,
+      attachmentUrls: []
+    }
+
+    const result = await request({
+      url: '/aftersales',
+      method: 'POST',
+      data: afterSalesData
+    })
+
+    // 创建成功后，跳转到对话页面，带上图片信息
     const pendingPayload = {
       orderId: orderId.value,
       orderNo: orderData.value.orderNo || '',
       reasonValue: selectedReason.value,
       reasonLabel,
-      description: description.value.trim() || reasonLabel,
-      initialMessage: `我想申请售后，原因是${reasonLabel}`,
+      description: description.value.trim(),
+      initialMessage: `我的售后申请已提交，原因是${reasonLabel}。${description.value.trim()}`,
       imagePaths: [...images.value],
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ticketNo: result?.ticketNo || ''
     }
 
     uni.setStorageSync(getPendingApplyKey(orderId.value), pendingPayload)
@@ -165,7 +196,17 @@ async function submit() {
       url: `/pages/chat/consult?orderId=${orderId.value}&fromApply=1`
     })
   } catch (error) {
-    uni.showToast({ title: error.message || '进入对话失败，请重试', icon: 'none' })
+    const errorMsg = error.message || error.msg || '创建售后申请失败'
+    if (errorMsg.includes('已有进行中的售后申请')) {
+      uni.showToast({ title: '该订单已有售后申请，正在跳转...', icon: 'none' })
+      setTimeout(() => {
+        uni.redirectTo({
+          url: `/pages/chat/consult?orderId=${orderId.value}`
+        })
+      }, 1500)
+    } else {
+      uni.showToast({ title: errorMsg, icon: 'none' })
+    }
     submitting.value = false
   }
 }
@@ -223,6 +264,21 @@ async function submit() {
   font-size: 30rpx;
   font-weight: 700;
   color: #1a1a1a;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.required-badge {
+  padding: 4rpx 12rpx;
+  background: #fff4e8;
+  border-radius: 8rpx;
+  font-size: 20rpx;
+  color: #c97b5a;
+  font-weight: 600;
 }
 
 .divider {
@@ -289,7 +345,14 @@ async function submit() {
 
 .desc-footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12rpx;
+}
+
+.desc-tip {
+  font-size: 22rpx;
+  color: #c97b5a;
 }
 
 .char-count,

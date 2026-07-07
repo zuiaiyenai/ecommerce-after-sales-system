@@ -16,3 +16,10 @@
 - If the backend inserts additional system messages, status-change messages, evaluation invitations, or human-handoff notices, update the session snapshot/last message in the same transaction or persistence flow.
 - Do not create separate sessions for the same order/after-sale entry point. Entry from order after-sale detail and entry from consultation session list must resolve to the same backend session and the same message history.
 - Hiding/removing a conversation in the UI means "hide from list", not deleting chat messages. A later user message for the same order/after-sale should revive the existing session and keep history.
+
+## After-Sales RAG Troubleshooting
+
+- If Python Agent logs show `knowledge mode = lexical_fallback_after_embedding_error` and `embedding_error = DASHSCOPE_API_KEY or BAILIAN_API_KEY is required`, the knowledge base is not necessarily empty. It usually means the running Python Agent process did not receive the embedding API key.
+- For RAG recall failures, check in this order: Python process environment variables, `PGVECTOR_DSN`, PostgreSQL `knowledge_document`/`knowledge_chunk` data, then retriever SQL and keyword fallback.
+- The standard path should be DashScope `text-embedding-v3` -> pgvector retrieval with `knowledge mode = pgvector`. `lexical_fallback_after_embedding_error` is only a PostgreSQL knowledge-document fallback when embedding cannot run.
+- When restarting Python Agent locally, make sure the same terminal that starts `python_agent/api_server.py` has `DASHSCOPE_API_KEY` and `PGVECTOR_DSN` set.

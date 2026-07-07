@@ -16,6 +16,14 @@ export function getChatHistory(sessionId) {
   return request({ url: `/chat/history?sessionId=${sessionId}` })
 }
 
+export function sendChatMessage(data = {}) {
+  return request({
+    url: '/chat/send',
+    method: 'POST',
+    data
+  })
+}
+
 export function hideChatSession(sessionId) {
   return request({
     url: '/chat/session/hide',

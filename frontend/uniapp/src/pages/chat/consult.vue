@@ -33,10 +33,10 @@
     </view>
 
     <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" scroll-with-animation>
-      <view v-for="(msg, index) in messages" :key="index" class="msg-group">
+      <view v-for="msg in messages" :key="msg.key || `${msg.role}-${msg.time}-${msg.sequence}`" class="msg-group">
         <text v-if="msg.time" class="msg-time">{{ msg.time }}</text>
         <view class="message" :class="msg.role">
-          <view class="msg-bubble" :class="{ 'image-bubble': msg.type === 'IMAGE' }">
+          <view class="msg-bubble" :class="{ 'image-bubble': msg.type === 'IMAGE', 'ai-suggestion-bubble': msg.isAiSuggestion }">
             <image
               v-if="msg.type === 'IMAGE'"
               class="msg-image"
@@ -44,6 +44,14 @@
               mode="aspectFill"
               @tap="previewMessageImage(msg.content)"
             />
+            <view v-else-if="msg.isAiSuggestion" class="ai-suggestion-content">
+              <view class="suggestion-header">
+                <text class="suggestion-icon">🤖</text>
+                <text class="suggestion-title">AI评估结果</text>
+              </view>
+              <text class="msg-text">{{ msg.content }}</text>
+              <text class="suggestion-note">※ 最终处理仍需人工审核确认</text>
+            </view>
             <text v-else class="msg-text">{{ msg.content }}</text>
             <text v-if="msg.meta" class="msg-meta">{{ msg.meta }}</text>
           </view>
@@ -56,15 +64,15 @@
         <text class="action-icon">★</text>
         <text class="action-text">评价服务</text>
       </view>
-      <view class="action-btn" @tap="quickAction('refund')">
+      <view v-if="sessionMode !== 'HUMAN'" class="action-btn" @tap="quickAction('refund')">
         <text class="action-icon">🔄</text>
         <text class="action-text">退款进度</text>
       </view>
-      <view class="action-btn" @tap="quickAction('supplement')">
+      <view v-if="sessionMode !== 'HUMAN'" class="action-btn" @tap="quickAction('supplement')">
         <image class="action-image-icon" src="/static/images/icon-supplement-voucher.png" mode="aspectFit" />
         <text class="action-text">补充凭证</text>
       </view>
-      <view class="action-btn" @tap="quickAction('human')">
+      <view v-if="sessionMode !== 'HUMAN'" class="action-btn" @tap="quickAction('human')">
         <text class="action-icon">👤</text>
         <text class="action-text">人工帮助</text>
       </view>
@@ -112,7 +120,7 @@ import {
   reviewImages,
   saveConversationState
 } from '../../utils/afterSalesAgent'
-import { createChatSession, getChatHistory } from '../../utils/userChat'
+import { createChatSession, getChatHistory, sendChatMessage } from '../../utils/userChat'
 
 const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
@@ -141,9 +149,18 @@ const orderInfo = ref({
 
 const canSend = computed(() => (inputText.value.trim() || attachments.value.length > 0) && !sending.value)
 
+let messageSequence = 0  // 添加消息序号计数器
+
 function getNowTime() {
   const now = new Date()
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+function getNowDateTime() {
+  const now = new Date()
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+  return `${date} ${time}.${String(now.getMilliseconds()).padStart(3, '0')}`
 }
 
 function getConversationKey() {
@@ -162,24 +179,31 @@ function scrollToBottom() {
   })
 }
 
-function addMessage(role, content, meta = '') {
+function addMessage(role, content, meta = '', isAiSuggestion = false) {
   messages.value.push({
+    key: `local-text-${Date.now()}-${messageSequence}`,
     role,
     content,
     type: 'TEXT',
     meta,
-    time: getNowTime()
+    createdAt: getNowDateTime(),
+    time: getNowTime(),
+    isAiSuggestion,
+    sequence: messageSequence++  // 添加序号
   })
   scrollToBottom()
 }
 
 function addImageMessage(role, imagePath) {
   messages.value.push({
+    key: `local-image-${Date.now()}-${messageSequence}`,
     role,
     content: imagePath,
     type: 'IMAGE',
     meta: '',
-    time: getNowTime()
+    createdAt: getNowDateTime(),
+    time: getNowTime(),
+    sequence: messageSequence++  // 添加序号
   })
   scrollToBottom()
 }
@@ -200,20 +224,55 @@ function collectLocalImageMessages() {
   })
 }
 
+function isImagePlaceholderMessage(message) {
+  return message?.type !== 'IMAGE' && String(message?.content || '') === '[图片]'
+}
+
 function mergeLocalImageMessages(remoteMessages, localImages) {
-  const merged = [...remoteMessages]
+  const imageQueue = [...localImages]
+  const consumed = new Set()
+  const allMessages = remoteMessages.map((message) => {
+    if (!isImagePlaceholderMessage(message)) {
+      return message
+    }
+    const imageMessage = imageQueue.find((item) => !consumed.has(item.content))
+    if (!imageMessage) {
+      return null
+    }
+    consumed.add(imageMessage.content)
+    return {
+      ...message,
+      key: `remote-image-${message.id || message.sequence || imageMessage.content}`,
+      content: imageMessage.content,
+      type: 'IMAGE',
+      meta: imageMessage.meta || ''
+    }
+  }).filter(Boolean)
+
   localImages.forEach((imageMessage) => {
-    const exists = merged.some((message) => message.type === 'IMAGE' && message.content === imageMessage.content)
+    if (consumed.has(imageMessage.content)) return
+    // 检查是否已存在（根据content去重）
+    const exists = allMessages.some(
+      (msg) => msg.type === 'IMAGE' && msg.content === imageMessage.content
+    )
     if (exists) return
 
-    const imageTime = imageMessage.time || ''
-    const insertIndex = merged.findIndex((message) => {
-      if (imageTime && message.time && message.time < imageTime) return false
-      return message.role === imageMessage.role
-    })
-    merged.splice(insertIndex >= 0 ? insertIndex : merged.length, 0, imageMessage)
+    // 添加到数组中
+    allMessages.push(imageMessage)
   })
-  return merged
+
+  // 先按完整时间排序，如果时间相同则按sequence排序
+  return allMessages.sort((a, b) => {
+    const timeA = a.createdAt || a.time || '00:00'
+    const timeB = b.createdAt || b.time || '00:00'
+    const timeCompare = timeA.localeCompare(timeB)
+    if (timeCompare !== 0) return timeCompare
+
+    // 时间相同，按sequence排序
+    const seqA = a.sequence ?? 999999
+    const seqB = b.sequence ?? 999999
+    return seqA - seqB
+  })
 }
 
 function goBack() {
@@ -297,6 +356,18 @@ function updateAgentStatusForMode() {
   }
 }
 
+function syncSessionMode(mode, status) {
+  const normalizedMode = String(mode || '').toUpperCase()
+  const normalizedStatus = String(status || '').toUpperCase()
+  if (
+    normalizedMode === 'HUMAN' ||
+    ['WAITING', 'PROCESSING', 'AWAITING_EVALUATION', 'READY_TO_CLOSE'].includes(normalizedStatus)
+  ) {
+    sessionMode.value = 'HUMAN'
+    updateAgentStatusForMode()
+  }
+}
+
 function restoreConversation() {
   const saved = loadConversationState(getConversationKey())
   if (!saved) return false
@@ -306,6 +377,10 @@ function restoreConversation() {
   messages.value = Array.isArray(saved.messages) ? saved.messages : []
   attachments.value = Array.isArray(saved.attachments) ? saved.attachments : []
   lastImageReview.value = saved.lastImageReview || null
+
+  // 初始化messageSequence为已有消息数量
+  messageSequence = messages.value.length
+
   scrollToBottom()
   updateAgentStatusForMode()
   return messages.value.length > 0
@@ -328,13 +403,18 @@ async function loadSessionHistory(id) {
     const localImages = collectLocalImageMessages()
     const result = await getChatHistory(id)
     sessionId.value = String(id)
-    const remoteMessages = (result.list || []).map(item => ({
-      role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
-      content: item.content,
-      type: item.messageType === 'IMAGE' || item.type === 'IMAGE' ? 'IMAGE' : 'TEXT',
-      meta: '',
-      time: item.createTime ? String(item.createTime).slice(11, 16) : ''
-    }))
+    syncSessionMode(result?.mode, result?.status)
+    const remoteMessages = (result.list || []).map((item, index) => ({
+        key: `remote-${item.id || index}`,
+        id: item.id,
+        role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
+        content: item.content,
+        type: item.messageType === 'IMAGE' || item.type === 'IMAGE' ? 'IMAGE' : 'TEXT',
+        meta: '',
+        createdAt: item.createTime || '',
+        time: item.createTime ? String(item.createTime).slice(11, 16) : '',
+        sequence: index
+      }))
     messages.value = mergeLocalImageMessages(remoteMessages, localImages)
     scrollToBottom()
     return true
@@ -358,6 +438,7 @@ async function resolveRemoteSession(options) {
     if (!result?.sessionId) return false
     sessionId.value = String(result.sessionId)
     evaluationPending.value = result.status === 'AWAITING_EVALUATION'
+    syncSessionMode(result.mode, result.status)
     return await loadSessionHistory(result.sessionId)
   } catch (error) {
     return false
@@ -466,9 +547,17 @@ async function applyChatResult(result) {
     }
   }
   if (sessionMode.value === 'HUMAN') {
-    addMessage('service', result?.assistant_reply || '已接入人工客服，请稍候')
+    if (result?.assistant_reply) {
+      addMessage('service', result.assistant_reply)
+    }
   } else {
-    addMessage('service', result?.assistant_reply || '已收到您的问题', buildReplyMeta(result))
+    const assistantReply = result?.assistant_reply || '已收到您的问题'
+    addMessage('service', assistantReply, buildReplyMeta(result))
+
+    // 如果有ticket且状态为PROCESSING，展示AI建议
+    if (result?.ticket && result.ticket.status === 'PROCESSING' && result.ticket.audit_opinion) {
+      addMessage('service', result.ticket.audit_opinion, '', true)
+    }
   }
   persistConversation()
 }
@@ -494,9 +583,61 @@ async function sendAgentMessage({
   description = text,
   imagePaths = attachments.value,
   selectedOrderExtra = {},
-  allowFallbackToDeferredReview = true
+  allowFallbackToDeferredReview = true,
+  renderLocal = true
 }) {
   const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
+  if (renderLocal) {
+    // 先渲染文字，再渲染图片，保证顺序正确
+    // 如果text是占位符[图片]，不渲染
+    if (text && text !== '[图片]') {
+      addMessage('user', text)
+    }
+    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath))
+    persistConversation()
+  }
+  if (sessionMode.value === 'HUMAN') {
+    if (!sessionId.value) {
+      const session = await createChatSession({
+        orderId: orderData.value?.id ? String(orderData.value.id) : null,
+        afterSaleId: orderData.value?.afterSaleId ? String(orderData.value.afterSaleId) : null
+      })
+      if (session?.sessionId) {
+        sessionId.value = String(session.sessionId)
+        syncSessionMode(session.mode, session.status)
+      }
+    }
+    if (!sessionId.value) {
+      throw new Error('人工会话尚未建立，请稍后再试')
+    }
+    if (hasImages) {
+      const humanAttachments = await buildAttachments(imagePaths)
+      await chat(
+        buildChatPayload({
+          order: orderData.value,
+          message: text,
+          description,
+          sessionId: sessionId.value,
+          humanRequestCount: humanRequestCount.value,
+          attachments: humanAttachments,
+          imageReview: null,
+          skipImageReview: true,
+          recentHistory: buildRecentHistoryPayload(),
+          selectedOrderExtra
+        })
+      )
+    } else if (text) {
+      await sendChatMessage({
+        sessionId: sessionId.value,
+        message: text,
+        messageType: 'TEXT'
+      })
+    }
+    await loadSessionHistory(sessionId.value)
+    attachments.value = []
+    persistConversation()
+    return { session_mode: 'HUMAN', assistant_reply: '' }
+  }
   let attachmentPayload = []
   let imageReview = null
   let skipImageReview = !hasImages || sessionMode.value === 'HUMAN'
@@ -578,32 +719,46 @@ async function consumePendingApply(orderId) {
   const userProblem = String(pending.description || pending.initialMessage || pending.reasonLabel || '').trim()
 
   try {
-    const result = await sendAgentMessage({
-      text: userProblem || pending.initialMessage || pending.reasonLabel || '申请售后',
-      description: userProblem || pending.reasonLabel || '',
-      imagePaths,
-      selectedOrderExtra: {
-        hasOpenAfterSales: false,
-        afterSalesStatus: 'not_applied',
-        uploadedEvidence: imagePaths.length > 0 ? ['商品照片'] : [],
-        forceAfterSalesApply: true
-      }
-    })
+    // 如果有图片，发送图片让AI分析
+    if (imagePaths.length > 0) {
+      const result = await sendAgentMessage({
+        text: userProblem || pending.initialMessage || '我已上传售后凭证，请AI客服分析。',
+        description: userProblem || pending.reasonLabel || '',
+        imagePaths,
+        selectedOrderExtra: {
+          hasOpenAfterSales: true,
+          afterSalesStatus: 'PENDING',
+          existingTicketNo: pending.ticketNo || '',
+          uploadedEvidence: ['商品照片']
+        },
+        renderLocal: true
+      })
 
-    const persistedTicketNo = result?.persistence?.ticket_no
-    if (pending.orderId && persistedTicketNo && orderData.value) {
-      orderData.value = {
-        ...orderData.value,
-        hasOpenAfterSales: true,
-        afterSalesStatus: result?.ticket?.status || 'PENDING',
-        afterSalesStatusText: result?.ticket?.status_text || '待审核',
-        latestAfterSalesTicketNo: persistedTicketNo
+      // 如果AI判断通过，更新订单状态
+      if (result?.ticket?.status === 'PROCESSING') {
+        orderData.value = {
+          ...orderData.value,
+          hasOpenAfterSales: true,
+          afterSalesStatus: 'PROCESSING',
+          afterSalesStatusText: '处理中',
+          latestAfterSalesTicketNo: pending.ticketNo || result?.ticket?.ticket_id
+        }
+        applyOrderToView(orderData.value)
       }
-      applyOrderToView(orderData.value)
-    }
-
-    if (persistedTicketNo) {
-      uni.showToast({ title: '已进入售后对话', icon: 'success' })
+    } else {
+      // 没有图片，发送一条消息触发AI引导
+      const result = await sendAgentMessage({
+        text: userProblem || '我的售后申请已提交',
+        description: userProblem || pending.reasonLabel || '',
+        imagePaths: [],
+        selectedOrderExtra: {
+          hasOpenAfterSales: true,
+          afterSalesStatus: 'PENDING',
+          existingTicketNo: pending.ticketNo || '',
+          uploadedEvidence: []
+        },
+        renderLocal: true
+      })
     }
   } catch (error) {
     addMessage('service', error.message || '当前暂时无法获取处理结果，请稍后再试。')
@@ -616,9 +771,11 @@ async function consumePendingApply(orderId) {
 async function sendMessage() {
   const typedText = inputText.value.trim()
   if ((!typedText && attachments.value.length === 0) || sending.value) return
-  const text = typedText || '我上传了售后凭证图片，请先分析。'
 
-  if (/人工|客服|真人/.test(text)) {
+  // 完全不自动添加文字，用户没输入就不发送文本消息
+  const text = typedText
+
+  if (text && /人工|客服|真人/.test(text)) {
     humanRequestCount.value += 1
   }
 
@@ -627,10 +784,20 @@ async function sendMessage() {
   sending.value = true
 
   try {
+    // 如果用户没输入文字但上传了图片，传给后端一个占位符（后端要求message非空）
+    // 但本地不渲染这个占位符
+    const messageText = text || (imagePaths.length > 0 ? '[图片]' : '')
+
     await sendAgentMessage({
-      text,
-      description: text,
-      imagePaths
+      text: messageText,
+      description: text || '用户上传了图片',
+      imagePaths,
+      selectedOrderExtra: {
+        existingTicketNo: orderData.value?.latestAfterSalesTicketNo || '',
+        hasOpenAfterSales: orderData.value?.hasOpenAfterSales || false,
+        afterSalesStatus: orderData.value?.afterSalesStatus || ''
+      },
+      renderLocal: true  // 总是渲染，但在sendAgentMessage内部会判断text是否为空
     })
   } catch (error) {
     addMessage('service', error.message || '消息发送失败，请稍后重试')
@@ -874,6 +1041,44 @@ onLoad(async (options) => {
   padding: 18rpx 22rpx;
   border-radius: 18rpx;
   word-break: break-all;
+}
+
+.ai-suggestion-bubble {
+  background: linear-gradient(135deg, #fff9f0 0%, #fff4e8 100%);
+  border: 2rpx solid #f4d9b8;
+  padding: 24rpx;
+}
+
+.ai-suggestion-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.suggestion-header {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding-bottom: 12rpx;
+  border-bottom: 1rpx solid rgba(201, 123, 90, 0.2);
+}
+
+.suggestion-icon {
+  font-size: 32rpx;
+}
+
+.suggestion-title {
+  font-size: 26rpx;
+  font-weight: 700;
+  color: #c97b5a;
+}
+
+.suggestion-note {
+  font-size: 22rpx;
+  color: #999;
+  font-style: italic;
+  padding-top: 8rpx;
+  border-top: 1rpx solid rgba(0, 0, 0, 0.06);
 }
 
 .message.service .msg-bubble {

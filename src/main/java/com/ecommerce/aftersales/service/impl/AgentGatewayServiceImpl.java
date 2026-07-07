@@ -105,6 +105,7 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
         );
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            log.error("Agent service returned HTTP {} from {}: {}", response.statusCode(), url, response.body());
             throw new BizException(502, "Agent 服务调用失败，HTTP 状态码: " + response.statusCode());
         }
         T payload = objectMapper.readValue(response.body(), responseType);

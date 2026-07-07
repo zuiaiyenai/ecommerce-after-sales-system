@@ -50,6 +50,7 @@ app:
     script-path: ${AGENT_SCRIPT_PATH:python_agent/api_server.py}
     working-directory: ${AGENT_WORKING_DIRECTORY:.}
     startup-wait-millis: ${AGENT_STARTUP_WAIT_MILLIS:15000}
+    internal-token: ${AGENT_INTERNAL_TOKEN:}
   miniapp:
     client:
       environment-code: ${MINIAPP_ENV_CODE:local}

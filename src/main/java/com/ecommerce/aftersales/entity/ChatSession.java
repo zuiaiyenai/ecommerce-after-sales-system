@@ -47,6 +47,8 @@ public class ChatSession {
 
     private Integer satisfaction;
 
+    private Integer userHidden;
+
     private LocalDateTime closeTime;
 
     @TableLogic

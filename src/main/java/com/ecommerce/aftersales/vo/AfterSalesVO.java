@@ -21,6 +21,10 @@ public class AfterSalesVO {
     private String reasonDetail;
     private String description;
     private BigDecimal refundAmount;
+    private String aiClassifyResult;
+    private BigDecimal aiConfidence;
+    private String aiRecommendType;
+    private Boolean autoApproved;
     private String status;
     private String statusText;
     private Integer priority;

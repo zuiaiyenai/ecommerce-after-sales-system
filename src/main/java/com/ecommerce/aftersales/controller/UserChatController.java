@@ -5,10 +5,14 @@ import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.annotation.CurrentUserId;
 import com.ecommerce.aftersales.config.ChatWebSocketHandler;
+import com.ecommerce.aftersales.dto.UserChatDtos.ChatEvaluationRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.ChatHistoryResponse;
 import com.ecommerce.aftersales.dto.UserChatDtos.ChatMessageView;
+import com.ecommerce.aftersales.dto.UserChatDtos.ChatSessionListResponse;
+import com.ecommerce.aftersales.dto.UserChatDtos.ChatSessionSummary;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionResponse;
+import com.ecommerce.aftersales.dto.UserChatDtos.HideSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageResponse;
 import com.ecommerce.aftersales.dto.WsChatMessage;
@@ -25,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -85,6 +90,9 @@ public class UserChatController {
             session.setDeleted(0);
             chatSessionMapper.insert(session);
             created = true;
+        } else if (Integer.valueOf(1).equals(session.getUserHidden())) {
+            session.setUserHidden(0);
+            chatSessionMapper.updateById(session);
         }
         if (created) {
             addMessage(session.getId(), "SYSTEM", welcomeMessage(session), "TEXT");
@@ -100,6 +108,21 @@ public class UserChatController {
         response.setStatus(session.getStatus());
         response.setWelcomeMessage(welcomeMessage(session));
         return ApiResponse.success("会话创建成功", response);
+    }
+
+    @GetMapping("/sessions")
+    public ApiResponse<ChatSessionListResponse> sessions(@CurrentUserId Long userId) {
+        List<ChatSessionSummary> summaries = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                        .eq(ChatSession::getUserId, userId)
+                        .eq(ChatSession::getUserHidden, 0)
+                        .ne(ChatSession::getStatus, STATUS_CLOSED)
+                        .orderByDesc(ChatSession::getUpdateTime))
+                .stream()
+                .map(this::toSessionSummary)
+                .toList();
+        ChatSessionListResponse response = new ChatSessionListResponse();
+        response.setList(summaries);
+        return ApiResponse.success("获取成功", response);
     }
 
     @PostMapping("/send")
@@ -134,8 +157,8 @@ public class UserChatController {
             broadcastToSession(session.getId(), "USER", request.getMessage(), messageType);
             notifyMerchant(session, request.getMessage());
         } else {
-            reply = mockAiReply(request.getMessage(), session);
-            addMessage(session.getId(), "ASSISTANT", reply, "TEXT");
+            session.setStatus(STATUS_AI_ACTIVE);
+            chatSessionMapper.updateById(session);
         }
 
         SendMessageResponse response = new SendMessageResponse();
@@ -143,7 +166,7 @@ public class UserChatController {
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setReply(reply);
-        response.setMessage(transferToHuman || humanSession ? "消息已发送，人工客服端可查看" : "智能客服已回复");
+        response.setMessage(transferToHuman || humanSession ? "MESSAGE_SENT_TO_HUMAN" : "MESSAGE_RECORDED");
         return ApiResponse.success("发送成功", response);
     }
 
@@ -161,8 +184,49 @@ public class UserChatController {
                 .toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
         response.setSessionId(sessionId);
+        response.setMode(session.getMode());
+        response.setStatus(session.getStatus());
         response.setList(messages);
         return ApiResponse.success("获取成功", response);
+    }
+
+    @PutMapping("/session/hide")
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResponse<Void> hideSession(@CurrentUserId Long userId, @RequestBody HideSessionRequest request) {
+        if (request.getSessionId() == null) {
+            throw new BizException("会话ID不能为空");
+        }
+        ChatSession session = chatSessionMapper.selectById(request.getSessionId());
+        if (session == null || !userId.equals(session.getUserId())) {
+            throw new BizException(404, "会话不存在");
+        }
+        session.setUserHidden(1);
+        chatSessionMapper.updateById(session);
+        return ApiResponse.success("移除成功", null);
+    }
+
+    @PostMapping("/evaluation")
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResponse<Void> submitEvaluation(@CurrentUserId Long userId, @RequestBody ChatEvaluationRequest request) {
+        if (request.getSessionId() == null) {
+            throw new BizException("会话ID不能为空");
+        }
+        ChatSession session = chatSessionMapper.selectById(request.getSessionId());
+        if (session == null || !userId.equals(session.getUserId())) {
+            throw new BizException(404, "会话不存在");
+        }
+        session.setSatisfaction(request.getRating() == null ? 5 : request.getRating());
+        session.setResolved(1);
+        session.setStatus("READY_TO_CLOSE");
+        session.setCloseTime(LocalDateTime.now());
+        chatSessionMapper.updateById(session);
+        addMessage(
+                session.getId(),
+                "SYSTEM",
+                StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价",
+                "TEXT"
+        );
+        return ApiResponse.success("评价成功", null);
     }
 
     private void broadcastToSession(Long sessionId, String role, String content, String messageType) {
@@ -302,17 +366,41 @@ public class UserChatController {
         return "您好，我是智能客服，请问有什么可以帮您？如需人工处理，请发送“转人工”。";
     }
 
-    private String mockAiReply(String message, ChatSession session) {
-        if (message.contains("退款") || message.contains("进度")) {
-            return "我先为您记录退款/售后进度问题。当前为智能客服预接待，如需人工继续处理，请发送“转人工”。";
+    private ChatSessionSummary toSessionSummary(ChatSession session) {
+        OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
+        AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
+        ChatMessage lastMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, session.getId())
+                .orderByDesc(ChatMessage::getCreateTime)
+                .last("limit 1"));
+
+        ChatSessionSummary summary = new ChatSessionSummary();
+        summary.setSessionId(session.getId());
+        summary.setOrderId(session.getOrderId());
+        summary.setAfterSaleId(session.getTicketId());
+        summary.setMode(session.getMode());
+        summary.setStatus(session.getStatus());
+        summary.setTitle(sessionTitle(session, order, ticket));
+        summary.setLastMessage(lastMessage == null ? session.getUserQuery() : lastMessage.getContent());
+        summary.setLastMessageTime(lastMessage == null
+                ? formatTime(session.getUpdateTime())
+                : formatTime(lastMessage.getCreateTime()));
+        summary.setEvaluationStatus("AWAITING_EVALUATION".equals(session.getStatus()) ? "PENDING" : null);
+        return summary;
+    }
+
+    private String sessionTitle(ChatSession session, OrderInfo order, AfterSalesTicket ticket) {
+        if (ticket != null && StringUtils.hasText(ticket.getProductName())) {
+            return ticket.getProductName();
         }
-        if (message.contains("物流") || message.contains("快递")) {
-            return "我先为您记录物流相关问题。若需要商家人工核实物流，请发送“转人工”。";
+        if (order != null && StringUtils.hasText(order.getOrderNo())) {
+            return "订单 " + order.getOrderNo();
         }
-        if (message.contains("售后") || session.getTicketId() != null) {
-            return "我已记录您的售后问题。当前暂未接入真实 AI，复杂处理请发送“转人工”。";
-        }
-        return "我已收到您的问题。当前为智能客服预接待，暂未接入真实 AI；需要人工客服时请发送“转人工”。";
+        return StringUtils.hasText(session.getUserQuery()) ? shortText(session.getUserQuery()) : "售后咨询";
+    }
+
+    private String formatTime(LocalDateTime time) {
+        return time == null ? null : DATE_TIME_FORMATTER.format(time);
     }
 
     private ChatMessageView toMessageView(ChatMessage message) {

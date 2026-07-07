@@ -41,6 +41,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
     private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String EVALUATION_INVITE_MESSAGE = "售后处理已完成，请对本次客服服务进行评价。";
 
     private final SysUserMapper sysUserMapper;
     private final ChatSessionMapper chatSessionMapper;
@@ -873,28 +874,77 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         product.setStatus(toProductStatusValue(request.getStatus()));
     }
 
-    private void addSystemMessage(Long sessionId, String content) {
+    private ChatMessage addSystemMessage(Long sessionId, String content) {
         ChatMessage message = new ChatMessage();
         message.setSessionId(sessionId);
         message.setRole("SYSTEM");
         message.setMessageType("TEXT");
         message.setContent(content);
         chatMessageMapper.insert(message);
+        broadcastToSession(sessionId, "SYSTEM", content, "TEXT");
+        return message;
     }
 
     private void markRelatedSessionsReadyForEvaluation(AfterSalesTicket ticket) {
-        List<ChatSession> sessions = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
-                .eq(ChatSession::getMerchantCode, currentMerchantCode())
-                .eq(ChatSession::getMode, "HUMAN")
-                .eq(ChatSession::getTicketId, ticket.getId())
-                .ne(ChatSession::getStatus, "CLOSED"));
+        List<ChatSession> sessions = relatedEvaluationSessions(ticket);
+        Long staffId = ensureStaff().getId();
         for (ChatSession session : sessions) {
-            session.setStatus("PROCESSING");
+            boolean alreadyInvited = hasEvaluationInviteMessage(session.getId());
+            session.setStatus("AWAITING_EVALUATION");
             session.setResolved(0);
-            session.setHumanAgentId(ensureStaff().getId());
+            session.setHumanAgentId(staffId);
+            if (session.getTicketId() == null) {
+                session.setTicketId(ticket.getId());
+            }
+            if (session.getOrderId() == null) {
+                session.setOrderId(ticket.getOrderId());
+            }
+            session.setUpdateTime(LocalDateTime.now());
             chatSessionMapper.updateById(session);
-            addSystemMessage(session.getId(), "售后处理已完成，客服可以发送服务评价请求。");
+            if (!alreadyInvited) {
+                addSystemMessage(session.getId(), EVALUATION_INVITE_MESSAGE);
+                notificationService.createNotification(
+                        session.getUserId(),
+                        "请评价本次客服服务",
+                        "您的售后问题已处理完成，请对本次客服服务进行评价。",
+                        "CHAT",
+                        session.getId(),
+                        "CHAT_SESSION"
+                );
+            }
         }
+    }
+
+    private List<ChatSession> relatedEvaluationSessions(AfterSalesTicket ticket) {
+        List<ChatSession> result = new ArrayList<>();
+        addUniqueSessions(result, chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getMerchantCode, ticket.getMerchantCode())
+                .eq(ChatSession::getTicketId, ticket.getId())
+                .ne(ChatSession::getStatus, "CLOSED")));
+        if (ticket.getOrderId() != null) {
+            addUniqueSessions(result, chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                    .eq(ChatSession::getMerchantCode, ticket.getMerchantCode())
+                    .eq(ChatSession::getUserId, ticket.getUserId())
+                    .eq(ChatSession::getOrderId, ticket.getOrderId())
+                    .ne(ChatSession::getStatus, "CLOSED")));
+        }
+        return result;
+    }
+
+    private void addUniqueSessions(List<ChatSession> target, List<ChatSession> candidates) {
+        for (ChatSession candidate : candidates) {
+            boolean exists = target.stream().anyMatch(item -> Objects.equals(item.getId(), candidate.getId()));
+            if (!exists) {
+                target.add(candidate);
+            }
+        }
+    }
+
+    private boolean hasEvaluationInviteMessage(Long sessionId) {
+        return chatMessageMapper.selectCount(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .eq(ChatMessage::getRole, "SYSTEM")
+                .like(ChatMessage::getContent, "评价")) > 0;
     }
 
     private void addTicketLog(AfterSalesTicket ticket, String oldStatus, String newStatus, String action, String content) {
@@ -1210,5 +1260,3 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         }
     }
 }
-
-

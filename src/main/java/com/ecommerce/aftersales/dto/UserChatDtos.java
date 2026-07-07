@@ -35,6 +35,22 @@ public final class UserChatDtos {
     }
 
     @Data
+    public static class HideSessionRequest {
+        private Long sessionId;
+    }
+
+    @Data
+    public static class ChatEvaluationRequest {
+        private Long sessionId;
+        private Integer rating;
+        private String content;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
+    }
+
+    @Data
     public static class SendMessageResponse {
         private Long sessionId;
         private String mode;
@@ -55,6 +71,26 @@ public final class UserChatDtos {
     @Data
     public static class ChatHistoryResponse {
         private Long sessionId;
+        private String mode;
+        private String status;
         private List<ChatMessageView> list;
+    }
+
+    @Data
+    public static class ChatSessionSummary {
+        private Long sessionId;
+        private Long orderId;
+        private Long afterSaleId;
+        private String title;
+        private String mode;
+        private String status;
+        private String lastMessage;
+        private String lastMessageTime;
+        private String evaluationStatus;
+    }
+
+    @Data
+    public static class ChatSessionListResponse {
+        private List<ChatSessionSummary> list;
     }
 }
