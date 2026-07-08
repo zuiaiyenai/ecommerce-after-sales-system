@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 const props = defineProps({
   staff: Object,
@@ -19,18 +19,18 @@ const props = defineProps({
   todos: {
     type: Array,
     default: () => []
+  },
+  showLogout: {
+    type: Boolean,
+    default: false
   }
 });
 
 defineEmits(['toggleStatus', 'logout']);
 
 const route = useRoute();
-const unreadSessionCount = computed(() => props.sessions.reduce((sum, item) => {
-  if (['RESOLVED', 'CLOSED'].includes(item.status)) {
-    return sum;
-  }
-  return sum + (Number(item.serviceUnreadCount) || 0);
-}, 0));
+const router = useRouter();
+const activeSessionCount = computed(() => props.sessions.filter((item) => !['RESOLVED', 'CLOSED'].includes(item.status)).length);
 
 const pendingTicketCount = computed(() => props.tickets.filter((item) => item.status === 'PENDING_REVIEW').length);
 
@@ -41,7 +41,7 @@ const navItems = computed(() => [
     key: 'sessions',
     label: '在线会话',
     icon: 'message',
-    count: unreadSessionCount.value
+    count: activeSessionCount.value
   },
   { to: '/tickets', key: 'tickets', label: '售后申请', icon: 'clipboard', count: pendingTicketCount.value },
   { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
@@ -68,6 +68,20 @@ const statusTone = computed(() => (props.staff?.onlineStatus || 'OFFLINE').toLow
 function isActive(item) {
   return route.path === item.to || route.path.startsWith(`${item.to}/`);
 }
+
+function handleNavClick(item) {
+  console.log('[SidebarNav] navigation click', {
+    key: item.key,
+    path: item.to,
+    currentPath: route.path,
+    staffReady: Boolean(props.staff),
+    staffId: props.staff?.staffId ?? null
+  });
+
+  router.push(item.to).catch((error) => {
+    console.error('[SidebarNav] navigation failed', item.to, error);
+  });
+}
 </script>
 
 <template>
@@ -81,11 +95,14 @@ function isActive(item) {
     </div>
 
     <nav class="side-nav" aria-label="商家客服端导航">
-      <RouterLink
+      <button
         v-for="item in navItems"
         :key="item.key"
-        :to="item.to"
+        type="button"
+        :data-nav-key="item.key"
+        :aria-label="item.label"
         :class="['nav-item', { active: isActive(item) }]"
+        @click="handleNavClick(item)"
       >
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" focusable="false">
@@ -94,7 +111,7 @@ function isActive(item) {
         </span>
         <span>{{ item.label }}</span>
         <em v-if="item.count">{{ item.count }}</em>
-      </RouterLink>
+      </button>
     </nav>
 
     <section class="agent-card">
@@ -112,7 +129,7 @@ function isActive(item) {
       {{ isOnline ? '切换为离线' : '切换为在线' }}
     </button>
 
-    <button type="button" class="ghost-action logout-btn" @click="$emit('logout')">
+    <button v-if="showLogout" type="button" class="ghost-action logout-btn" @click="$emit('logout')">
       退出登录
     </button>
   </aside>

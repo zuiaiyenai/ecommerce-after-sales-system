@@ -123,7 +123,7 @@ onMounted(loadOrders);
           v-for="item in stats"
           :key="item.label"
           type="button"
-          :class="['order-stat-card', item.tone]"
+          :class="['order-stat-card', item.tone, { active: activeStatus === item.filter }]"
           @click="activeStatus = item.filter"
         >
           <span>{{ item.label }}</span>

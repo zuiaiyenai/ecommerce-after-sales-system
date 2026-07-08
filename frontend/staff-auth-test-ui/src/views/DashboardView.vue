@@ -19,6 +19,34 @@ const tickets = ref([]);
 
 const activeSessions = computed(() => sessions.value.filter((item) => !['RESOLVED', 'CLOSED'].includes(item.status)));
 const pendingTickets = computed(() => tickets.value.filter((item) => item.status === 'PENDING_REVIEW'));
+const pendingWorkTotal = computed(() => activeSessions.value.length + pendingTickets.value.length);
+const pendingWorkLink = computed(() => (activeSessions.value.length > 0 ? '/sessions' : '/tickets'));
+const pendingWorkTitle = computed(() => (
+  `${activeSessions.value.length} 个活跃会话，${pendingTickets.value.length} 个待审核申请`
+));
+
+function toFiniteNumber(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function syncShellSnapshot(todoData, sessionPage, ticketPage) {
+  if (!shell) {
+    return;
+  }
+  if (shell.todos) {
+    shell.todos.value = todoData || [];
+  }
+  if (shell.sessions) {
+    shell.sessions.value = sessionPage?.records || [];
+  }
+  if (shell.tickets) {
+    shell.tickets.value = ticketPage?.records || [];
+  }
+  if (shell.ticketTotal) {
+    shell.ticketTotal.value = toFiniteNumber(ticketPage?.total, shell.tickets?.value?.length ?? 0);
+  }
+}
 
 async function loadPage() {
   loading.value = true;
@@ -35,6 +63,7 @@ async function loadPage() {
     performance.value = performanceData;
     sessions.value = sessionPage.records;
     tickets.value = ticketPage.records;
+    syncShellSnapshot(todoData, sessionPage, ticketPage);
   } finally {
     loading.value = false;
   }
@@ -55,10 +84,11 @@ onMounted(loadPage);
           <span>{{ pendingTickets.length }} 个待审核申请</span>
         </div>
       </div>
-      <div class="hero-number">
+      <RouterLink class="hero-number" :to="pendingWorkLink" :title="pendingWorkTitle" :aria-label="pendingWorkTitle">
         <span>待处理汇总</span>
-        <strong>{{ overview?.todayTodoCount ?? '--' }}</strong>
-      </div>
+        <strong>{{ pendingWorkTotal }}</strong>
+        <em>{{ activeSessions.length }} 会话 + {{ pendingTickets.length }} 申请</em>
+      </RouterLink>
     </article>
 
     <section class="dashboard-workbench">

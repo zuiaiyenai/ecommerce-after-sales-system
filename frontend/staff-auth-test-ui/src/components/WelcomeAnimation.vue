@@ -5,6 +5,22 @@ const props = defineProps({
   durationMs: {
     type: Number,
     default: 5000
+  },
+  title: {
+    type: String,
+    default: 'Welcome'
+  },
+  subtitle: {
+    type: String,
+    default: ''
+  },
+  skipLabel: {
+    type: String,
+    default: '跳过动画'
+  },
+  showSkip: {
+    type: Boolean,
+    default: true
   }
 });
 
@@ -71,6 +87,7 @@ let canvasWidth = 0;
 let canvasHeight = 0;
 let reducedMotion = false;
 let finishEmitted = false;
+let completionTimer = 0;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -166,6 +183,7 @@ function startAnimation() {
   startTime = performance.now();
   resizeCanvas();
   drawFrame(startTime);
+  scheduleFinishFallback();
 
   if (!reducedMotion) {
     animationId = window.requestAnimationFrame(drawFrame);
@@ -183,11 +201,19 @@ function emitFinishedAfterPaint() {
   }
 
   finishEmitted = true;
+  window.clearTimeout(completionTimer);
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       emit('finished');
     });
   });
+}
+
+function scheduleFinishFallback() {
+  window.clearTimeout(completionTimer);
+  completionTimer = window.setTimeout(() => {
+    emitFinishedAfterPaint();
+  }, Math.max(props.durationMs + 160, 300));
 }
 
 function handleVisualAnimationEnd(event) {
@@ -208,6 +234,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(animationId);
+  window.clearTimeout(completionTimer);
   window.removeEventListener('resize', startAnimation);
   mediaQuery?.removeEventListener('change', handleMotionPreferenceChange);
 });
@@ -220,10 +247,12 @@ onBeforeUnmount(() => {
       class="welcome-canvas"
       aria-hidden="true"
       @animationend="handleVisualAnimationEnd"
+      @animationcancel="handleVisualAnimationEnd"
     ></canvas>
-    <button type="button" class="welcome-skip" @click="emit('skip')">跳过动画</button>
+    <button v-if="showSkip" type="button" class="welcome-skip" @click="emit('skip')">{{ skipLabel }}</button>
     <div class="welcome-card">
-      <h2>Welcome</h2>
+      <h2>{{ title }}</h2>
+      <p v-if="subtitle">{{ subtitle }}</p>
     </div>
   </div>
 </template>
@@ -273,6 +302,16 @@ onBeforeUnmount(() => {
   font-size: clamp(38px, 5vw, 58px);
   line-height: 1;
   font-weight: 900;
+  letter-spacing: 0;
+}
+
+.welcome-card p {
+  margin: 16px 0 0;
+  max-width: min(82vw, 520px);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: clamp(15px, 2vw, 18px);
+  line-height: 1.6;
+  font-weight: 700;
   letter-spacing: 0;
 }
 

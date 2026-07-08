@@ -888,4 +888,81 @@ onUnmounted(() => {
   border-radius: 14px;
   background: rgba(248, 250, 252, 0.9);
 }
+
+/* Liquid glass refinements */
+.knowledge-hit-summary,
+.knowledge-hit-item,
+.knowledge-hit-empty,
+.emotion-snapshot,
+.emotion-meter,
+.emotion-trend-item,
+.emotion-empty {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.54);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 32px rgba(31, 41, 55, 0.08);
+}
+
+.knowledge-hit-summary,
+.emotion-snapshot {
+  background:
+    linear-gradient(135deg, rgba(255, 138, 61, 0.12), rgba(49, 120, 198, 0.08)),
+    rgba(255, 255, 255, 0.58);
+}
+
+.knowledge-hit-item,
+.emotion-trend-item {
+  border-radius: var(--radius-md);
+}
+
+.knowledge-hit-empty,
+.emotion-empty,
+.emotion-meter {
+  border-radius: 16px;
+}
+
+.emotion-track {
+  background: rgba(226, 232, 240, 0.8);
+  box-shadow: inset 0 1px 2px rgba(31, 41, 55, 0.08);
+}
+
+:global(html[data-theme="dark"]) .knowledge-hit-summary,
+:global(html[data-theme="dark"]) .knowledge-hit-item,
+:global(html[data-theme="dark"]) .knowledge-hit-empty,
+:global(html[data-theme="dark"]) .emotion-snapshot,
+:global(html[data-theme="dark"]) .emotion-meter,
+:global(html[data-theme="dark"]) .emotion-trend-item,
+:global(html[data-theme="dark"]) .emotion-empty {
+  border-color: var(--glass-border);
+  background: rgba(17, 26, 39, 0.6);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+}
+
+:global(html[data-theme="dark"]) .knowledge-hit-summary,
+:global(html[data-theme="dark"]) .emotion-snapshot {
+  background:
+    linear-gradient(135deg, rgba(255, 138, 61, 0.14), rgba(115, 169, 240, 0.1)),
+    rgba(17, 26, 39, 0.64);
+}
+
+:global(html[data-theme="dark"]) .knowledge-hit-summary strong,
+:global(html[data-theme="dark"]) .emotion-snapshot-main strong,
+:global(html[data-theme="dark"]) .emotion-meter strong {
+  color: var(--text);
+}
+
+:global(html[data-theme="dark"]) .knowledge-hit-summary p,
+:global(html[data-theme="dark"]) .knowledge-hit-item p,
+:global(html[data-theme="dark"]) .knowledge-hit-empty,
+:global(html[data-theme="dark"]) .emotion-snapshot-main p,
+:global(html[data-theme="dark"]) .emotion-trend-copy p,
+:global(html[data-theme="dark"]) .emotion-preview,
+:global(html[data-theme="dark"]) .emotion-empty {
+  color: var(--muted);
+}
+
+:global(html[data-theme="dark"]) .emotion-track {
+  background: rgba(38, 50, 68, 0.82);
+}
 </style>

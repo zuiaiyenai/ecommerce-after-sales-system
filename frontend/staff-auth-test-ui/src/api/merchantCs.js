@@ -268,6 +268,20 @@ function delay(data, ms = 140) {
   });
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function normalizePageData(page = {}) {
+  const records = Array.isArray(page.records) ? page.records : [];
+  return {
+    ...page,
+    records,
+    total: toFiniteNumber(page.total, records.length)
+  };
+}
+
 function formatStaffNo(profile = {}) {
   const current = profile.staffNo ? String(profile.staffNo) : '';
   if (/^CS\d{1,6}$/.test(current)) {
@@ -557,7 +571,7 @@ export async function getTickets(params = {}) {
       ? current
       : current.filter(t => t.status === params.status);
     const records = filtered.slice(((params.page || 1) - 1) * (params.size || 20), (params.page || 1) * (params.size || 20));
-    return delay({ records, total: filtered.length });
+    return delay(normalizePageData({ records, total: filtered.length }));
   }
   const query = new URLSearchParams();
   if (params.status) query.set('status', params.status);
@@ -565,7 +579,8 @@ export async function getTickets(params = {}) {
   if (params.keyword) query.set('keyword', params.keyword);
   query.set('page', params.page || 1);
   query.set('size', params.size || 20);
-  return request(`/api/merchant-cs/tickets?${query.toString()}`);
+  const page = await request(`/api/merchant-cs/tickets?${query.toString()}`);
+  return normalizePageData(page);
 }
 
 export async function getTicket(ticketId) {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login } from '../api/merchantCs';
 import WelcomeAnimation from '../components/WelcomeAnimation.vue';
@@ -18,6 +18,9 @@ const showWelcome = ref(false);
 const loginStaffName = ref('');
 const WELCOME_DURATION_MS = 5000;
 let welcomeFinished = false;
+let previousThemeMode = '';
+let dashboardEnterTimer = 0;
+let routeTransitionTimer = 0;
 
 const form = reactive({
   account: '',
@@ -37,29 +40,29 @@ const networkAvatars = [
 const loginButtonText = computed(() => (loading.value ? '正在进入...' : '登录进入工作台'));
 
 function clearScheduledDashboardEnter() {
+  window.clearTimeout(dashboardEnterTimer);
+  dashboardEnterTimer = 0;
+}
+
+function scheduleDashboardEnterFallback() {
+  clearScheduledDashboardEnter();
+  dashboardEnterTimer = window.setTimeout(() => {
+    enterDashboard();
+  }, WELCOME_DURATION_MS + 300);
 }
 
 function pushDashboard() {
   const root = document.documentElement;
-  const supportsViewTransition = typeof document.startViewTransition === 'function';
 
   root.classList.add('welcome-route-transition');
 
   const clearRouteTransition = () => {
+    window.clearTimeout(routeTransitionTimer);
     root.classList.remove('welcome-route-transition');
   };
+  routeTransitionTimer = window.setTimeout(clearRouteTransition, 1200);
 
-  if (!supportsViewTransition) {
-    router.push('/dashboard').finally(clearRouteTransition);
-    return;
-  }
-
-  try {
-    const transition = document.startViewTransition(() => router.push('/dashboard'));
-    transition.finished.finally(clearRouteTransition);
-  } catch {
-    router.push('/dashboard').finally(clearRouteTransition);
-  }
+  router.push('/dashboard').finally(clearRouteTransition);
 }
 
 function enterDashboard() {
@@ -69,6 +72,7 @@ function enterDashboard() {
 
   welcomeFinished = true;
   clearScheduledDashboardEnter();
+  showWelcome.value = false;
   pushDashboard();
 }
 
@@ -99,6 +103,7 @@ async function handleLogin() {
     loginStaffName.value = result?.staff?.realName || form.account || '客服';
     welcomeFinished = false;
     showWelcome.value = true;
+    scheduleDashboardEnterFallback();
   } catch (error) {
     errorMessage.value = error.message || '登录失败，请检查账号或密码';
     showWelcome.value = false;
@@ -118,8 +123,21 @@ function handleRegister() {
   showAction('注册申请入口已保留，后续接入商家客服开户注册流程');
 }
 
+onMounted(() => {
+  const root = document.documentElement;
+  previousThemeMode = root.dataset.theme || '';
+  root.dataset.theme = 'light';
+});
+
 onBeforeUnmount(() => {
   clearScheduledDashboardEnter();
+  window.clearTimeout(routeTransitionTimer);
+  const root = document.documentElement;
+  if (previousThemeMode) {
+    root.dataset.theme = previousThemeMode;
+  } else {
+    root.removeAttribute('data-theme');
+  }
 });
 </script>
 

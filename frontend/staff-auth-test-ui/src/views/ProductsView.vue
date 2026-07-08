@@ -931,4 +931,146 @@ onMounted(loadProducts);
   color: #ffad73;
   background: #182437;
 }
+
+/* Liquid glass refinements */
+.search-input {
+  border-color: var(--glass-border);
+  border-radius: 16px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.56);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.search-input:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  outline: none;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.14);
+}
+
+.product-filter-row .filter-chip,
+.ghost-mini {
+  border-color: var(--glass-border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.52);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+}
+
+.product-filter-row .filter-chip:hover,
+.ghost-mini:hover {
+  border-color: rgba(255, 138, 61, 0.38);
+  color: #c45009;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 14px 34px rgba(255, 107, 26, 0.12);
+}
+
+.product-filter-row .filter-chip.active,
+.template-primary-blue {
+  border-color: rgba(255, 138, 61, 0.72);
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-orange), var(--brand-orange-deep));
+  box-shadow: 0 16px 34px rgba(255, 107, 26, 0.24);
+}
+
+.products-table-wrap {
+  border-color: var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+
+.products-table th,
+.products-table td {
+  border-bottom-color: rgba(220, 228, 236, 0.68);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.products-table th {
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.products-table tbody tr:hover td {
+  background: rgba(255, 248, 242, 0.72);
+}
+
+.modal-overlay {
+  background: rgba(15, 23, 42, 0.32);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.modal-box {
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 28px 86px rgba(31, 41, 55, 0.2);
+}
+
+.form-field input,
+.form-field select,
+.form-field textarea {
+  border-color: var(--glass-border);
+  border-radius: 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.56);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  outline: none;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.14);
+}
+
+:global(html[data-theme="dark"]) .search-input,
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip,
+:global(html[data-theme="dark"]) .ghost-mini,
+:global(html[data-theme="dark"]) .form-field input,
+:global(html[data-theme="dark"]) .form-field select,
+:global(html[data-theme="dark"]) .form-field textarea {
+  border-color: var(--glass-border);
+  color: var(--text);
+  background: rgba(17, 26, 39, 0.62);
+}
+
+:global(html[data-theme="dark"]) .products-table-wrap,
+:global(html[data-theme="dark"]) .modal-box {
+  border-color: var(--glass-border);
+  background: var(--glass-bg-strong);
+  box-shadow: var(--glass-shadow);
+}
+
+:global(html[data-theme="dark"]) .products-table th,
+:global(html[data-theme="dark"]) .products-table td {
+  border-bottom-color: var(--glass-border);
+  background: rgba(17, 26, 39, 0.54);
+}
+
+:global(html[data-theme="dark"]) .products-table tbody tr:hover td {
+  background: rgba(255, 138, 61, 0.1);
+}
+
+:global(html[data-theme="dark"]) .modal-overlay {
+  background: rgba(4, 8, 14, 0.58);
+}
+
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip.active,
+:global(html[data-theme="dark"]) .template-primary-blue {
+  border-color: #ffad73;
+  color: #101722;
+  background: #ffad73;
+}
 </style>

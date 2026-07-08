@@ -1,10 +1,7 @@
 <script setup>
 import { inject, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { getDashboardPerformance, getDashboardTodos } from '../api/merchantCs';
-import { noticeRules } from '../data/staticData';
 
-const router = useRouter();
 const shell = inject('merchantCsShell', null);
 const todos = ref([]);
 const performance = ref({ metrics: [] });
@@ -29,21 +26,6 @@ onMounted(loadPage);
       </div>
 
       <div class="data-list">
-        <button
-          v-for="notice in noticeRules"
-          :key="notice.id"
-          type="button"
-          class="data-row notice-row"
-          @click="router.push(notice.target)"
-        >
-          <span class="notice-level">{{ notice.level }}</span>
-          <span class="row-copy">
-            <strong>{{ notice.title }}</strong>
-            <span>{{ notice.desc }}</span>
-          </span>
-          <span class="muted">查看</span>
-        </button>
-
         <RouterLink v-for="item in todos" :key="item.id" :to="item.target" class="data-row notice-row">
           <span class="todo-dot"></span>
           <span class="row-copy">
