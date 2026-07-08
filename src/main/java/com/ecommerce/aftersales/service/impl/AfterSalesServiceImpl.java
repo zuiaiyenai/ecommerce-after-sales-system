@@ -20,6 +20,7 @@ import com.ecommerce.aftersales.vo.AfterSalesVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -28,6 +29,8 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class AfterSalesServiceImpl implements AfterSalesService {
+
+    private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
 
     private final AfterSalesTicketMapper afterSalesTicketMapper;
     private final TicketAttachmentMapper ticketAttachmentMapper;
@@ -201,6 +204,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
     private AfterSalesVO convertToVO(AfterSalesTicket ticket) {
         AfterSalesVO vo = new AfterSalesVO();
         BeanUtils.copyProperties(ticket, vo);
+        vo.setMerchantDisplayName(resolveMerchantDisplayName(ticket.getMerchantCode()));
         vo.setStatusText(getStatusText(ticket.getStatus()));
 
         // 通过订单关联查询商品图片
@@ -246,6 +250,14 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         vo.setLogs(logVOs);
 
         return vo;
+    }
+
+    private String resolveMerchantDisplayName(String merchantCode) {
+        String code = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+        if (DEFAULT_MERCHANT_CODE.equalsIgnoreCase(code)) {
+            return "演示商家";
+        }
+        return "商家 " + code;
     }
 
     private String getStatusText(String status) {

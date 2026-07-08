@@ -651,6 +651,7 @@ class QwenReturnService:
             recent_history=context.recent_history,
         )
         mapping = {
+            "satisfied": "满意",
             "calm": "平稳",
             "anxious": "着急",
             "dissatisfied": "不满",

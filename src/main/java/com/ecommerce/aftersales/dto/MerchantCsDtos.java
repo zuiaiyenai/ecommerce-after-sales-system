@@ -21,6 +21,31 @@ public final class MerchantCsDtos {
     }
 
     @Data
+    public static class RegisterRequest {
+        private String account;
+        private String password;
+        private String realName;
+        private String phone;
+        private String code;
+    }
+
+    @Data
+    public static class AuthCodeRequest {
+        private String account;
+        private String phone;
+        private String scene;
+    }
+
+    @Data
+    public static class ResetPasswordRequest {
+        private String account;
+        private String phone;
+        private String code;
+        private String newPassword;
+        private String confirmPassword;
+    }
+
+    @Data
     public static class LoginResponse {
         private String token;
         private StaffProfile staff;
@@ -148,6 +173,47 @@ public final class MerchantCsDtos {
         private List<KnowledgeHitView> knowledgeHits;
         private Map<String, Object> knowledgeTrace;
         private String createdAt;
+    }
+
+    @Data
+    public static class SessionAiAssistView {
+        private Long sessionId;
+        private RecommendationView recommendation;
+        private QuickReplyView staffSuggestion;
+        private List<QuickReplyView> quickReplies;
+        private String quickReplySource;
+        private String latestUserMessage;
+        private String sceneCode;
+        private String intentCode;
+        private String knowledgeQuery;
+        private String knowledgeRetrievalMode;
+        private List<KnowledgeHitView> knowledgeHits;
+        private Map<String, Object> handoffSummary;
+        private String handoffSummaryText;
+        private Map<String, String> conversationDigest;
+        private Map<String, Object> trace;
+    }
+
+    @Data
+    public static class RecommendationView {
+        private String text;
+        private BigDecimal confidence;
+        private String source;
+        private String reason;
+        private String intentCode;
+        private String sceneCode;
+        private String tone;
+    }
+
+    @Data
+    public static class QuickReplyView {
+        private String code;
+        private String label;
+        private String text;
+        private String sceneCode;
+        private String intentCode;
+        private String tone;
+        private BigDecimal score;
     }
 
     @Data
@@ -317,5 +383,22 @@ public final class MerchantCsDtos {
     @Data
     public static class ProductStatusRequest {
         private String status;
+    }
+
+    @Data
+    public static class ReviewView {
+        private Long id;
+        private Integer overallScore;
+        private String orderNo;
+        private String user;
+        private String productName;
+        private String ticketNo;
+        private String content;
+        private String productImage;
+        private String createdAt;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
     }
 }

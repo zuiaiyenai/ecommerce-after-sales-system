@@ -33,6 +33,7 @@
           <image class="product-icon" :src="normalizeImageUrl(item.productIcon)" mode="aspectFill" />
           <view class="product-info">
             <text class="product-name">{{ item.productName }}</text>
+            <text class="merchant-name">商家：{{ item.merchantDisplayName || item.merchantCode || '演示商家' }}</text>
             <text class="product-reason">原因：{{ item.reason }}</text>
           </view>
         </view>
@@ -84,6 +85,8 @@ const afterSaleList = computed(() => {
       productName: a.productName,
       productIcon: a.productImage || '',
       reason: a.reason,
+      merchantCode: a.merchantCode || '',
+      merchantDisplayName: a.merchantDisplayName || '',
       status: display.statusKey,
       statusText: display.statusText,
       statusClass: display.statusClass,
@@ -310,6 +313,13 @@ function applyAfterSale() {
   margin-top: 6rpx;
   font-size: 22rpx;
   color: #999;
+}
+
+.merchant-name {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #8a776c;
 }
 
 .card-footer {

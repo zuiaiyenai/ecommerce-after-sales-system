@@ -4,12 +4,24 @@ from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import socket
 from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from after_sales_agent import Attachment, ImageReviewResult
+# 配置日志 — 开发阶段输出所有 DEBUG 级别日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+# 第三方库日志保持 WARNING，避免噪音
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+
+from after_sales_agent import AfterSalesRequest, Attachment, ConversationMessage, EmotionAgent, ImageReviewResult
 from after_sales_agent.infra.trace import TraceRecorder
 from after_sales_agent.langgraph_runtime import LangGraphAfterSalesAgent
 from after_sales_agent.services.pgvector_retrieval import PgVectorConfig, PgVectorKnowledgeRetriever
@@ -44,7 +56,7 @@ def build_attachments(payload_attachments: list[Any] | tuple[Any, ...] | None) -
     return tuple(attachments)
 
 
-def build_langgraph_entry_payload(data: dict[str, Any]) -> dict[str, Any]:
+def build_langgraph_entry_payload(data: dict[str, Any], emotion_context: dict[str, Any] | None = None) -> dict[str, Any]:
     selected = data.get("selected_order") if isinstance(data.get("selected_order"), dict) else {}
     order_id = (
         data.get("order_id")
@@ -69,6 +81,11 @@ def build_langgraph_entry_payload(data: dict[str, Any]) -> dict[str, Any]:
                 "product_name": selected.get("product_name") or selected.get("productName"),
                 "merchant_code": selected.get("merchant_code") or selected.get("merchantCode"),
             },
+        }
+    if emotion_context:
+        client_context = {
+            **client_context,
+            "emotion": emotion_context,
         }
     return {
         "user_id": str(user_id),
@@ -95,6 +112,66 @@ def build_recent_history_payload(payload_history: list[Any] | tuple[Any, ...] | 
         if content:
             history.append({"role": role, "content": content})
     return history[-8:]
+
+
+def build_recent_history_messages(payload_history: list[Any] | tuple[Any, ...] | None) -> tuple[ConversationMessage, ...]:
+    messages: list[ConversationMessage] = []
+    for item in payload_history or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role == "service":
+            role = "assistant"
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if content:
+            messages.append(ConversationMessage(role=role, content=content))
+    return tuple(messages[-8:])
+
+
+def analyze_chat_emotion(data: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        message = str(data.get("message") or "").strip()
+        attachments = build_attachments(data.get("attachments"))
+        if not message and not attachments:
+            return None
+
+        selected = data.get("selected_order") if isinstance(data.get("selected_order"), dict) else {}
+        user_id = (
+            data.get("user_id")
+            or data.get("userId")
+            or selected.get("user_id")
+            or selected.get("userId")
+            or "0"
+        )
+        request = AfterSalesRequest(
+            user_id=str(user_id),
+            message=message or ("用户发送了图片" if attachments else ""),
+            order_id=str(data.get("order_id") or data.get("orderId") or selected.get("order_id") or selected.get("orderId") or "") or None,
+            description=str(data.get("description") or "").strip() or None,
+            item_opened=data.get("item_opened"),
+            human_request_count=int(data.get("human_request_count") or 0),
+            attachments=attachments,
+        )
+        history = build_recent_history_messages(data.get("recent_history") or data.get("recentHistory"))
+        emotion = EmotionAgent().analyze(
+            request,
+            recent_history=history,
+            recent_user_messages=tuple(message.content for message in history if message.role == "user"),
+        )
+        return {
+            "label": emotion.label.value,
+            "score": emotion.score,
+            "confidence": emotion.confidence,
+            "triggers": list(emotion.triggers),
+            "need_human_priority": emotion.need_human_priority,
+            "reply_tone": emotion.reply_tone,
+            "comfort_prefix": emotion.comfort_prefix,
+            "comfort_examples": list(emotion.comfort_examples),
+        }
+    except Exception:
+        return None
 
 
 def record_trace_event(
@@ -157,6 +234,9 @@ class AgentApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/chat":
             self._handle_chat()
             return
+        if self.path == "/api/analyze/emotion":
+            self._handle_analyze_emotion()
+            return
         if self.path == "/api/review-images":
             self._handle_review_images()
             return
@@ -206,9 +286,26 @@ class AgentApiHandler(BaseHTTPRequestHandler):
         with trace.step("read_request_body"):
             data = self._read_json_body()
 
+        logger = logging.getLogger("api_server")
+        msg_preview = str(data.get("message") or "")[:150]
+        logger.info("📨 收到 chat 请求 message=%s attachments=%d order_id=%s",
+                    msg_preview,
+                    len(data.get("attachments") or []),
+                    data.get("order_id") or data.get("orderId") or "")
+
+        emotion_context = analyze_chat_emotion(data)
+        if emotion_context is not None:
+            trace.set_meta(
+                emotion_label=emotion_context.get("label"),
+                emotion_score=emotion_context.get("score"),
+                emotion_need_human_priority=emotion_context.get("need_human_priority"),
+            )
+            logger.info("😊 情绪分析: label=%s score=%s",
+                        emotion_context.get("label"), emotion_context.get("score"))
+
         try:
             with trace.step("langgraph_agent"):
-                result = LANGGRAPH_AGENT.handle(build_langgraph_entry_payload(data))
+                result = LANGGRAPH_AGENT.handle(build_langgraph_entry_payload(data, emotion_context))
         except Exception as exc:
             trace.set_meta(
                 error=exc.__class__.__name__,
@@ -240,13 +337,25 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             "session_mode": result.get("session_mode") or "AI",
             "ticket": result.get("ticket"),
             "handoff_summary": None,
-            "emotion": None,
+            "emotion": emotion_context,
             "image_review": None,
             "persistence": result.get("persistence"),
             "tool_trace": result.get("tool_trace") or [],
-            "raw": result.get("raw") or {},
+            "raw": {
+                **(result.get("raw") or {}),
+                "emotion_integrated": bool(emotion_context),
+                "emotion_need_human_priority": (
+                    emotion_context.get("need_human_priority") if emotion_context is not None else None
+                ),
+            },
             "trace": trace.to_dict(),
         }
+        reply_logger = logging.getLogger("api_server")
+        reply_logger.info("📤 响应: need_human=%s session_mode=%s reply=%s evidence_needed=%s",
+                         payload["need_human"],
+                         payload["session_mode"],
+                         payload["assistant_reply"][:150],
+                         payload["evidence_needed"])
         self._send_json(payload)
         record_trace_event(
             trace,
@@ -288,6 +397,27 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             trace,
             path="/api/review-images",
             reply_preview=image_review.summary if image_review else "",
+        )
+
+    def _handle_analyze_emotion(self) -> None:
+        trace = TraceRecorder(request_type="analyze_emotion")
+        with trace.step("read_request_body"):
+            data = self._read_json_body()
+
+        emotion_context = analyze_chat_emotion(data)
+        payload = {
+            "emotion_label": emotion_context.get("label") if emotion_context else None,
+            "emotion_score": emotion_context.get("score") if emotion_context else None,
+            "emotion_confidence": emotion_context.get("confidence") if emotion_context else None,
+            "trace": trace.to_dict(),
+        }
+        self._send_json(payload)
+        record_trace_event(
+            trace,
+            path="/api/analyze/emotion",
+            order_id=str(data.get("order_id") or data.get("orderId") or ""),
+            session_id=_safe_int(data.get("session_id") or data.get("sessionId")),
+            reply_preview=str(payload["emotion_label"] or ""),
         )
 
     def _handle_knowledge_retrieve(self) -> None:

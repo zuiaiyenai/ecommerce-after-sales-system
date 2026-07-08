@@ -22,6 +22,7 @@ public final class UserChatDtos {
         private Long sessionId;
         private String sessionNo;
         private String merchantCode;
+        private String merchantDisplayName;
         private String mode;
         private String status;
         private String welcomeMessage;
@@ -71,6 +72,8 @@ public final class UserChatDtos {
     @Data
     public static class ChatHistoryResponse {
         private Long sessionId;
+        private String merchantCode;
+        private String merchantDisplayName;
         private String mode;
         private String status;
         private List<ChatMessageView> list;
@@ -82,6 +85,8 @@ public final class UserChatDtos {
         private Long orderId;
         private Long afterSaleId;
         private String title;
+        private String merchantCode;
+        private String merchantDisplayName;
         private String mode;
         private String status;
         private String lastMessage;

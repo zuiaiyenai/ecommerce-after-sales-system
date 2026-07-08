@@ -162,6 +162,25 @@ public class AgentGatewayDtos {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class EmotionAnalyzeRequest {
+        private String user_id;
+        private Long session_id;
+        private String message;
+
+        @Valid
+        private List<ConversationMessageDto> recent_history;
+    }
+
+    @Data
+    public static class EmotionAnalyzeResponse {
+        private String emotion_label;
+        private Double emotion_score;
+        private Double emotion_confidence;
+        private Map<String, Object> trace;
+    }
+
+    @Data
     public static class TicketDto {
         private String ticket_id;
         private String status;

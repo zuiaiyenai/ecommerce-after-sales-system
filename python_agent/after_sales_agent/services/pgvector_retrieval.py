@@ -143,7 +143,7 @@ class PgVectorKnowledgeRetriever:
                 "query": normalized_query,
                 "trace": {"error": exc.__class__.__name__, "message": str(exc)},
             }
-        filters: list[str] = []
+        filters: list[str] = ["kd.status = 1", "COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'"]
         params: list[Any] = [self._vector_literal(embedding)]
         metadata_filters = {
             "merchant_code": merchant_code,
@@ -153,15 +153,30 @@ class PgVectorKnowledgeRetriever:
             "source_type": source_type,
             "policy_version": policy_version,
         }
-        for key, value in metadata_filters.items():
-            if value:
-                filters.append(f"kc.metadata ->> '{key}' = %s")
-                params.append(str(value))
+        if merchant_code:
+            filters.append("kd.merchant_code = %s")
+            params.append(str(merchant_code))
+        if product_category:
+            filters.append("(kd.product_category = %s OR kd.product_category IS NULL OR kd.product_category IN ('general', '通用'))")
+            params.append(str(product_category))
+        if scene:
+            filters.append("(kd.scene = %s OR kd.scene IS NULL)")
+            params.append(str(scene))
+        if intent:
+            filters.append("(kd.intent = %s OR kd.intent IS NULL)")
+            params.append(str(intent))
+        if source_type:
+            filters.append("kd.source_type = %s")
+            params.append(str(source_type))
+        if policy_version:
+            filters.append("(kd.policy_version = %s OR kd.policy_version IS NULL)")
+            params.append(str(policy_version))
 
         where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
         limit = max(1, min(int(top_k or self.config.top_k), 10))
         sql = f"""
             SELECT kc.id, kc.document_type, kd.source_code, kc.chunk_text, kc.metadata,
+                   kd.title, kd.product_category, kd.scene, kd.intent, kd.policy_version, kd.tags, kd.merchant_code,
                    1 - (kc.embedding <=> %s::vector) AS score
             FROM knowledge_chunk kc
             JOIN knowledge_document kd ON kd.id = kc.document_id
@@ -191,15 +206,27 @@ class PgVectorKnowledgeRetriever:
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
                     metadata = {}
+            metadata = {
+                **(metadata or {}),
+                "title": row[5],
+                "product_category": row[6],
+                "scene": row[7],
+                "intent": row[8],
+                "policy_version": row[9],
+                "tags": row[10] or [],
+                "merchant_code": row[11],
+                "source_type": row[1],
+                "source_code": str(row[2]),
+            }
             hits.append(
                 {
                     "id": row[0],
                     "source_type": row[1],
                     "source_code": str(row[2]),
-                    "title": (metadata or {}).get("title") or row[1],
+                    "title": metadata.get("title") or row[1],
                     "snippet": row[3],
-                    "score": round(float(row[5] or 0), 4),
-                    "metadata": metadata or {},
+                    "score": round(float(row[12] or 0), 4),
+                    "metadata": metadata,
                 }
             )
         lexical = self._lexical_fallback(
@@ -392,33 +419,44 @@ class PgVectorKnowledgeRetriever:
 
     @staticmethod
     def _lexical_tokens(query: str) -> list[str]:
-        candidates = [
-            "外壳破裂", "外壳破损", "商品破损", "破损", "破裂", "裂纹", "碎裂",
-            "质量问题", "功能故障", "电流声", "异响", "杂音", "无法正常使用",
-            "退款", "退货退款", "退货", "换货", "凭证", "证据", "照片", "外包装", "物流面单",
-            "耳机", "手机", "数码",
-        ]
+        """通用中文分词 — 不区分领域特定术语，按自然词边界切分。"""
+        import re as _re
         text = str(query or "")
-        tokens = [token for token in candidates if token in text]
+        # 中文按字切 bigram + trigram，英文/数字保持原样
+        tokens: list[str] = []
+        # 提取中文连续片段做 n-gram
+        for segment in _re.split(r"[^一-鿿]+", text):
+            segment = segment.strip()
+            if len(segment) >= 2:
+                # bigram
+                for i in range(len(segment) - 1):
+                    tokens.append(segment[i:i + 2])
+                # trigram for longer segments
+                if len(segment) >= 3:
+                    for i in range(len(segment) - 2):
+                        tokens.append(segment[i:i + 3])
+        # 保留英文/数字 tokens（按空格分）
         for raw in text.replace("_", " ").replace("/", " ").split():
             value = raw.strip()
-            if len(value) >= 3 and value not in tokens:
+            if len(value) >= 2 and not _re.fullmatch(r"[一-鿿]+", value):
                 tokens.append(value)
-        return tokens[:16]
+        # 去重，限制数量
+        seen: set[str] = set()
+        result: list[str] = []
+        for t in tokens:
+            if t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result[:16]
 
     @staticmethod
     def _lexical_token_weight(token: str) -> float:
-        strong_problem_terms = {
-            "外壳破裂", "外壳破损", "商品破损", "破损", "破裂", "裂纹", "碎裂",
-            "质量问题", "功能故障", "电流声", "异响", "杂音", "无法正常使用",
-        }
-        weak_context_terms = {"退款", "退货退款", "退货", "换货", "凭证", "证据", "照片", "耳机", "手机", "数码"}
-        if token in strong_problem_terms:
-            return 2.2
-        if token in weak_context_terms:
-            return 0.7
-        if len(token) >= 6:
-            return 1.4
+        """按 token 长度自适应权重 — 长词更可能是关键信息。"""
+        length = len(token)
+        if length >= 6:
+            return 2.0
+        if length >= 4:
+            return 1.5
         return 1.0
 
     def _embed(self, text: str) -> list[float]:

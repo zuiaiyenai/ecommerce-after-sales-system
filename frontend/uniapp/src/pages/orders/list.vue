@@ -34,6 +34,7 @@
           <image class="product-icon" :src="normalizeImageUrl(order.productIcon)" mode="aspectFill" />
           <view class="product-info">
             <text class="product-name">{{ order.productName }}</text>
+            <text class="merchant-name">商家：{{ order.merchantDisplayName || order.merchantCode || '演示商家' }}</text>
             <text class="product-spec">{{ order.spec }}</text>
           </view>
           <view class="price-info">
@@ -104,6 +105,8 @@ const orders = computed(() => {
       canApplyAfterSales: display.canApplyAfterSales,
       canContactService: display.canContactService,
       hasOpenAfterSales: afterSales.hasOpenAfterSales,
+      merchantCode: o.merchantCode || '',
+      merchantDisplayName: o.merchantDisplayName || '',
       createTime: o.createTime ? o.createTime.slice(0, 10) : ''
     }
   })
@@ -159,6 +162,8 @@ function contactService(order) {
     'productName=' + encodeURIComponent(order.productName || ''),
     'productIcon=' + encodeURIComponent(order.productIcon || ''),
     'productSpec=' + encodeURIComponent(order.spec || ''),
+    'merchantCode=' + encodeURIComponent(order.merchantCode || ''),
+    'merchantDisplayName=' + encodeURIComponent(order.merchantDisplayName || ''),
     'amount=' + encodeURIComponent(order.totalPrice || order.price || ''),
     'status=' + encodeURIComponent(order.status || ''),
     'statusText=' + encodeURIComponent(order.statusText || '')
@@ -399,6 +404,16 @@ async function confirmReceive(id) {
   margin-top: 6rpx;
   font-size: 22rpx;
   color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merchant-name {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #8a776c;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

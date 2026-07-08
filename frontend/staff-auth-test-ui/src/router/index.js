@@ -1,7 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
+import AdminLayout from '../components/AdminLayout.vue';
 import DashboardView from '../views/DashboardView.vue';
 import LoginView from '../views/LoginView.vue';
+import AdminLoginView from '../views/AdminLoginView.vue';
+import AdminDashboardView from '../views/AdminDashboardView.vue';
+import AdminAccountsView from '../views/AdminAccountsView.vue';
+import AdminKnowledgeView from '../views/AdminKnowledgeView.vue';
 import SessionsView from '../views/SessionsView.vue';
 import SessionDetailView from '../views/SessionDetailView.vue';
 import TicketsView from '../views/TicketsView.vue';
@@ -14,10 +19,22 @@ import ProductsView from '../views/ProductsView.vue';
 import ReviewsView from '../views/ReviewsView.vue';
 
 const TOKEN_KEY = 'merchant_cs_token';
+const ADMIN_TOKEN_KEY = 'admin_console_token';
 
 const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/login', name: 'login', component: LoginView },
+  { path: '/admin/login', name: 'adminLogin', component: AdminLoginView },
+  {
+    path: '/admin',
+    component: AdminLayout,
+    children: [
+      { path: '', redirect: '/admin/dashboard' },
+      { path: 'dashboard', name: 'adminDashboard', component: AdminDashboardView, meta: { title: '管理员首页' } },
+      { path: 'accounts', name: 'adminAccounts', component: AdminAccountsView, meta: { title: '客服账号管理' } },
+      { path: 'knowledge', name: 'adminKnowledge', component: AdminKnowledgeView, meta: { title: '知识治理' } }
+    ]
+  },
   {
     path: '/',
     component: AppLayout,
@@ -44,10 +61,21 @@ const router = createRouter({
 
 // Navigation guard: require auth for all routes except login
 router.beforeEach((to, from, next) => {
-  if (to.name === 'login') {
+  if (to.name === 'login' || to.name === 'adminLogin') {
     next();
     return;
   }
+
+  if (to.path.startsWith('/admin')) {
+    const adminToken = localStorage.getItem(ADMIN_TOKEN_KEY);
+    if (!adminToken) {
+      next('/admin/login');
+      return;
+    }
+    next();
+    return;
+  }
+
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) {
     next('/login');

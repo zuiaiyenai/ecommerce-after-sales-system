@@ -1,8 +1,8 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -19,11 +19,17 @@ import java.util.stream.Collectors;
  */
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class KnowledgeService {
 
-    private final JdbcTemplate pgJdbcTemplate; // 注入PgVector数据源的JdbcTemplate
+    private final JdbcTemplate pgJdbcTemplate;
     private final RestTemplate restTemplate;
+
+    public KnowledgeService(
+            @Qualifier("pgJdbcTemplate") JdbcTemplate pgJdbcTemplate,
+            RestTemplate restTemplate) {
+        this.pgJdbcTemplate = pgJdbcTemplate;
+        this.restTemplate = restTemplate;
+    }
 
     @Value("${python.agent.url:http://localhost:8765}")
     private String pythonAgentUrl;
@@ -134,7 +140,7 @@ public class KnowledgeService {
                 COUNT(c.id) as chunk_count
             FROM knowledge_document d
             LEFT JOIN knowledge_chunk c ON c.document_id = d.id
-            WHERE d.status = 1
+            WHERE COALESCE(d.metadata ->> 'deleted', 'false') <> 'true'
             """);
 
         List<Object> params = new ArrayList<>();
@@ -166,12 +172,50 @@ public class KnowledgeService {
             info.setScene(rs.getString("scene"));
             info.setIntent(rs.getString("intent"));
             info.setPolicyVersion(rs.getString("policy_version"));
+            info.setTags(parseJsonToStringList(rs.getString("tags")));
+            info.setMetadata(parseJsonToMap(rs.getString("metadata")));
             info.setStatus(rs.getInt("status"));
             info.setCreatedAt(rs.getTimestamp("created_at").toLocalDateTime());
             info.setUpdatedAt(rs.getTimestamp("updated_at").toLocalDateTime());
             info.setChunkCount(rs.getInt("chunk_count"));
             return info;
         });
+    }
+
+    public KnowledgeUploadDto.KnowledgeInfo getKnowledgeById(Long id) {
+        String sql = """
+            SELECT
+                d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
+                d.product_category, d.scene, d.intent, d.policy_version,
+                d.tags, d.metadata, d.status, d.created_at, d.updated_at,
+                COUNT(c.id) as chunk_count
+            FROM knowledge_document d
+            LEFT JOIN knowledge_chunk c ON c.document_id = d.id
+            WHERE d.id = ? AND COALESCE(d.metadata ->> 'deleted', 'false') <> 'true'
+            GROUP BY d.id
+            LIMIT 1
+            """;
+        List<KnowledgeUploadDto.KnowledgeInfo> result = pgJdbcTemplate.query(sql, new Object[]{id}, (rs, rowNum) -> {
+            KnowledgeUploadDto.KnowledgeInfo info = new KnowledgeUploadDto.KnowledgeInfo();
+            info.setId(rs.getLong("id"));
+            info.setSourceType(rs.getString("source_type"));
+            info.setSourceCode(rs.getString("source_code"));
+            info.setMerchantCode(rs.getString("merchant_code"));
+            info.setTitle(rs.getString("title"));
+            info.setContent(rs.getString("content"));
+            info.setProductCategory(rs.getString("product_category"));
+            info.setScene(rs.getString("scene"));
+            info.setIntent(rs.getString("intent"));
+            info.setPolicyVersion(rs.getString("policy_version"));
+            info.setTags(parseJsonToStringList(rs.getString("tags")));
+            info.setMetadata(parseJsonToMap(rs.getString("metadata")));
+            info.setStatus(rs.getInt("status"));
+            info.setCreatedAt(rs.getTimestamp("created_at").toLocalDateTime());
+            info.setUpdatedAt(rs.getTimestamp("updated_at").toLocalDateTime());
+            info.setChunkCount(rs.getInt("chunk_count"));
+            return info;
+        });
+        return result.isEmpty() ? null : result.get(0);
     }
 
     /**
@@ -226,8 +270,16 @@ public class KnowledgeService {
      */
     @Transactional(transactionManager = "pgTransactionManager")
     public void deleteKnowledge(Long id) {
-        // 软删除
-        pgJdbcTemplate.update("UPDATE knowledge_document SET status = 0, updated_at = NOW() WHERE id = ?", id);
+        // 软删除：删除态单独进入 metadata.deleted，避免和“停用(status=0)”混淆。
+        pgJdbcTemplate.update(
+                """
+                UPDATE knowledge_document
+                SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{deleted}', 'true'::jsonb, true),
+                    updated_at = NOW()
+                WHERE id = ?
+                """,
+                id
+        );
         log.info("Soft deleted knowledge document id={}", id);
     }
 
@@ -238,6 +290,19 @@ public class KnowledgeService {
         // TODO: 调用Python Agent的reindex接口
         log.info("Reindex all knowledge documents");
         return Map.of("message", "Reindex started");
+    }
+
+    public Map<String, Object> syncKnowledge(Long id) {
+        KnowledgeUploadDto.KnowledgeInfo info = getKnowledgeById(id);
+        if (info == null) {
+            throw new IllegalArgumentException("Knowledge document not found: " + id);
+        }
+        log.info("Sync knowledge document id={}, code={}", id, info.getSourceCode());
+        return Map.of(
+                "documentId", id,
+                "message", "Knowledge sync started",
+                "sourceCode", info.getSourceCode()
+        );
     }
 
     /**
@@ -348,6 +413,28 @@ public class KnowledgeService {
             return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(obj);
         } catch (Exception e) {
             return "{}";
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> parseJsonToStringList(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, List.class);
+        } catch (Exception e) {
+            log.warn("Failed to parse tags json: {}", json, e);
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseJsonToMap(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, Map.class);
+        } catch (Exception e) {
+            log.warn("Failed to parse metadata json: {}", json, e);
+            return null;
         }
     }
 }

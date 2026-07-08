@@ -15,9 +15,10 @@
       </view>
 
       <view v-for="product in products" :key="product.id" class="product-card">
-        <image class="product-image" :src="product.mainImage" mode="aspectFill" />
+        <image class="product-image" :src="normalizeImageUrl(product.mainImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ product.productName }}</text>
+          <text class="merchant-line">商家：{{ product.merchantDisplayName || product.merchantCode || '演示商家' }}</text>
           <text class="product-desc">{{ product.description || product.category }}</text>
           <view class="product-bottom">
             <text class="product-price">¥{{ product.price }}</text>
@@ -34,7 +35,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { request, normalizeImageUrl } from '../../utils/request'
 
 const products = ref([])
 const buyingId = ref(null)
@@ -157,13 +158,20 @@ async function buy(product) {
 
 .product-desc {
   display: -webkit-box;
-  margin-top: 10rpx;
+  margin-top: 8rpx;
   font-size: 24rpx;
   line-height: 1.5;
   color: #888;
   overflow: hidden;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.merchant-line {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #8a776c;
 }
 
 .product-bottom {

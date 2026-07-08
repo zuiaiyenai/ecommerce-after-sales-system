@@ -332,6 +332,8 @@ function emotionLabelText(label) {
   const textMap = {
     SATISFIED: '满意',
     CALM: '平静',
+    NORMAL: '中性',
+    NEUTRAL: '中性',
     ANXIOUS: '着急',
     DISSATISFIED: '不满',
     ANGRY: '愤怒'
@@ -343,6 +345,8 @@ function emotionRank(label) {
   const rankMap = {
     SATISFIED: 0,
     CALM: 1,
+    NORMAL: 1,
+    NEUTRAL: 1,
     ANXIOUS: 2,
     DISSATISFIED: 3,
     ANGRY: 4
@@ -354,6 +358,8 @@ function emotionTone(label) {
   const toneMap = {
     SATISFIED: 'calm',
     CALM: 'calm',
+    NORMAL: 'calm',
+    NEUTRAL: 'calm',
     ANXIOUS: 'anxious',
     DISSATISFIED: 'dissatisfied',
     ANGRY: 'angry'
@@ -387,6 +393,8 @@ function emotionSummary(label) {
   const summaryMap = {
     SATISFIED: '用户情绪稳定偏正向，可以正常推进。',
     CALM: '用户表达平稳，当前没有明显升级风险。',
+    NORMAL: '用户表达平稳，当前没有明显升级风险。',
+    NEUTRAL: '用户表达平稳，当前没有明显升级风险。',
     ANXIOUS: '用户更关注处理速度和进展，需要及时反馈。',
     DISSATISFIED: '用户已有明显负面感受，建议加强安抚与解释。',
     ANGRY: '用户情绪风险高，建议优先处理并考虑转人工升级。'

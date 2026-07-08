@@ -14,6 +14,7 @@ public class AfterSalesVO {
     private String orderNo;
     private Long merchantId;
     private String merchantCode;
+    private String merchantDisplayName;
     private String productName;
     private String productImage;
     private String afterSaleType;

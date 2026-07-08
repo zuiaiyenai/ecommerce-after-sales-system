@@ -37,6 +37,10 @@
         <text class="info-value">{{ orderInfo.orderTime }}</text>
       </view>
       <view class="info-row">
+        <text class="info-label">所属商家</text>
+        <text class="info-value">{{ orderInfo.merchantDisplayName || orderInfo.merchantCode || '演示商家' }}</text>
+      </view>
+      <view class="info-row">
         <text class="info-label">实付款</text>
         <text class="info-value price">¥{{ orderInfo.totalPrice }}</text>
       </view>
@@ -175,6 +179,8 @@ const orderInfo = ref({
   orderNo: '',
   orderTime: '',
   totalPrice: '0.00',
+  merchantCode: '',
+  merchantDisplayName: '',
   status: '',
   statusText: '',
   trackingCompany: '',
@@ -314,6 +320,8 @@ function fillOrderInfo(order) {
     orderNo: order.orderNo || '',
     orderTime: order.createTime || '',
     totalPrice: order.payAmount || '0.00',
+    merchantCode: order.merchantCode || '',
+    merchantDisplayName: order.merchantDisplayName || '',
     status: order.status || '',
     statusText: order.statusText || '',
     trackingCompany: order.trackingCompany || '',
@@ -520,6 +528,8 @@ function contactService() {
     'productName=' + encodeURIComponent(info.productName || ''),
     'productIcon=' + encodeURIComponent(info.productImage || ''),
     'productSpec=' + encodeURIComponent(info.spec || ''),
+    'merchantCode=' + encodeURIComponent(info.merchantCode || ''),
+    'merchantDisplayName=' + encodeURIComponent(info.merchantDisplayName || ''),
     'amount=' + encodeURIComponent(info.totalPrice || info.price || ''),
     'status=' + encodeURIComponent(info.status || ''),
     'statusText=' + encodeURIComponent(afterSaleInfo.value.statusText || '售后处理中')

@@ -78,6 +78,7 @@ class RiskLevel(str, Enum):
 
 
 class EmotionLabel(str, Enum):
+    SATISFIED = "satisfied"
     CALM = "calm"
     ANXIOUS = "anxious"
     DISSATISFIED = "dissatisfied"
@@ -207,7 +208,7 @@ class HumanHandoffResult:
 @dataclass(frozen=True)
 class EmotionAnalysisResult:
     label: EmotionLabel
-    score: int
+    score: float
     confidence: float
     triggers: tuple[str, ...]
     need_human_priority: bool

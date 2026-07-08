@@ -12,6 +12,7 @@ public class OrderVO {
     private String orderNo;
     private Long merchantId;
     private String merchantCode;
+    private String merchantDisplayName;
     private BigDecimal totalAmount;
     private BigDecimal payAmount;
     private String status;

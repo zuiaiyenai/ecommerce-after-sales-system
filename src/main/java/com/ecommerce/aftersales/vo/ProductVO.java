@@ -11,6 +11,7 @@ public class ProductVO {
     private String productCode;
     private Long merchantId;
     private String merchantCode;
+    private String merchantDisplayName;
     private String category;
     private String description;
     private String mainImage;

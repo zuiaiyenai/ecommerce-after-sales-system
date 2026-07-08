@@ -27,6 +27,22 @@ public class MerchantCsController {
         return ApiResponse.success("登录成功", merchantCsService.login(request));
     }
 
+    @PostMapping("/auth/code")
+    public ApiResponse<Map<String, String>> sendAuthCode(@RequestBody AuthCodeRequest request) {
+        return ApiResponse.success("验证码发送成功", Map.of("code", merchantCsService.sendAuthCode(request)));
+    }
+
+    @PostMapping("/auth/register")
+    public ApiResponse<StaffProfile> register(@RequestBody RegisterRequest request) {
+        return ApiResponse.success("注册申请已提交，请等待管理员审核", merchantCsService.register(request));
+    }
+
+    @PostMapping("/auth/password/reset")
+    public ApiResponse<Void> resetPassword(@RequestBody ResetPasswordRequest request) {
+        merchantCsService.resetPassword(request);
+        return ApiResponse.success("密码重置成功", null);
+    }
+
     @PostMapping("/auth/logout")
     public ApiResponse<Void> logout() {
         merchantCsService.logout();
@@ -104,6 +120,11 @@ public class MerchantCsController {
     @GetMapping("/sessions/{sessionId}")
     public ApiResponse<SessionView> getSession(@PathVariable Long sessionId) {
         return ApiResponse.success("获取成功", merchantCsService.getSession(sessionId));
+    }
+
+    @GetMapping("/sessions/{sessionId}/ai-assist")
+    public ApiResponse<SessionAiAssistView> getSessionAiAssist(@PathVariable Long sessionId) {
+        return ApiResponse.success("获取成功", merchantCsService.getSessionAiAssist(sessionId));
     }
 
     @GetMapping("/sessions/{sessionId}/messages")
@@ -229,5 +250,13 @@ public class MerchantCsController {
     public ApiResponse<ProductView> updateProductStatus(@PathVariable Long productId,
                                                         @RequestBody ProductStatusRequest request) {
         return ApiResponse.success("更新成功", merchantCsService.updateProductStatus(productId, request.getStatus()));
+    }
+
+    @GetMapping("/reviews")
+    public ApiResponse<PageResult<ReviewView>> listReviews(@RequestParam(defaultValue = "1") long page,
+                                                           @RequestParam(defaultValue = "10") long size,
+                                                           @RequestParam(required = false) String score,
+                                                           @RequestParam(required = false) String keyword) {
+        return ApiResponse.success("获取成功", merchantCsService.getReviews(page, size, score, keyword));
     }
 }

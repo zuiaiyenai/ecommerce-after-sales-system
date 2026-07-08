@@ -143,6 +143,7 @@ export function buildSelectedOrder(order = {}, extra = {}) {
     order_id: orderNo,
     user_id: String(extra.userId || getCurrentUserId()),
     merchant_code: String(order.merchantCode || extra.merchantCode || 'MERCHANT_DEMO'),
+    merchant_display_name: String(order.merchantDisplayName || extra.merchantDisplayName || ''),
     product_name: String(item.productName || extra.productName || order.orderNo || '未知商品'),
     category: String(item.productSpec || extra.category || '综合'),
     status: statusMap[orderStatus] || String(extra.status || 'delivered'),

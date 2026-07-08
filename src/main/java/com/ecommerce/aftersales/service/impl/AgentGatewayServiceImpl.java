@@ -58,6 +58,11 @@ public class AgentGatewayServiceImpl implements AgentGatewayService {
         return exchange("/chat", HttpMethod.POST, request, AgentGatewayDtos.ChatResponse.class);
     }
 
+    @Override
+    public AgentGatewayDtos.EmotionAnalyzeResponse analyzeEmotion(AgentGatewayDtos.EmotionAnalyzeRequest request) {
+        return exchange("/analyze/emotion", HttpMethod.POST, request, AgentGatewayDtos.EmotionAnalyzeResponse.class);
+    }
+
     private <T> T exchange(String path, HttpMethod method, Object body, Class<T> responseType) {
         String url = buildUrl(path);
         try {

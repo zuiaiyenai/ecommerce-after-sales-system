@@ -8,12 +8,17 @@ import com.ecommerce.aftersales.dto.MerchantCsDtos.*;
 import com.ecommerce.aftersales.dto.WsChatMessage;
 import com.ecommerce.aftersales.entity.*;
 import com.ecommerce.aftersales.mapper.*;
+import com.ecommerce.aftersales.service.AgentGatewayService;
+import com.ecommerce.aftersales.service.ChatEmotionAnalysisService;
+import com.ecommerce.aftersales.service.KnowledgeRetrievalService;
 import com.ecommerce.aftersales.service.MerchantCsService;
 import com.ecommerce.aftersales.service.NotificationService;
+import com.ecommerce.aftersales.service.VerificationCodeService;
 import com.ecommerce.aftersales.util.JwtTokenUtil;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,17 +33,23 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class MerchantCsServiceImpl implements MerchantCsService {
 
     private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
+    private static final String REGISTER_SCENE = "REGISTER";
+    private static final String RESET_PASSWORD_SCENE = "RESET_PASSWORD";
+    private static final int STATUS_ACTIVE = 1;
+    private static final int STATUS_PENDING_APPROVAL = 2;
     private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String EVALUATION_INVITE_MESSAGE = "售后处理已完成，请对本次客服服务进行评价。";
@@ -53,11 +64,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private final ProductInfoMapper productInfoMapper;
     private final UserMapper userMapper;
     private final MessageNoticeMapper messageNoticeMapper;
+    private final AgentGatewayService agentGatewayService;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
     private final ObjectMapper objectMapper;
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final NotificationService notificationService;
+    private final VerificationCodeService verificationCodeService;
+    private final KnowledgeRetrievalService knowledgeRetrievalService;
+    private final ChatEmotionAnalysisService chatEmotionAnalysisService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -65,16 +80,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         if (!StringUtils.hasText(request.getAccount()) || !StringUtils.hasText(request.getPassword())) {
             throw new BizException("账号和密码不能为空");
         }
-        String merchantCode = normalizeMerchantCode(request.getMerchantCode());
-        SysUser staff = findStaffByAccount(request.getAccount(), merchantCode);
+        SysUser staff = findStaffByAccountAnyMerchant(request.getAccount().trim());
         if (staff == null || !passwordEncoder.matches(request.getPassword(), staff.getPassword())) {
             throw new BizException("账号或密码错误");
         }
-        if (!Integer.valueOf(1).equals(staff.getStatus())) {
-            throw new BizException(403, "客服账号不可用");
+        if (Integer.valueOf(STATUS_PENDING_APPROVAL).equals(staff.getStatus())) {
+            throw new BizException(403, "注册申请已提交，请等待管理员审核通过后再登录");
         }
-        if (!StringUtils.hasText(staff.getMerchantCode())) {
-            staff.setMerchantCode(merchantCode);
+        if (!Integer.valueOf(STATUS_ACTIVE).equals(staff.getStatus())) {
+            throw new BizException(403, "客服账号已被停用，请联系管理员处理");
         }
         staff.setOnlineStatus(1);
         staff.setLastLoginTime(LocalDateTime.now());
@@ -84,6 +98,95 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         response.setToken(jwtTokenUtil.generateToken(staff.getId(), Optional.ofNullable(staff.getPhone()).orElse(staff.getUsername())));
         response.setStaff(toStaffProfile(staff));
         return response;
+    }
+
+    @Override
+    public String sendAuthCode(AuthCodeRequest request) {
+        String scene = normalizeAuthScene(request == null ? null : request.getScene());
+        String phone = normalizePhone(request == null ? null : request.getPhone());
+        if (!StringUtils.hasText(phone)) {
+            throw new BizException("请输入手机号");
+        }
+        if (REGISTER_SCENE.equals(scene)) {
+            if (request != null && StringUtils.hasText(request.getAccount()) && accountExistsAnywhere(request.getAccount().trim())) {
+                throw new BizException("账号已存在，请更换其他账号");
+            }
+            return verificationCodeService.sendCode(phone, REGISTER_SCENE);
+        }
+
+        String account = request == null ? null : request.getAccount();
+        if (!StringUtils.hasText(account)) {
+            throw new BizException("请输入登录账号");
+        }
+        SysUser staff = findStaffByAccountAnyMerchant(account.trim());
+        if (staff == null) {
+            throw new BizException("账号不存在");
+        }
+        String boundPhone = normalizePhone(staff.getPhone());
+        if (!StringUtils.hasText(boundPhone)) {
+            throw new BizException("该账号未绑定手机号，请联系管理员处理");
+        }
+        if (!boundPhone.equals(phone)) {
+            throw new BizException("账号与手机号不匹配");
+        }
+        return verificationCodeService.sendCode(phone, RESET_PASSWORD_SCENE);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public StaffProfile register(RegisterRequest request) {
+        if (!StringUtils.hasText(request.getAccount())
+                || !StringUtils.hasText(request.getPassword())
+                || !StringUtils.hasText(request.getRealName())
+                || !StringUtils.hasText(request.getPhone())
+                || !StringUtils.hasText(request.getCode())) {
+            throw new BizException("请填写账号、密码、姓名、手机号和验证码");
+        }
+        verificationCodeService.verifyCode(normalizePhone(request.getPhone()), REGISTER_SCENE, request.getCode());
+        if (accountExistsAnywhere(request.getAccount().trim())) {
+            throw new BizException("该账号已存在");
+        }
+
+        SysUser staff = new SysUser();
+        staff.setUsername(request.getAccount().trim());
+        staff.setPassword(passwordEncoder.encode(request.getPassword()));
+        staff.setMerchantCode(DEFAULT_MERCHANT_CODE);
+        staff.setRealName(request.getRealName().trim());
+        staff.setPhone(normalizePhone(request.getPhone()));
+        staff.setRoleType("AGENT");
+        staff.setStatus(STATUS_PENDING_APPROVAL);
+        staff.setOnlineStatus(0);
+        staff.setMaxSessions(8);
+        staff.setDeleted(0);
+        sysUserMapper.insert(staff);
+        return toStaffProfile(staff);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void resetPassword(ResetPasswordRequest request) {
+        if (request == null
+                || !StringUtils.hasText(request.getAccount())
+                || !StringUtils.hasText(request.getPhone())
+                || !StringUtils.hasText(request.getCode())
+                || !StringUtils.hasText(request.getNewPassword())
+                || !StringUtils.hasText(request.getConfirmPassword())) {
+            throw new BizException("请填写账号、手机号、验证码和新密码");
+        }
+        if (!request.getNewPassword().equals(request.getConfirmPassword())) {
+            throw new BizException("两次输入的密码不一致");
+        }
+        SysUser staff = findStaffByAccountAnyMerchant(request.getAccount().trim());
+        if (staff == null) {
+            throw new BizException("账号不存在");
+        }
+        String phone = normalizePhone(request.getPhone());
+        if (!phone.equals(normalizePhone(staff.getPhone()))) {
+            throw new BizException("账号与手机号不匹配");
+        }
+        verificationCodeService.verifyCode(phone, RESET_PASSWORD_SCENE, request.getCode());
+        staff.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        sysUserMapper.updateById(staff);
     }
 
     @Override
@@ -180,18 +283,76 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     @Override
     public SessionView getSession(Long sessionId) {
         ChatSession session = findSession(sessionId);
+        backfillSessionEmotionIfMissing(session);
         return toSessionView(session);
     }
 
     @Override
     public List<MessageView> listSessionMessages(Long sessionId) {
         findSession(sessionId);
-        return chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
+        List<ChatMessage> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
                         .eq(ChatMessage::getSessionId, sessionId)
-                        .orderByAsc(ChatMessage::getCreateTime))
-                .stream()
+                        .orderByAsc(ChatMessage::getCreateTime));
+        chatEmotionAnalysisService.backfillMissingEmotions(sessionId, messages);
+        return messages.stream()
                 .map(this::toMessageView)
                 .toList();
+    }
+
+    @Override
+    public SessionAiAssistView getSessionAiAssist(Long sessionId) {
+        ChatSession session = findSession(sessionId);
+        List<ChatMessage> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId)
+                .orderByAsc(ChatMessage::getCreateTime)
+                .last("limit 20"));
+        ChatMessage latestUserMessage = messages.stream()
+                .filter(message -> "USER".equalsIgnoreCase(message.getRole()))
+                .reduce((first, second) -> second)
+                .orElse(null);
+        ChatMessage latestServiceMessage = messages.stream()
+                .filter(message -> !"USER".equalsIgnoreCase(message.getRole()))
+                .filter(message -> StringUtils.hasText(message.getContent()))
+                .reduce((first, second) -> second)
+                .orElse(null);
+
+        SessionAiAssistView view = new SessionAiAssistView();
+        view.setSessionId(sessionId);
+        view.setLatestUserMessage(latestUserMessage == null ? null : latestUserMessage.getContent());
+        view.setSceneCode("after_sales");
+        view.setIntentCode("general");
+        view.setKnowledgeQuery(latestServiceMessage == null ? null : latestServiceMessage.getKnowledgeQuery());
+        view.setKnowledgeRetrievalMode(latestServiceMessage == null ? null : latestServiceMessage.getKnowledgeRetrievalMode());
+        view.setKnowledgeHits(latestServiceMessage == null ? List.of() : parseKnowledgeHits(latestServiceMessage.getKnowledgeHitsJson()));
+        view.setHandoffSummaryText(Optional.ofNullable(session.getUserQuery()).orElse(""));
+        view.setConversationDigest(buildConversationDigest(session, latestUserMessage));
+
+        if (latestServiceMessage != null && StringUtils.hasText(latestServiceMessage.getContent())) {
+            RecommendationView recommendation = new RecommendationView();
+            recommendation.setText(latestServiceMessage.getContent());
+            recommendation.setConfidence(latestServiceMessage.getConfidence());
+            recommendation.setSource("latest_service_reply");
+            recommendation.setReason("基于最近一条客服回复生成");
+            recommendation.setIntentCode(view.getIntentCode());
+            recommendation.setSceneCode(view.getSceneCode());
+            recommendation.setTone("neutral");
+            view.setRecommendation(recommendation);
+
+            QuickReplyView suggestion = new QuickReplyView();
+            suggestion.setCode("latest_reply");
+            suggestion.setLabel("最近回复");
+            suggestion.setText(latestServiceMessage.getContent());
+            suggestion.setSceneCode(view.getSceneCode());
+            suggestion.setIntentCode(view.getIntentCode());
+            suggestion.setTone("neutral");
+            suggestion.setScore(latestServiceMessage.getConfidence());
+            view.setStaffSuggestion(suggestion);
+        }
+
+        view.setQuickReplySource("session_context");
+        view.setQuickReplies(buildQuickReplies(session));
+        view.setTrace(Map.of("source", "merchant_cs_session"));
+        return view;
     }
 
     @Override
@@ -499,6 +660,93 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     @Override
+    public PageResult<ReviewView> getReviews(long page, long size, String score, String keyword) {
+        List<ReviewView> records = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                        .eq(ChatSession::getMerchantCode, currentMerchantCode())
+                        .eq(ChatSession::getMode, "HUMAN")
+                        .isNotNull(ChatSession::getSatisfaction)
+                        .orderByDesc(ChatSession::getUpdateTime))
+                .stream()
+                .map(this::toReviewView)
+                .filter(item -> !StringUtils.hasText(score) || matchesScoreFilter(item, score))
+                .filter(item -> !StringUtils.hasText(keyword) || containsAny(keyword,
+                        item.getOrderNo(), item.getUser(), item.getProductName(), item.getTicketNo(), item.getContent()))
+                .toList();
+        return PageResult.of(records, page, size);
+    }
+
+    private ReviewView toReviewView(ChatSession session) {
+        User user = userMapper.selectById(session.getUserId());
+        OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
+        AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
+
+        ReviewView view = new ReviewView();
+        view.setId(session.getId());
+        view.setOverallScore(session.getSatisfaction());
+        view.setOrderNo(order == null ? null : order.getOrderNo());
+        view.setUser(userDisplayName(user));
+        view.setProductName(ticket == null ? null : ticket.getProductName());
+        view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
+        view.setContent(resolveEvaluationContent(session));
+        view.setProductImage(resolveProductImage(session));
+        view.setCreatedAt(format(session.getCloseTime() != null ? session.getCloseTime() : session.getUpdateTime()));
+        view.setResponseSpeedScore(session.getSatisfaction());
+        view.setServiceAttitudeScore(session.getSatisfaction());
+        view.setProfessionalScore(session.getSatisfaction());
+        view.setEfficiencyScore(session.getSatisfaction());
+        return view;
+    }
+
+    private String resolveProductImage(ChatSession session) {
+        if (session.getOrderId() == null) {
+            return null;
+        }
+        try {
+            OrderProductItem firstItem = orderItems(session.getOrderId()).stream().findFirst().orElse(null);
+            if (firstItem != null && firstItem.getProductId() != null) {
+                ProductInfo product = productInfoMapper.selectById(firstItem.getProductId());
+                if (product != null && StringUtils.hasText(product.getMainImage())) {
+                    return product.getMainImage();
+                }
+            }
+        } catch (Exception ignored) {
+            // fallback to null
+        }
+        return null;
+    }
+
+    private String resolveEvaluationContent(ChatSession session) {
+        try {
+            ChatMessage latestSystemMsg = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                    .eq(ChatMessage::getSessionId, session.getId())
+                    .eq(ChatMessage::getRole, "SYSTEM")
+                    .orderByDesc(ChatMessage::getCreateTime)
+                    .last("limit 1"));
+            if (latestSystemMsg != null && StringUtils.hasText(latestSystemMsg.getContent())) {
+                String content = latestSystemMsg.getContent();
+                if (!content.contains("请对本次客服服务进行评价") && !content.contains("已发送服务评价邀请")) {
+                    return content;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private boolean matchesScoreFilter(ReviewView item, String score) {
+        if (item.getOverallScore() == null) {
+            return false;
+        }
+        int value = item.getOverallScore();
+        return switch (score) {
+            case "GOOD" -> value >= 5;
+            case "NORMAL" -> value == 3 || value == 4;
+            case "BAD" -> value > 0 && value <= 2;
+            default -> true;
+        };
+    }
+
+    @Override
     public PageResult<ProductView> listProducts(long page, long size, String status, String keyword) {
         List<ProductView> records = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                         .eq(ProductInfo::getMerchantCode, currentMerchantCode())
@@ -547,11 +795,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return toProductView(product);
     }
 
-    private SysUser findStaffByAccount(String account, String merchantCode) {
+    private SysUser findStaffByAccountAnyMerchant(String account) {
         return sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, account)
-                .eq(SysUser::getMerchantCode, merchantCode)
+                .eq(SysUser::getRoleType, "AGENT")
                 .last("limit 1"));
+    }
+
+    private boolean accountExistsAnywhere(String account) {
+        return findStaffByAccountAnyMerchant(account) != null;
     }
 
     private SysUser ensureStaff() {
@@ -596,7 +848,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         profile.setPhone(staff.getPhone());
         profile.setRole("AGENT".equals(staff.getRoleType()) ? "CUSTOMER_SERVICE" : staff.getRoleType());
         profile.setOnlineStatus(toOnlineStatusText(staff.getOnlineStatus()));
-        profile.setAccountStatus(Integer.valueOf(1).equals(staff.getStatus()) ? "ENABLED" : "DISABLED");
+        profile.setAccountStatus(toAccountStatusText(staff.getStatus()));
         profile.setMaxSessionCount(staff.getMaxSessions());
         return profile;
     }
@@ -648,6 +900,26 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setEvaluationStatus(evaluationStatus(session));
         view.setEvaluatedAt(session.getSatisfaction() == null ? null : format(session.getCloseTime()));
         return view;
+    }
+
+    private void backfillSessionEmotionIfMissing(ChatSession session) {
+        if (session == null || StringUtils.hasText(session.getEmotionLabel())) {
+            return;
+        }
+        List<ChatMessage> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, session.getId())
+                .orderByAsc(ChatMessage::getCreateTime)
+                .last("limit 12"));
+        if (messages.isEmpty()) {
+            return;
+        }
+        chatEmotionAnalysisService.backfillMissingEmotions(session.getId(), messages);
+        ChatSession refreshed = chatSessionMapper.selectById(session.getId());
+        if (refreshed != null) {
+            session.setEmotionLabel(refreshed.getEmotionLabel());
+            session.setEmotionScore(refreshed.getEmotionScore());
+            session.setEmotionConfidence(refreshed.getEmotionConfidence());
+        }
     }
 
     private Optional<ChatMessage> lastMessage(Long sessionId) {
@@ -721,6 +993,39 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private Map<String, String> buildConversationDigest(ChatSession session, ChatMessage latestUserMessage) {
+        Map<String, String> digest = new LinkedHashMap<>();
+        digest.put("用户诉求", latestUserMessage == null ? Optional.ofNullable(session.getUserQuery()).orElse("待补充") : latestUserMessage.getContent());
+        digest.put("会话模式", Optional.ofNullable(session.getMode()).orElse("AI"));
+        digest.put("当前状态", Optional.ofNullable(session.getStatus()).orElse("ACTIVE"));
+        if (StringUtils.hasText(session.getEmotionLabel())) {
+            digest.put("当前情绪", emotionText(session.getEmotionLabel()));
+        }
+        return digest;
+    }
+
+    private List<QuickReplyView> buildQuickReplies(ChatSession session) {
+        List<QuickReplyView> replies = new ArrayList<>();
+        replies.add(quickReply("progress", "处理进度", "您好，我先帮您核对当前处理进度，有结果后会尽快同步给您。"));
+        replies.add(quickReply("evidence", "补充凭证", "为了更快帮您处理，麻烦补充当前最关键的凭证或问题照片。"));
+        if ("HUMAN".equalsIgnoreCase(session.getMode())) {
+            replies.add(quickReply("handoff", "人工接待", "您好，当前已由人工客服接入，我会继续为您跟进处理。"));
+        }
+        return replies;
+    }
+
+    private QuickReplyView quickReply(String code, String label, String text) {
+        QuickReplyView view = new QuickReplyView();
+        view.setCode(code);
+        view.setLabel(label);
+        view.setText(text);
+        view.setSceneCode("after_sales");
+        view.setIntentCode("general");
+        view.setTone("neutral");
+        view.setScore(BigDecimal.valueOf(0.8));
+        return view;
     }
 
     private BigDecimal decimalValue(Object value) {
@@ -1030,10 +1335,29 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
     }
 
+    private String normalizePhone(String phone) {
+        if (!StringUtils.hasText(phone)) {
+            return "";
+        }
+        return phone.replaceAll("\\s+", "").trim();
+    }
+
+    private String normalizeAuthScene(String scene) {
+        return RESET_PASSWORD_SCENE.equalsIgnoreCase(scene) ? RESET_PASSWORD_SCENE : REGISTER_SCENE;
+    }
+
     private void assertCurrentMerchant(String merchantCode, String notFoundMessage) {
         if (!currentMerchantCode().equals(normalizeMerchantCode(merchantCode))) {
             throw new BizException(404, notFoundMessage);
         }
+    }
+
+    private String toAccountStatusText(Integer status) {
+        return switch (Optional.ofNullable(status).orElse(0)) {
+            case STATUS_ACTIVE -> "ENABLED";
+            case STATUS_PENDING_APPROVAL -> "PENDING_APPROVAL";
+            default -> "DISABLED";
+        };
     }
 
     private List<TimelineItem> buildTimeline() {
@@ -1111,6 +1435,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private String emotionText(String emotionLabel) {
         return switch (Optional.ofNullable(emotionLabel).orElse("NORMAL")) {
             case "SATISFIED" -> "满意";
+            case "CALM", "NORMAL", "NEUTRAL" -> "中性";
             case "ANGRY" -> "情绪预警";
             case "ANXIOUS", "ANXIETY" -> "焦急";
             case "DISSATISFIED" -> "不满";

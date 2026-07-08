@@ -13,6 +13,7 @@
         <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
         <view class="order-product-info">
           <text class="order-product">{{ orderInfo.productName || '售后商品' }}</text>
+          <text class="merchant-text">商家：{{ orderInfo.merchantDisplayName || orderInfo.merchantCode || '演示商家' }}</text>
           <view class="order-row">
             <text class="order-no">订单号：{{ orderInfo.orderNo || '--' }}</text>
             <text class="copy-icon" @tap="copyOrderNo">复制</text>
@@ -144,6 +145,8 @@ const orderInfo = ref({
   productName: '',
   orderNo: '',
   productIcon: '',
+  merchantCode: '',
+  merchantDisplayName: '',
   statusText: ''
 })
 
@@ -300,6 +303,8 @@ function buildFallbackOrder(options = {}) {
   return {
     id: options.orderId || '',
     orderNo,
+    merchantCode: decodeURIComponent(options.merchantCode || ''),
+    merchantDisplayName: decodeURIComponent(options.merchantDisplayName || ''),
     payAmount: options.amount || item.price || '0.00',
     status: decodeURIComponent(options.status || 'RECEIVED'),
     statusText: decodeURIComponent(options.statusText || '售后中'),
@@ -314,6 +319,8 @@ function applyOrderToView(order) {
     productName: item.productName || '',
     orderNo: order?.orderNo || '',
     productIcon: item.productImage || '',
+    merchantCode: order?.merchantCode || '',
+    merchantDisplayName: order?.merchantDisplayName || '',
     statusText: order?.statusText || ''
   }
   hasOrder.value = Boolean(order)
@@ -433,7 +440,8 @@ async function resolveRemoteSession(options) {
   try {
     const result = await createChatSession({
       orderId: options.orderId ? String(options.orderId) : null,
-      afterSaleId: options.afterSaleId ? String(options.afterSaleId) : null
+      afterSaleId: options.afterSaleId ? String(options.afterSaleId) : null,
+      merchantCode: options.merchantCode ? decodeURIComponent(options.merchantCode) : ''
     })
     if (!result?.sessionId) return false
     sessionId.value = String(result.sessionId)
@@ -445,8 +453,29 @@ async function resolveRemoteSession(options) {
   }
 }
 
-function buildReplyMeta() {
-  return ''
+function emotionLabelText(label) {
+  const normalized = String(label || '').trim().toUpperCase()
+  const labelMap = {
+    SATISFIED: '满意',
+    CALM: '平稳',
+    NEUTRAL: '中性',
+    ANXIOUS: '着急',
+    DISSATISFIED: '不满',
+    ANGRY: '愤怒'
+  }
+  return labelMap[normalized] || ''
+}
+
+function buildReplyMeta(result) {
+  const tags = []
+  const emotionLabel = emotionLabelText(result?.emotion?.label)
+  if (emotionLabel) {
+    tags.push(`情绪:${emotionLabel}`)
+  }
+  if (result?.fallback_need_human || result?.emotion?.need_human_priority) {
+    tags.push('优先处理')
+  }
+  return tags.join(' · ')
 }
 
 async function chooseImage() {
@@ -600,7 +629,8 @@ async function sendAgentMessage({
     if (!sessionId.value) {
       const session = await createChatSession({
         orderId: orderData.value?.id ? String(orderData.value.id) : null,
-        afterSaleId: orderData.value?.afterSaleId ? String(orderData.value.afterSaleId) : null
+        afterSaleId: orderData.value?.afterSaleId ? String(orderData.value.afterSaleId) : null,
+        merchantCode: orderData.value?.merchantCode || orderInfo.value?.merchantCode || ''
       })
       if (session?.sessionId) {
         sessionId.value = String(session.sessionId)
@@ -935,6 +965,16 @@ onLoad(async (options) => {
   font-size: 28rpx;
   font-weight: 700;
   color: #1a1a1a;
+}
+
+.merchant-text {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: #8a776c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-row {

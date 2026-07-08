@@ -289,13 +289,13 @@ function normalizeSessions() {
 
 export async function login(credentials) {
   if (!USE_REAL_API) {
-    if (credentials.account !== 'cs_demo' || credentials.password !== '123456' || credentials.merchantCode !== 'MERCHANT_DEMO') {
+    if (credentials.account !== 'cs_demo' || credentials.password !== '123456') {
       throw new Error('账号或密码错误');
     }
     staffProfile = {
       staffId: 1,
       staffNo: 'CS0001',
-      merchantCode: credentials.merchantCode,
+      merchantCode: 'MERCHANT_DEMO',
       account: credentials.account,
       realName: '林真',
       role: 'CUSTOMER_SERVICE',
@@ -312,6 +312,47 @@ export async function login(credentials) {
   saveToken(data.token);
   staffProfile = data.staff;
   return data;
+}
+
+export async function registerStaff(payload) {
+  if (!USE_REAL_API) {
+    return delay({
+      staffId: Date.now(),
+      staffNo: `CS${String(Date.now()).slice(-4)}`,
+      merchantCode: '',
+      account: payload.account,
+      realName: payload.realName,
+      phone: payload.phone,
+      role: 'CUSTOMER_SERVICE',
+      onlineStatus: 'OFFLINE',
+      accountStatus: 'PENDING_APPROVAL',
+      maxSessionCount: 8
+    });
+  }
+  return request('/api/merchant-cs/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function sendAuthCode(payload) {
+  if (!USE_REAL_API) {
+    return delay({ code: '123456' });
+  }
+  return request('/api/merchant-cs/auth/code', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function resetPassword(payload) {
+  if (!USE_REAL_API) {
+    return delay(null);
+  }
+  return request('/api/merchant-cs/auth/password/reset', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
 }
 
 export async function logout() {
@@ -418,6 +459,20 @@ export async function getSessionMessages(sessionId) {
     return delay(messagesBySession[sessionId] || []);
   }
   return request(`/api/merchant-cs/sessions/${sessionId}/messages`);
+}
+
+export async function getSessionAiAssist(sessionId) {
+  if (!USE_REAL_API) {
+    return delay({
+      sessionId,
+      conversationDigest: {},
+      quickReplies: [],
+      quickReplySource: 'mock',
+      latestUserMessage: '',
+      knowledgeHits: []
+    });
+  }
+  return request(`/api/merchant-cs/sessions/${sessionId}/ai-assist`);
 }
 
 let sessionMap = new Map();
@@ -634,9 +689,6 @@ export async function markNoticeRead(noticeId) {
 // ==================== Reviews ====================
 
 export async function getReviews(params = {}) {
-  if (!USE_REAL_API) {
-    return delay({ records: [], total: 0 });
-  }
   const query = new URLSearchParams();
   if (params.score) query.set('score', params.score);
   if (params.keyword) query.set('keyword', params.keyword);

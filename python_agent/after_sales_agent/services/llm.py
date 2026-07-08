@@ -26,7 +26,7 @@ class OpenAICompatibleConfig:
         return cls(
             base_url=os.getenv("QWEN_BASE_URL", "http://127.0.0.1:11434"),
             api_key=os.getenv("QWEN_API_KEY", "EMPTY"),
-            model=os.getenv("QWEN_MODEL", "qwen2.5:1.5b"),
+            model=os.getenv("QWEN_MODEL", "qwen2.5:7b"),
             timeout_seconds=int(os.getenv("QWEN_TIMEOUT_SECONDS", "60")),
         )
 

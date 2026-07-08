@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 import re
 from typing import Any, Literal, TypedDict
 
@@ -9,6 +10,8 @@ from langgraph.graph import END, StateGraph
 
 from .agent_tools import AfterSalesTools
 from .services.llm import OpenAICompatibleClient, OpenAICompatibleConfig
+
+logger = logging.getLogger("after_sales_agent.langgraph")
 
 
 class AgentGraphState(TypedDict, total=False):
@@ -29,6 +32,7 @@ class AgentGraphState(TypedDict, total=False):
     session_mode: str
     ticket: dict[str, Any] | None
     evidence_needed: list[str]
+    explicit_human_request: bool
     final: bool
 
 
@@ -91,6 +95,10 @@ class LangGraphAfterSalesAgent:
             "session_mode": "AI",
             "ticket": None,
             "evidence_needed": [],
+            "explicit_human_request": self._is_explicit_human_request(
+                str(payload.get("message") or ""),
+                list(payload.get("recent_history") or payload.get("recentHistory") or []),
+            ),
             "final": False,
         }
         final_state = self.graph.invoke(state)
@@ -123,20 +131,75 @@ class LangGraphAfterSalesAgent:
     def classify_or_plan(self, state: AgentGraphState) -> AgentGraphState:
         if state.get("final"):
             return state
+        msg = str(state.get("message") or "")
+        logger.info("=" * 70)
+        logger.info("🔍 [classify_or_plan] 用户消息: %s", msg[:200])
+        logger.info("   attachments: %d 个", len(state.get("attachments") or []))
+        logger.info("   order_id_hint: %s", state.get("order_id_hint"))
+        logger.info("   existing tool_results: %d", len(state.get("tool_results") or []))
+
         raw = self.llm.chat_json(
             system_prompt=self._planner_system_prompt(),
             user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
             temperature=0.1,
             max_tokens=700,
         )
-        if not state.get("tool_results") and self._needs_order_lookup(state):
+        logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
+                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
+        logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
+
+        # 小模型安全网：LLM 忽略了已提供的订单上下文时，强制查订单
+        # 这不是关键词匹配 — 只检查"有 order_id / 有实质内容 / LLM 没调工具"
+        if self._llm_ignored_order_context(state, raw):
+            logger.info("⚡ 安全网触发: LLM 忽略了订单上下文, 强制 search_user_orders")
             raw = self._order_lookup_action(state)
+
         self._apply_action(state, raw)
+        logger.info("🎯 最终决策: next_action=%s tool_name=%s need_human=%s",
+                    state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
+
+    @staticmethod
+    def _llm_ignored_order_context(state: AgentGraphState, llm_raw: dict[str, Any]) -> bool:
+        """小模型安全网：LLM 有订单上下文却没查订单也没做有用的事。"""
+        # 已经有 tool_results，说明之前的步骤已正确处理
+        if state.get("tool_results"):
+            return False
+        # LLM 选了 tool_call，信任它
+        if llm_raw.get("action") == "tool_call" and llm_raw.get("tool_name"):
+            return False
+        # LLM 选了 human_handoff，但用户有订单 — 应该先查订单再转人工
+        if llm_raw.get("action") == "human_handoff":
+            return bool(state.get("order_id_hint"))
+        # LLM 选了 final_reply — 检查是否有订单上下文被忽略
+        has_order = bool(state.get("order_id_hint"))
+        msg = str(state.get("message") or "").strip()
+        has_attachments = bool(state.get("attachments"))
+        # 有订单 + (有附件 或 消息足够长) → LLM 不应该直接 final_reply
+        return has_order and (has_attachments or len(msg) >= 8)
+
+    @staticmethod
+    def _is_explicit_human_request(message: str, recent_history: list[dict[str, Any]] | None = None) -> bool:
+        keywords = ("转人工", "人工客服", "真人客服", "人工帮助", "联系客服", "转接人工")
+        if any(keyword in message for keyword in keywords):
+            return True
+        for item in reversed(recent_history or []):
+            if str(item.get("role") or "").upper() != "USER":
+                continue
+            content = str(item.get("content") or "")
+            if any(keyword in content for keyword in keywords):
+                return True
+        return False
 
     def tool_call(self, state: AgentGraphState) -> AgentGraphState:
         name = str(state.get("tool_name") or "")
-        result = self.tools.call(name, state.get("tool_arguments") or {})
+        arguments = state.get("tool_arguments") or {}
+        logger.info("🔧 [tool_call] step=%d 调用工具: %s", int(state.get("steps") or 0) + 1, name)
+        # 隐藏敏感字段的日志
+        safe_args = {k: v for k, v in arguments.items() if k not in ("user_id", "session_id")}
+        logger.info("   参数: %s", json.dumps(safe_args, ensure_ascii=False, default=str)[:300])
+        result = self.tools.call(name, arguments)
+        logger.info("   结果: ok=%s error=%s", result.ok, (result.error or "")[:100])
         trace = list(state.get("tool_results") or [])
         trace.append(
             {
@@ -151,26 +214,37 @@ class LangGraphAfterSalesAgent:
         state["steps"] = int(state.get("steps") or 0) + 1
         if name == "create_after_sales_ticket" and result.ok and isinstance(result.data, dict):
             state["ticket"] = result.data
+            logger.info("   ✅ 售后单已创建: %s status=%s",
+                        result.data.get("ticketNo") or result.data.get("ticket_no"),
+                        result.data.get("status"))
         if name == "handoff_to_human" and result.ok:
             state["session_mode"] = "HUMAN"
             state["need_human"] = True
+            logger.info("   🚨 已转人工")
         return state
 
     def observe_tool_result(self, state: AgentGraphState) -> AgentGraphState:
         return state
 
     def decide_next(self, state: AgentGraphState) -> AgentGraphState:
-        if int(state.get("steps") or 0) >= self.max_steps:
+        steps = int(state.get("steps") or 0)
+        logger.info("🧠 [decide_next] step=%d/%d, tool_results=%d",
+                    steps, self.max_steps, len(state.get("tool_results") or []))
+
+        if steps >= self.max_steps:
+            logger.info("   ⏰ 达到最大步数, 进入 final_reply")
             state["next_action"] = "final_reply"
             state.setdefault("assistant_reply", "已收到您的售后问题，我会根据当前信息继续为您处理。")
             return state
         if self._has_empty_order_search(state):
+            logger.info("   📭 订单查询为空, 进入 final_reply")
             state["next_action"] = "final_reply"
             state["assistant_reply"] = "我没有查询到可用于售后的订单。请提供订单号，或从订单详情页进入售后咨询后再申请退款/退货。"
             state["evidence_needed"] = ["订单信息"]
             state["need_human"] = False
             return state
         if self._has_failed_order_search(state):
+            logger.info("   ❌ 订单查询失败, 进入 final_reply")
             state["next_action"] = "final_reply"
             state["assistant_reply"] = "当前订单服务暂时不可用，我还不能核对订单或创建售后单。请稍后重试。"
             state["evidence_needed"] = ["订单信息"]
@@ -179,16 +253,22 @@ class LangGraphAfterSalesAgent:
 
         guarded = self._guarded_after_sales_action(state)
         if guarded is not None:
+            logger.info("   🛡️ guarded_action 接管: action=%s tool=%s need_human=%s",
+                        guarded.get("action"), guarded.get("tool_name"), guarded.get("need_human"))
             self._apply_action(state, guarded)
             return state
 
+        logger.info("   🤖 LLM decider 决策中...")
         raw = self.llm.chat_json(
             system_prompt=self._decider_system_prompt(),
             user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
             temperature=0.1,
             max_tokens=700,
         )
+        logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
+                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if self._claims_ticket_created(raw.get("assistant_reply")) and not self._has_successful_tool(state, "create_after_sales_ticket"):
+            logger.info("   ⚠️ LLM声称已建单但实际未建, 纠正中...")
             raw = self._order_lookup_action(state) if not self._has_successful_tool(state, "search_user_orders") else {
                 "action": "final_reply",
                 "tool_name": None,
@@ -198,10 +278,15 @@ class LangGraphAfterSalesAgent:
                 "evidence_needed": ["订单信息"],
             }
         self._apply_action(state, raw)
+        logger.info("   🎯 decide_next 结果: next_action=%s tool=%s need_human=%s",
+                    state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
 
     def human_handoff(self, state: AgentGraphState) -> AgentGraphState:
+        logger.info("🚨 [human_handoff] 触发转人工")
         ticket_id = (state.get("ticket") or {}).get("id") if isinstance(state.get("ticket"), dict) else None
+        logger.info("   ticket_id=%s session_id=%s order_id=%s",
+                    ticket_id, state.get("session_id"), state.get("order_id_hint"))
         args = {
             "user_id": state.get("user_id"),
             "session_id": state.get("session_id"),
@@ -228,6 +313,10 @@ class LangGraphAfterSalesAgent:
 
     def final_reply(self, state: AgentGraphState) -> AgentGraphState:
         reply = state.get("assistant_reply") or self._ticket_reply(state) or "已收到您的售后问题，我会继续为您处理。"
+        logger.info("💬 [final_reply] 最终回复: %s", reply[:200])
+        logger.info("   session_mode=%s need_human=%s steps=%d",
+                    state.get("session_mode"), state.get("need_human"), state.get("steps"))
+        logger.info("=" * 70)
         ticket_id = (state.get("ticket") or {}).get("id") if isinstance(state.get("ticket"), dict) else None
         append_user = {
             "user_id": state.get("user_id"),
@@ -298,14 +387,13 @@ class LangGraphAfterSalesAgent:
     @staticmethod
     def _planner_system_prompt() -> str:
         return (
-            "你是电商售后 ReAct Agent。所有业务上下文都必须通过工具获取，不要相信前端传来的订单详情。\n"
-            "Java 业务系统只通过工具执行权限、状态机和事务校验。你只能选择工具或生成最终回复。\n"
-            "用户表达退款、退货、换货、维修、补发、商品损坏、外壳破裂、电流声等具体售后申请时，必须先查订单，再创建售后申请；不要只回复模板话。\n"
-            "售后申请的业务状态规则：用户提交申请后先落 PENDING；证据充分且规则满足时，可以由 create_after_sales_ticket 的 auto_approved=true 让 Java 记录 PENDING->PROCESSING，并保存 AI 建议原因；最终处理仍由人工完成。\n"
-            "当上传图片无法判断、图片与描述不一致或你无法判断时，先创建 PENDING 售后单，再转人工。\n"
-            "当证据不足但未到必须转人工时，创建 PENDING 售后单并请求补充凭证。\n"
-            "当问题只是政策/时效解释时，优先 retrieve_knowledge，不要创建售后单。\n"
-            "不要声称已建单除非 create_after_sales_ticket 工具成功。\n"
+            "你是电商售后 ReAct Agent。决策规则（按优先级）：\n"
+            "1. 用户表达任何不满/投诉/退换货/商品问题（无论品类和用词）→ 先 search_user_orders\n"
+            "2. 查到订单后 → 调用 retrieve_knowledge 查询该品类+场景对应的证据模板和售后政策\n"
+            "3. 纯政策/时效咨询（不用建单）→ 用 retrieve_knowledge 回答，不建单\n"
+            "4. 证据不足 → 用 final_reply 引导用户补充具体凭证，参考 retrieve_knowledge 返回的证据模板\n"
+            "5. 凭证齐全后 → create_after_sales_ticket；视觉审核不确定或政策不匹配 → human_handoff\n"
+            "6. 不要声称已建单除非工具成功；不要信任前端传来的订单详情\n"
             "只输出 JSON："
             "{\"action\":\"tool_call|final_reply|human_handoff\","
             "\"tool_name\":\"工具名或null\",\"tool_arguments\":{},"
@@ -321,8 +409,11 @@ class LangGraphAfterSalesAgent:
         )
 
     def _guarded_after_sales_action(self, state: AgentGraphState) -> dict[str, Any] | None:
-        if not self._is_after_sales_application(state):
-            return None
+        """语义路由 + RAG 证据驱动。信任 LLM 判断是否需要售后操作。
+
+        流程：查订单 → RAG查证据模板 → 动态生成 evidence_needed → 引导/审核/建单
+        """
+        # 如果还没查过订单，先查
         if not self._has_successful_tool(state, "search_user_orders"):
             return self._order_lookup_action(state)
 
@@ -334,69 +425,72 @@ class LangGraphAfterSalesAgent:
                 "evidence_needed": ["订单号"],
                 "need_human": False,
             }
-        if order.get("existingTicketNo") or order.get("existing_ticket_no"):
-            existing_ticket_no = order.get("existingTicketNo") or order.get("existing_ticket_no")
-            # 如果已有售后单，检查是否需要补充材料
-            missing_inputs = self._missing_application_inputs(state)
-            if missing_inputs:
-                return {
-                    "action": "final_reply",
-                    "assistant_reply": f"您的售后申请 {existing_ticket_no} 已创建（待审核）。{self._missing_inputs_reply(missing_inputs)}",
-                    "need_human": False,
-                    "evidence_needed": missing_inputs,
-                }
 
-            if state.get("attachments") and not self._has_tool_result(state, "review_images"):
+        # === 已有售后单：补充材料 / 转人工 ===
+        if bool(state.get("explicit_human_request")) and not self._has_successful_tool(state, "handoff_to_human"):
+            existing_ticket_no = self._existing_ticket_no(order)
+            if existing_ticket_no:
+                state["ticket"] = self._ticket_from_existing_order(order)
                 return {
-                    "action": "tool_call",
-                    "tool_name": "review_images",
-                    "tool_arguments": {
-                        "user_id": state.get("user_id"),
-                        "order_id": order.get("orderNo") or order.get("order_no") or order.get("id"),
-                        "attachments": state.get("attachments") or [],
-                        "order_hint": self._order_hint(order),
-                    },
-                    "need_human": False,
+                    "action": "human_handoff",
+                    "assistant_reply": f"已记录您的售后申请 {existing_ticket_no}，我会为您转接人工客服继续处理。",
+                    "need_human": True,
                     "evidence_needed": [],
                 }
+
+        if order.get("existingTicketNo") or order.get("existing_ticket_no"):
+            existing_ticket_no = self._existing_ticket_no(order)
+            # RAG 驱动的证据需求
+            if not self._has_tool_result(state, "retrieve_knowledge"):
+                return self._retrieve_evidence_action(state, order)
+            evidence_needed = self._build_evidence_needed(state, order)
+            if evidence_needed:
+                reply = self._build_evidence_guidance(state, order, evidence_needed)
+                return {
+                    "action": "final_reply",
+                    "assistant_reply": f"您的售后申请 {existing_ticket_no} 已创建（待审核）。{reply}",
+                    "need_human": False,
+                    "evidence_needed": evidence_needed,
+                }
+            if state.get("attachments") and not self._has_tool_result(state, "review_images"):
+                return self._review_images_action(state, order)
             visual_handoff = self._quality_visual_handoff_action(state)
             if visual_handoff:
                 return visual_handoff
-            # 继续分析判断，可能会更新状态
-            if not self._has_tool_result(state, "retrieve_knowledge"):
-                return self._retrieve_policy_action(state, order)
-            # 尝试更新状态（如果AI判断通过）
             if not self._has_successful_tool(state, "create_after_sales_ticket"):
                 return self._create_ticket_action(state, order)
+            return None  # fall through to LLM decider
 
-        missing_inputs = self._missing_application_inputs(state)
-        if missing_inputs:
+        # === 新售后申请 ===
+        # 1. 无附件 → RAG 查证据模板 → LLM 动态生成引导
+        if not state.get("attachments"):
+            if not self._has_tool_result(state, "retrieve_knowledge"):
+                return self._retrieve_evidence_action(state, order)
+            evidence_needed = self._build_evidence_needed(state, order)
+            reply = self._build_evidence_guidance(state, order, evidence_needed)
             return {
                 "action": "final_reply",
-                "assistant_reply": self._missing_inputs_reply(missing_inputs),
+                "assistant_reply": reply,
                 "need_human": False,
-                "evidence_needed": missing_inputs,
+                "evidence_needed": evidence_needed,
             }
-        if state.get("attachments") and not self._has_tool_result(state, "review_images"):
-            return {
-                "action": "tool_call",
-                "tool_name": "review_images",
-                "tool_arguments": {
-                    "user_id": state.get("user_id"),
-                    "order_id": order.get("orderNo") or order.get("order_no") or order.get("id"),
-                    "attachments": state.get("attachments") or [],
-                    "order_hint": self._order_hint(order),
-                },
-                "need_human": False,
-                "evidence_needed": [],
-            }
+
+        # 2. 有附件 → 图片审核
+        if not self._has_tool_result(state, "review_images"):
+            return self._review_images_action(state, order)
         visual_handoff = self._quality_visual_handoff_action(state)
         if visual_handoff:
             return visual_handoff
+
+        # 3. 查 RAG 政策
         if not self._has_tool_result(state, "retrieve_knowledge"):
             return self._retrieve_policy_action(state, order)
+
+        # 4. 建单
         if not self._has_successful_tool(state, "create_after_sales_ticket"):
             return self._create_ticket_action(state, order)
+
+        # 5. 建单后需要转人工?
         if (state.get("need_human") or self._ticket_requires_handoff(state)) and not self._has_successful_tool(state, "handoff_to_human"):
             return {
                 "action": "human_handoff",
@@ -404,6 +498,7 @@ class LangGraphAfterSalesAgent:
                 "need_human": True,
                 "evidence_needed": [],
             }
+
         return {
             "action": "final_reply",
             "assistant_reply": self._ticket_reply(state),
@@ -455,7 +550,7 @@ class LangGraphAfterSalesAgent:
         print(f"🖼️ image_shows_damage: {image_shows_damage}")
         print(f"❓ visual_uncertain: {visual_uncertain}")
 
-        evidence_needed = self._missing_evidence(state, review)
+        evidence_needed = self._build_evidence_needed(state, order)
         print(f"📋 evidence_needed: {evidence_needed}")
 
         auto_approved = bool(
@@ -541,6 +636,119 @@ class LangGraphAfterSalesAgent:
             "evidence_needed": [],
         }
 
+    def _retrieve_evidence_action(self, state: AgentGraphState, order: dict[str, Any]) -> dict[str, Any]:
+        """RAG 检索证据模板 — 提前到决策阶段调用，用语义匹配替代硬编码关键词。"""
+        product_name = str(order.get("productName") or order.get("product_name") or "")
+        category = order.get("category") or order.get("productCategory") or order.get("product_category") or ""
+        merchant_code = order.get("merchantCode") or order.get("merchant_code") or "MERCHANT_DEMO"
+        message = str(state.get("message") or "")
+        query_parts = [message, product_name, category, "售后证据要求 凭证模板 需要什么照片"]
+        return {
+            "action": "tool_call",
+            "tool_name": "retrieve_knowledge",
+            "tool_arguments": {
+                "user_id": state.get("user_id"),
+                "query": " ".join(p for p in query_parts if p).strip(),
+                "merchant_code": merchant_code,
+                "product_category": category if category else None,
+                "scene": "quality_issue",
+                "top_k": 5,
+            },
+            "need_human": False,
+            "evidence_needed": [],
+        }
+
+    def _build_evidence_needed(self, state: AgentGraphState, order: dict[str, Any]) -> list[str]:
+        """从 RAG 结果 + 订单上下文动态生成 evidence_needed，替代硬编码 _missing_evidence。"""
+        knowledge = self._latest_tool_data(state, "retrieve_knowledge")
+        product_name = str(order.get("productName") or order.get("product_name") or "")
+        category = str(order.get("category") or order.get("productCategory") or order.get("product_category") or "")
+
+        # 尝试从 RAG 知识库提取场景级证据模板
+        scene_evidence = self._extract_scene_evidence(knowledge)
+        if scene_evidence:
+            logger.info("   📋 RAG 命中场景证据模板: %s", scene_evidence)
+            return scene_evidence
+
+        # RAG 未命中 → LLM 根据品类+问题描述常识推断
+        logger.info("   📋 RAG 未命中场景证据, LLM 常识推断 (品类=%s 商品=%s)", category, product_name)
+        return ["商品问题照片", "问题描述"]
+
+    def _build_evidence_guidance(self, state: AgentGraphState, order: dict[str, Any], evidence_needed: list[str]) -> str:
+        """动态生成证据引导文案，替代硬编码 _missing_inputs_reply。"""
+        product_name = str(order.get("productName") or order.get("product_name") or "该商品")
+        items_text = "、".join(evidence_needed) if evidence_needed else "相关凭证"
+        msg = str(state.get("message") or "")
+
+        # 尝试让 LLM 根据品类+问题生成更友好的引导
+        try:
+            raw = self.llm.chat_json(
+                system_prompt=(
+                    "你是电商客服。根据商品信息和用户问题，生成一句引导用户上传证据的友好中文回复。"
+                    "必须包含需要上传的具体证据类型，语气亲切专业。只输出JSON："
+                    '{"reply": "引导文案"}'
+                ),
+                user_prompt=json.dumps({
+                    "product": product_name,
+                    "issue": msg,
+                    "evidence_items": evidence_needed,
+                }, ensure_ascii=False),
+                temperature=0.3,
+                max_tokens=200,
+            )
+            reply = str(raw.get("reply") or "").strip()
+            if reply and len(reply) >= 10:
+                return reply
+        except Exception:
+            pass
+
+        # LLM 失败 → 通用模板
+        if not evidence_needed:
+            return "已了解您的问题。请补充相关凭证以便为您处理售后。"
+        return f"已了解您的问题。为了继续判断售后规则，请上传{items_text}。"
+
+    @staticmethod
+    def _extract_scene_evidence(knowledge: Any) -> list[str] | None:
+        """从 RAG 知识库 hits 中提取场景级证据模板。"""
+        if not isinstance(knowledge, dict):
+            return None
+        hits = knowledge.get("hits")
+        if not isinstance(hits, list) or not hits:
+            return None
+        # 遍历 hits 寻找 scene_evidence_knowledge 或 default_evidence 字段
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+            # 检查 metadata 中的 default_evidence
+            evidence = metadata.get("default_evidence")
+            if isinstance(evidence, list) and evidence:
+                return [str(item) for item in evidence if str(item).strip()]
+            # 检查 snippet/content 中是否包含证据关键词
+            snippet = str(hit.get("snippet") or "")
+            title = str(hit.get("title") or "")
+            combined = f"{title} {snippet}"
+            if any(kw in combined for kw in ("需要提供", "请上传", "凭证", "照片", "证据要求")):
+                # 从文本中提取可能的证据项
+                items = _extract_evidence_from_text(combined)
+                if items:
+                    return items
+        return None
+
+    def _review_images_action(self, state: AgentGraphState, order: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "action": "tool_call",
+            "tool_name": "review_images",
+            "tool_arguments": {
+                "user_id": state.get("user_id"),
+                "order_id": order.get("orderNo") or order.get("order_no") or order.get("id"),
+                "attachments": state.get("attachments") or [],
+                "order_hint": self._order_hint(order),
+            },
+            "need_human": False,
+            "evidence_needed": [],
+        }
+
     @staticmethod
     def _apply_action(state: AgentGraphState, raw: dict[str, Any]) -> None:
         action = str(raw.get("action") or "final_reply")
@@ -558,19 +766,6 @@ class LangGraphAfterSalesAgent:
         if isinstance(raw.get("evidence_needed"), list):
             state["evidence_needed"] = [str(item) for item in raw["evidence_needed"]]
         state["need_human"] = bool(raw.get("need_human") or action == "human_handoff")
-
-    @staticmethod
-    def _needs_order_lookup(state: AgentGraphState) -> bool:
-        return LangGraphAfterSalesAgent._is_after_sales_application(state)
-
-    @staticmethod
-    def _is_after_sales_application(state: AgentGraphState) -> bool:
-        text = f"{state.get('message') or ''} {state.get('order_id_hint') or ''}".lower()
-        keywords = (
-            "退款", "退货", "换货", "补发", "维修", "损坏", "破损", "破裂", "裂",
-            "坏了", "质量", "售后", "电流声", "异响", "refund", "return",
-        )
-        return any(keyword in text for keyword in keywords) or bool(state.get("attachments"))
 
     @staticmethod
     def _claims_ticket_created(reply: Any) -> bool:
@@ -636,6 +831,23 @@ class LangGraphAfterSalesAgent:
         return dict_orders[0] if len(dict_orders) == 1 else None
 
     @staticmethod
+    def _existing_ticket_no(order: dict[str, Any] | None) -> str | None:
+        if not isinstance(order, dict):
+            return None
+        ticket_no = order.get("existingTicketNo") or order.get("existing_ticket_no")
+        return str(ticket_no) if ticket_no else None
+
+    @staticmethod
+    def _ticket_from_existing_order(order: dict[str, Any]) -> dict[str, Any]:
+        ticket_no = LangGraphAfterSalesAgent._existing_ticket_no(order)
+        return {
+            "ticketNo": ticket_no,
+            "ticket_id": ticket_no,
+            "status": order.get("afterSalesStatus") or order.get("after_sales_status") or "PENDING_REVIEW",
+            "existing": True,
+        }
+
+    @staticmethod
     def _order_hint(order: dict[str, Any]) -> str:
         return f"订单号：{order.get('orderNo') or order.get('order_no') or order.get('id') or ''}；商品：{order.get('productName') or order.get('product_name') or ''}"
 
@@ -681,7 +893,7 @@ class LangGraphAfterSalesAgent:
             return False
         if not LangGraphAfterSalesAgent._mentions_functional_quality_issue(state):
             return False
-        review = LangGraphAfterSalesAgent._latest_static_tool_data(state, "review_images")
+        review = LangGraphAfterSalesAgent._latest_tool_data(state, "review_images")
         if not isinstance(review, dict):
             return False
         if not review.get("success"):
@@ -701,46 +913,6 @@ class LangGraphAfterSalesAgent:
             "按键失灵", "触控失灵", "功能", "故障", "质量问题",
         )
         return any(marker in text for marker in markers)
-
-    @staticmethod
-    def _latest_static_tool_data(state: AgentGraphState, tool_name: str) -> Any:
-        for item in reversed(state.get("tool_results") or []):
-            if item.get("tool") == tool_name and item.get("ok"):
-                return item.get("data")
-        return None
-
-    @staticmethod
-    def _missing_evidence(state: AgentGraphState, review: Any) -> list[str]:
-        if not state.get("attachments"):
-            return ["商品问题照片", "外包装照片"]
-        if isinstance(review, dict) and isinstance(review.get("missing_visual_evidence"), list):
-            return [str(item) for item in review["missing_visual_evidence"]]
-        return ["清晰商品照片"]
-
-    @staticmethod
-    def _missing_application_inputs(state: AgentGraphState) -> list[str]:
-        missing: list[str] = []
-        if not LangGraphAfterSalesAgent._has_meaningful_description(state):
-            missing.append("问题描述")
-        if not state.get("attachments"):
-            missing.append("商品问题照片")
-        return missing
-
-    @staticmethod
-    def _has_meaningful_description(state: AgentGraphState) -> bool:
-        text = str(state.get("message") or "").strip()
-        if len(text) < 4:
-            return False
-        vague_phrases = {"售后", "退款", "退货", "换货", "我要售后", "申请售后", "要求退款", "我要退款"}
-        return text not in vague_phrases
-
-    @staticmethod
-    def _missing_inputs_reply(missing: list[str]) -> str:
-        if "问题描述" in missing and "商品问题照片" in missing:
-            return "为了帮您提交售后申请，请先补充具体问题描述，并上传能看清商品问题的照片。"
-        if "商品问题照片" in missing:
-            return "已了解您的问题。为了继续判断售后规则，请上传一张能看清商品问题的照片，例如破裂位置、损坏细节或故障现象。"
-        return "请补充具体问题描述，例如出现了什么问题、希望退款/退货/换货，以及问题发生时间。"
 
     @staticmethod
     def _review_missing_damage(review: Any) -> bool:
@@ -899,3 +1071,19 @@ class LangGraphAfterSalesAgent:
             "order_id": str(ticket.get("orderId") or ticket.get("order_id") or "") or None,
             "existing": bool(ticket.get("existing")),
         }
+_EVIDENCE_PATTERNS = [
+    r"(?:请|需要|还需|补充)(?:上传|提供|提交)?([^，。；\n]{2,30}?(?:照片|图片|视频|凭证|截图|标签|单据|证明))",
+    r"(?:照片|图片|视频|凭证|截图|标签|单据|证明)[：:]*([^，。；\n]{2,20})",
+]
+
+
+def _extract_evidence_from_text(text: str) -> list[str] | None:
+    """从 RAG 知识库文本中提取证据要求项，避免硬编码关键词。"""
+    import re as _re
+    items: list[str] = []
+    for pattern in _EVIDENCE_PATTERNS:
+        for match in _re.finditer(pattern, text):
+            item = (match.group(1) or "").strip()
+            if item and len(item) >= 2 and item not in items:
+                items.append(item)
+    return items if items else None

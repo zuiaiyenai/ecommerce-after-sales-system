@@ -243,12 +243,13 @@ class ConversationPersistenceService:
     @staticmethod
     def _map_emotion_label(label: str) -> str:
         mapping = {
-            "calm": "NEUTRAL",
+            "satisfied": "SATISFIED",
+            "calm": "CALM",
             "anxious": "ANXIOUS",
             "dissatisfied": "DISSATISFIED",
             "angry": "ANGRY",
         }
-        return mapping.get(label, "NEUTRAL")
+        return mapping.get(label, "CALM")
 
     @staticmethod
     def _normalize_emotion_score(score: float | int | None) -> float | None:

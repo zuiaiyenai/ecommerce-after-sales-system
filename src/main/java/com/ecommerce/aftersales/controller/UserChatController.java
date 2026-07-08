@@ -24,6 +24,7 @@ import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
+import com.ecommerce.aftersales.service.ChatEmotionAnalysisService;
 import com.ecommerce.aftersales.service.NotificationService;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -57,19 +58,22 @@ public class UserChatController {
     private final OrderInfoMapper orderInfoMapper;
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final NotificationService notificationService;
+    private final ChatEmotionAnalysisService chatEmotionAnalysisService;
 
     public UserChatController(ChatSessionMapper chatSessionMapper,
                               ChatMessageMapper chatMessageMapper,
                               AfterSalesTicketMapper afterSalesTicketMapper,
                               OrderInfoMapper orderInfoMapper,
                               ChatWebSocketHandler chatWebSocketHandler,
-                              NotificationService notificationService) {
+                              NotificationService notificationService,
+                              ChatEmotionAnalysisService chatEmotionAnalysisService) {
         this.chatSessionMapper = chatSessionMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.afterSalesTicketMapper = afterSalesTicketMapper;
         this.orderInfoMapper = orderInfoMapper;
         this.chatWebSocketHandler = chatWebSocketHandler;
         this.notificationService = notificationService;
+        this.chatEmotionAnalysisService = chatEmotionAnalysisService;
     }
 
     @PostMapping("/session")
@@ -91,7 +95,11 @@ public class UserChatController {
             chatSessionMapper.insert(session);
             created = true;
         } else if (Integer.valueOf(1).equals(session.getUserHidden())) {
+            fillBusinessContext(session, userId, request);
             session.setUserHidden(0);
+            chatSessionMapper.updateById(session);
+        } else {
+            fillBusinessContext(session, userId, request);
             chatSessionMapper.updateById(session);
         }
         if (created) {
@@ -104,6 +112,7 @@ public class UserChatController {
         response.setSessionId(session.getId());
         response.setSessionNo(session.getSessionNo());
         response.setMerchantCode(session.getMerchantCode());
+        response.setMerchantDisplayName(resolveMerchantDisplayName(session.getMerchantCode()));
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setWelcomeMessage(welcomeMessage(session));
@@ -184,6 +193,8 @@ public class UserChatController {
                 .toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
         response.setSessionId(sessionId);
+        response.setMerchantCode(session.getMerchantCode());
+        response.setMerchantDisplayName(resolveMerchantDisplayName(session.getMerchantCode()));
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setList(messages);
@@ -245,14 +256,21 @@ public class UserChatController {
     }
 
     private ChatSession findExistingSession(Long userId, CreateSessionRequest request) {
+        String merchantCode = resolveMerchantCode(request);
+        Long relatedOrderId = resolveRelatedOrderId(request);
         LambdaQueryWrapper<ChatSession> wrapper = new LambdaQueryWrapper<ChatSession>()
                 .eq(ChatSession::getUserId, userId)
-                .eq(ChatSession::getMerchantCode, resolveMerchantCode(request))
+                .eq(ChatSession::getMerchantCode, merchantCode)
                 .ne(ChatSession::getStatus, STATUS_CLOSED)
                 .orderByDesc(ChatSession::getCreateTime)
                 .last("limit 1");
         if (request.getAfterSaleId() != null) {
-            wrapper.eq(ChatSession::getTicketId, request.getAfterSaleId());
+            wrapper.and(group -> {
+                group.eq(ChatSession::getTicketId, request.getAfterSaleId());
+                if (relatedOrderId != null) {
+                    group.or().eq(ChatSession::getOrderId, relatedOrderId);
+                }
+            });
         } else if (request.getOrderId() != null) {
             wrapper.eq(ChatSession::getOrderId, request.getOrderId());
         } else {
@@ -302,6 +320,16 @@ public class UserChatController {
         return StringUtils.hasText(request.getMerchantCode()) ? request.getMerchantCode().trim() : DEFAULT_MERCHANT_CODE;
     }
 
+    private Long resolveRelatedOrderId(CreateSessionRequest request) {
+        if (request.getAfterSaleId() != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getAfterSaleId());
+            if (ticket != null) {
+                return ticket.getOrderId();
+            }
+        }
+        return request.getOrderId();
+    }
+
     private String resolveUserQuery(CreateSessionRequest request) {
         if (StringUtils.hasText(request.getMessage())) {
             return request.getMessage();
@@ -320,6 +348,12 @@ public class UserChatController {
         message.setContent(content);
         message.setMessageType(messageType);
         chatMessageMapper.insert(message);
+        if ("USER".equalsIgnoreCase(role) && chatEmotionAnalysisService != null) {
+            ChatSession session = chatSessionMapper.selectById(sessionId);
+            if (session != null) {
+                chatEmotionAnalysisService.analyzeAndPersist(message, session);
+            }
+        }
     }
 
     private boolean shouldTransferToHuman(String message) {
@@ -378,6 +412,8 @@ public class UserChatController {
         summary.setSessionId(session.getId());
         summary.setOrderId(session.getOrderId());
         summary.setAfterSaleId(session.getTicketId());
+        summary.setMerchantCode(session.getMerchantCode());
+        summary.setMerchantDisplayName(resolveMerchantDisplayName(session.getMerchantCode()));
         summary.setMode(session.getMode());
         summary.setStatus(session.getStatus());
         summary.setTitle(sessionTitle(session, order, ticket));
@@ -411,5 +447,13 @@ public class UserChatController {
         view.setMessageType(message.getMessageType());
         view.setCreateTime(message.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(message.getCreateTime()));
         return view;
+    }
+
+    private String resolveMerchantDisplayName(String merchantCode) {
+        String code = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+        if (DEFAULT_MERCHANT_CODE.equalsIgnoreCase(code)) {
+            return "演示商家";
+        }
+        return "商家 " + code;
     }
 }

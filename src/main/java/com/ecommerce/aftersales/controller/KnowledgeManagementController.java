@@ -53,6 +53,12 @@ public class KnowledgeManagementController {
         return ApiResponse.success("查询成功", list);
     }
 
+    @GetMapping("/{id}")
+    public ApiResponse<KnowledgeUploadDto.KnowledgeInfo> getKnowledge(@PathVariable Long id) {
+        KnowledgeUploadDto.KnowledgeInfo info = knowledgeService.getKnowledgeById(id);
+        return ApiResponse.success("查询成功", info);
+    }
+
     /**
      * 更新知识库文档
      */
@@ -81,6 +87,12 @@ public class KnowledgeManagementController {
     public ApiResponse<Map<String, Object>> reindexAll() {
         Map<String, Object> result = knowledgeService.reindexAll();
         return ApiResponse.success("重建索引成功", result);
+    }
+
+    @PostMapping("/{id}/sync")
+    public ApiResponse<Map<String, Object>> syncKnowledge(@PathVariable Long id) {
+        Map<String, Object> result = knowledgeService.syncKnowledge(id);
+        return ApiResponse.success("同步任务已触发", result);
     }
 
     /**

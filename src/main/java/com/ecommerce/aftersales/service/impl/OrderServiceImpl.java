@@ -4,10 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.CreateOrderRequest;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
+import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.OrderInfo;
 import com.ecommerce.aftersales.entity.OrderItem;
 import com.ecommerce.aftersales.entity.ProductInfo;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
+import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
@@ -18,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -29,7 +32,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
 
+    private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
+
     private final AfterSalesTicketMapper afterSalesTicketMapper;
+    private final ChatSessionMapper chatSessionMapper;
     private final OrderInfoMapper orderInfoMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -127,6 +133,7 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
+        vo.setMerchantDisplayName(resolveMerchantDisplayName(orderInfo.getMerchantCode()));
         vo.setStatusText(getStatusText(orderInfo.getStatus()));
         applyAfterSalesSnapshot(vo, orderInfo);
 
@@ -166,6 +173,14 @@ public class OrderServiceImpl implements OrderService {
         return vo;
     }
 
+    private String resolveMerchantDisplayName(String merchantCode) {
+        String code = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+        if (DEFAULT_MERCHANT_CODE.equalsIgnoreCase(code)) {
+            return "演示商家";
+        }
+        return "商家 " + code;
+    }
+
     private void applyAfterSalesSnapshot(OrderVO vo, OrderInfo orderInfo) {
         AfterSalesTicket ticket = afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
                 .eq(AfterSalesTicket::getOrderId, orderInfo.getId())
@@ -192,13 +207,26 @@ public class OrderServiceImpl implements OrderService {
             return;
         }
         if ("COMPLETED".equals(ticket.getStatus())) {
-            vo.setStatus("AWAITING_EVALUATION");
-            vo.setStatusText("待评价");
+            if (hasUserEvaluatedForOrder(orderInfo)) {
+                vo.setStatus("COMPLETED");
+                vo.setStatusText("已完成");
+            } else {
+                vo.setStatus("AWAITING_EVALUATION");
+                vo.setStatusText("待评价");
+            }
         }
     }
 
     private boolean isClosedAfterSalesStatus(String status) {
         return "REJECTED".equals(status) || "COMPLETED".equals(status) || "CLOSED".equals(status);
+    }
+
+    private boolean hasUserEvaluatedForOrder(OrderInfo orderInfo) {
+        Long count = chatSessionMapper.selectCount(new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getOrderId, orderInfo.getId())
+                .eq(ChatSession::getUserId, orderInfo.getUserId())
+                .isNotNull(ChatSession::getSatisfaction));
+        return count != null && count > 0;
     }
 
     private String getAfterSalesStatusText(String status) {
@@ -221,6 +249,7 @@ public class OrderServiceImpl implements OrderService {
             case "RECEIVED": return "已收货";
             case "AFTERSALE": return "售后中";
             case "AWAITING_EVALUATION": return "待评价";
+            case "COMPLETED": return "已完成";
             case "CLOSED": return "已关闭";
             default: return status;
         }
