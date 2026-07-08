@@ -253,8 +253,21 @@ onMounted(loadPage);
   background: #fff7f5;
 }
 
-.review-stat-grid .order-stat-card.red:hover {
-  border-color: #ffb7a8;
+.review-stat-grid .order-stat-card.red:hover,
+.review-stat-grid .order-stat-card.red:focus-visible {
+  border-color: #ff9f8c;
+  background: #ffece6;
+  color: #8f2f0c;
+}
+
+.review-stat-grid .order-stat-card.red:hover span,
+.review-stat-grid .order-stat-card.red:focus-visible span {
+  color: #9d5548;
+}
+
+.review-stat-grid .order-stat-card.red:active {
+  border-color: #ef846f;
+  background: #ffddd5;
 }
 
 .review-toolbar {
