@@ -139,6 +139,8 @@ public final class EmotionPolicyDtos {
         private String text;
         private String label;
         private Integer score;
+        private Integer confidence;
+        private Boolean needHumanPriority;
         private List<String> triggers;
         private Boolean fromHistory;
         private String createdAt;

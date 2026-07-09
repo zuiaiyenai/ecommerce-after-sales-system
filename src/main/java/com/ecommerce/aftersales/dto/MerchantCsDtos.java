@@ -109,7 +109,18 @@ public final class MerchantCsDtos {
 
     @Data
     public static class DashboardPerformance {
+        private Integer serviceScore;
+        private String scoreStatus;
+        private String trendSummary;
+        private List<String> tags;
+        private List<PerformanceTrendPoint> trend;
         private List<PerformanceMetric> metrics;
+    }
+
+    @Data
+    public static class PerformanceTrendPoint {
+        private String day;
+        private Integer score;
     }
 
     @Data
@@ -119,6 +130,8 @@ public final class MerchantCsDtos {
         private String desc;
         private Integer currentPercent;
         private Integer targetPercent;
+        private Integer sampleSize;
+        private Boolean lowerIsBetter;
     }
 
     @Data
@@ -143,7 +156,6 @@ public final class MerchantCsDtos {
         private String orderNo;
         private String product;
         private String productName;
-        private String productImage;
         private String ticketNo;
         private String lastMessageContent;
         private String lastMessageTime;
@@ -389,6 +401,7 @@ public final class MerchantCsDtos {
     @Data
     public static class ReviewView {
         private Long id;
+        private Long orderId;
         private Integer overallScore;
         private String orderNo;
         private String user;

@@ -138,16 +138,12 @@ class LangGraphAfterSalesAgent:
         logger.info("   order_id_hint: %s", state.get("order_id_hint"))
         logger.info("   existing tool_results: %d", len(state.get("tool_results") or []))
 
-        try:
-            raw = self.llm.chat_json(
-                system_prompt=self._planner_system_prompt(),
-                user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-                temperature=0.1,
-                max_tokens=700,
-            )
-        except Exception as exc:
-            logger.warning("LLM planner failed, using guarded fallback: %s", exc)
-            raw = self._guarded_after_sales_action(state) or self._safe_final_reply_action(state)
+        raw = self.llm.chat_json(
+            system_prompt=self._planner_system_prompt(),
+            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
+            temperature=0.1,
+            max_tokens=700,
+        )
         logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
@@ -263,16 +259,12 @@ class LangGraphAfterSalesAgent:
             return state
 
         logger.info("   🤖 LLM decider 决策中...")
-        try:
-            raw = self.llm.chat_json(
-                system_prompt=self._decider_system_prompt(),
-                user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-                temperature=0.1,
-                max_tokens=700,
-            )
-        except Exception as exc:
-            logger.warning("LLM decider failed, using guarded fallback: %s", exc)
-            raw = self._guarded_after_sales_action(state) or self._safe_final_reply_action(state)
+        raw = self.llm.chat_json(
+            system_prompt=self._decider_system_prompt(),
+            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
+            temperature=0.1,
+            max_tokens=700,
+        )
         logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if self._claims_ticket_created(raw.get("assistant_reply")) and not self._has_successful_tool(state, "create_after_sales_ticket"):
@@ -448,6 +440,8 @@ class LangGraphAfterSalesAgent:
 
         if order.get("existingTicketNo") or order.get("existing_ticket_no"):
             existing_ticket_no = self._existing_ticket_no(order)
+            if state.get("attachments") and not self._has_tool_result(state, "review_images"):
+                return self._review_images_action(state, order)
             # RAG 驱动的证据需求
             if not self._has_tool_result(state, "retrieve_knowledge"):
                 return self._retrieve_evidence_action(state, order)
@@ -460,10 +454,9 @@ class LangGraphAfterSalesAgent:
                     "need_human": False,
                     "evidence_needed": evidence_needed,
                 }
-            if state.get("attachments") and not self._has_tool_result(state, "review_images"):
-                return self._review_images_action(state, order)
             visual_handoff = self._quality_visual_handoff_action(state)
             if visual_handoff:
+                state["ticket"] = self._ticket_from_existing_order(order)
                 return visual_handoff
             if not self._has_successful_tool(state, "create_after_sales_ticket"):
                 return self._create_ticket_action(state, order)
@@ -486,9 +479,6 @@ class LangGraphAfterSalesAgent:
         # 2. 有附件 → 图片审核
         if not self._has_tool_result(state, "review_images"):
             return self._review_images_action(state, order)
-        visual_handoff = self._quality_visual_handoff_action(state)
-        if visual_handoff:
-            return visual_handoff
 
         # 3. 查 RAG 政策
         if not self._has_tool_result(state, "retrieve_knowledge"):
@@ -646,11 +636,19 @@ class LangGraphAfterSalesAgent:
 
     def _retrieve_evidence_action(self, state: AgentGraphState, order: dict[str, Any]) -> dict[str, Any]:
         """RAG 检索证据模板 — 提前到决策阶段调用，用语义匹配替代硬编码关键词。"""
+        reason = self._reason_type(state)
         product_name = str(order.get("productName") or order.get("product_name") or "")
         category = order.get("category") or order.get("productCategory") or order.get("product_category") or ""
         merchant_code = order.get("merchantCode") or order.get("merchant_code") or "MERCHANT_DEMO"
         message = str(state.get("message") or "")
-        query_parts = [message, product_name, category, "售后证据要求 凭证模板 需要什么照片"]
+        query_parts = [
+            message,
+            product_name,
+            category,
+            self._scene_for_reason(reason),
+            self._rag_query_expansion(reason, self._after_sales_type(state)),
+            "售后证据要求 凭证模板 需要什么照片",
+        ]
         return {
             "action": "tool_call",
             "tool_name": "retrieve_knowledge",
@@ -659,7 +657,7 @@ class LangGraphAfterSalesAgent:
                 "query": " ".join(p for p in query_parts if p).strip(),
                 "merchant_code": merchant_code,
                 "product_category": category if category else None,
-                "scene": "quality_issue",
+                "scene": self._scene_for_reason(reason),
                 "top_k": 5,
             },
             "need_human": False,
@@ -676,11 +674,79 @@ class LangGraphAfterSalesAgent:
         scene_evidence = self._extract_scene_evidence(knowledge)
         if scene_evidence:
             logger.info("   📋 RAG 命中场景证据模板: %s", scene_evidence)
-            return scene_evidence
+            return self._subtract_satisfied_evidence(scene_evidence, state, order)
 
         # RAG 未命中 → LLM 根据品类+问题描述常识推断
         logger.info("   📋 RAG 未命中场景证据, LLM 常识推断 (品类=%s 商品=%s)", category, product_name)
-        return ["商品问题照片", "问题描述"]
+        return self._subtract_satisfied_evidence(["商品问题照片", "问题描述"], state, order)
+
+    @staticmethod
+    def _subtract_satisfied_evidence(required: list[str], state: AgentGraphState, order: dict[str, Any]) -> list[str]:
+        satisfied = LangGraphAfterSalesAgent._satisfied_evidence_keys(state, order)
+        missing: list[str] = []
+        for item in required:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            keys = LangGraphAfterSalesAgent._evidence_keys(text)
+            if keys and keys.issubset(satisfied):
+                continue
+            if keys and keys.intersection(satisfied):
+                continue
+            if text not in missing:
+                missing.append(text)
+        return missing
+
+    @staticmethod
+    def _satisfied_evidence_keys(state: AgentGraphState, order: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        message = str(state.get("message") or "").strip()
+        if len(message) >= 4:
+            keys.add("description")
+
+        attachments = state.get("attachments") or []
+        if attachments:
+            keys.update({"image", "product_image"})
+
+        review = LangGraphAfterSalesAgent._latest_tool_data(state, "review_images")
+        if isinstance(review, dict) and review.get("success"):
+            if review.get("has_damage_area"):
+                keys.update({"image", "product_image", "damage_image"})
+            if review.get("has_outer_package"):
+                keys.add("package_image")
+            if review.get("has_logistics_label"):
+                keys.add("logistics_label")
+
+        context = state.get("client_context") if isinstance(state.get("client_context"), dict) else {}
+        selected = context.get("selected_order_hint") if isinstance(context.get("selected_order_hint"), dict) else {}
+        uploaded = []
+        for source in (order, selected):
+            value = source.get("uploaded_evidence") or source.get("uploadedEvidence")
+            if isinstance(value, list):
+                uploaded.extend(value)
+            elif value:
+                uploaded.append(value)
+        for item in uploaded:
+            keys.update(LangGraphAfterSalesAgent._evidence_keys(str(item)))
+        return keys
+
+    @staticmethod
+    def _evidence_keys(text: str) -> set[str]:
+        normalized = str(text or "")
+        keys: set[str] = set()
+        if any(word in normalized for word in ("描述", "说明", "问题现象", "情况")):
+            keys.add("description")
+        if any(word in normalized for word in ("照片", "图片", "图", "影像", "视频", "凭证")):
+            keys.add("image")
+        if any(word in normalized for word in ("商品", "问题照片", "问题图片", "实物", "耳机", "产品")):
+            keys.update({"image", "product_image"})
+        if any(word in normalized for word in ("破损", "损坏", "破裂", "裂纹", "外壳", "碎", "断")):
+            keys.update({"image", "product_image", "damage_image"})
+        if any(word in normalized for word in ("包装", "外包装")):
+            keys.update({"image", "package_image"})
+        if any(word in normalized for word in ("物流", "面单", "运单", "快递单")):
+            keys.update({"image", "logistics_label"})
+        return keys
 
     def _build_evidence_guidance(self, state: AgentGraphState, order: dict[str, Any], evidence_needed: list[str]) -> str:
         """动态生成证据引导文案，替代硬编码 _missing_inputs_reply。"""
@@ -824,18 +890,6 @@ class LangGraphAfterSalesAgent:
         }
 
     @staticmethod
-    def _safe_final_reply_action(state: AgentGraphState) -> dict[str, Any]:
-        evidence_needed = state.get("evidence_needed") or ["商品问题照片或视频", "问题描述"]
-        return {
-            "action": "final_reply",
-            "tool_name": None,
-            "tool_arguments": {},
-            "assistant_reply": "已了解您的售后问题。当前智能处理暂时不稳定，我会先记录您的描述；请补充商品问题照片或视频，稍后可继续为您核对售后规则。",
-            "need_human": False,
-            "evidence_needed": evidence_needed,
-        }
-
-    @staticmethod
     def _selected_order(state: AgentGraphState) -> dict[str, Any] | None:
         orders = LangGraphAfterSalesAgent._latest_tool_data(state, "search_user_orders")
         if not isinstance(orders, list) or not orders:
@@ -892,7 +946,7 @@ class LangGraphAfterSalesAgent:
         text = str(state.get("message") or "")
         if any(word in text for word in ("破", "裂", "坏", "损", "碎", "断")):
             return "DAMAGE"
-        if any(word in text for word in ("质量", "电流", "异响", "噪", "音量", "左右耳", "左右声道", "一边大", "一边小", "声音不一样", "充电", "充不", "充了", "掉电", "耗电", "续航", "开不了机", "无法开机", "死机", "重启", "卡顿")):
+        if any(word in text for word in ("质量", "电流", "异响", "噪", "充电", "充不", "充了", "掉电", "耗电", "续航", "开不了机", "无法开机", "死机", "重启", "卡顿")):
             return "QUALITY"
         return "OTHER"
 
@@ -928,7 +982,6 @@ class LangGraphAfterSalesAgent:
         markers = (
             "充电", "充不", "充了", "冲了", "掉电", "耗电", "电池", "续航", "电量",
             "电流声", "异响", "杂音", "噪音", "破音",
-            "音量", "左右耳", "左右声道", "一边大", "一边小", "声音不一样",
             "开不了机", "无法开机", "死机", "重启", "卡顿", "闪屏",
             "无声", "没声音", "单边无声", "连接不上", "断连", "蓝牙",
             "按键失灵", "触控失灵", "功能", "故障", "质量问题",
@@ -1015,7 +1068,7 @@ class LangGraphAfterSalesAgent:
     @staticmethod
     def _scene_for_reason(reason: str) -> str:
         return {
-            "DAMAGE": "quality_issue",
+            "DAMAGE": "damage",
             "QUALITY": "quality_issue",
             "LOGISTICS": "logistics_damage",
         }.get(reason, "after_sales")

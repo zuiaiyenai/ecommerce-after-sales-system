@@ -28,6 +28,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -51,6 +52,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private static final int STATUS_ACTIVE = 1;
     private static final int STATUS_PENDING_APPROVAL = 2;
     private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
+    private static final Duration PERFORMANCE_TARGET_HANDLE_TIME = Duration.ofMinutes(8);
+    private static final int PERFORMANCE_WINDOW_DAYS = 7;
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String EVALUATION_INVITE_MESSAGE = "售后处理已完成，请对本次客服服务进行评价。";
 
@@ -73,6 +76,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private final VerificationCodeService verificationCodeService;
     private final KnowledgeRetrievalService knowledgeRetrievalService;
     private final ChatEmotionAnalysisService chatEmotionAnalysisService;
+    private final ReviewInfoMapper reviewInfoMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -262,11 +266,36 @@ public class MerchantCsServiceImpl implements MerchantCsService {
 
     @Override
     public DashboardPerformance getDashboardPerformance() {
+        List<ChatSession> sessions = allHumanSessionEntities();
+        LocalDate today = LocalDate.now();
+        LocalDate startDate = today.minusDays(PERFORMANCE_WINDOW_DAYS - 1L);
+        List<ChatSession> recentSessions = sessions.stream()
+                .filter(session -> sessionActivityDate(session)
+                        .map(date -> !date.isBefore(startDate) && !date.isAfter(today))
+                        .orElse(false))
+                .toList();
+
+        // 平均处理时长：仍来自 chat_session（服务过程指标）
+        MetricSnapshot handleTimeMetric = buildHandleTimeMetric(recentSessions);
+        // 满意度/好评率：切换到 review_info（真实评价表）
+        MetricSnapshot satisfactionMetric = withFallback(buildReviewSatisfactionMetric(), buildSatisfactionMetric(recentSessions));
+        MetricSnapshot goodRateMetric = withFallback(buildReviewGoodRateMetric(), buildGoodRateMetric(recentSessions));
+        // 综合分：满意度 40% + 好评率 40% + 处理时长 20%
+        int serviceScore = calculateWeightedServiceScore(handleTimeMetric, satisfactionMetric, goodRateMetric);
+
         DashboardPerformance performance = new DashboardPerformance();
+        performance.setServiceScore(serviceScore);
+        performance.setScoreStatus(resolveScoreStatus(serviceScore));
+        performance.setTrend(buildReviewBasedTrend(startDate, today));
+        performance.setTrendSummary(buildTrendSummary(performance.getTrend()));
+        performance.setTags(buildPerformanceTags(serviceScore, handleTimeMetric, satisfactionMetric, goodRateMetric));
         performance.setMetrics(List.of(
-                performanceMetric("30 秒响应率", "92%", "目标 90%", 92, 90),
-                performanceMetric("一次解决率", "68%", "目标 70%", 68, 70),
-                performanceMetric("平均处理时长", "06:24", "目标 08:00", 80, 100)
+                performanceMetric("平均处理时长", handleTimeMetric.value(), "目标 ≤ 8分钟",
+                        handleTimeMetric.currentPercent(), 100, handleTimeMetric.sampleSize(), true),
+                performanceMetric("用户满意度", satisfactionMetric.value(), "目标 ≥ 4.5 / 5（基于真实评价）",
+                        satisfactionMetric.currentPercent(), 90, satisfactionMetric.sampleSize(), false),
+                performanceMetric("好评率", goodRateMetric.value(), "目标 ≥ 90%（基于真实评价）",
+                        goodRateMetric.currentPercent(), 90, goodRateMetric.sampleSize(), false)
         ));
         return performance;
     }
@@ -446,6 +475,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         session.setCloseTime(now);
         session.setUpdateTime(now);
         chatSessionMapper.updateById(session);
+        upsertReviewInfoFromSession(session, request);
         addSystemMessage(sessionId, StringUtils.hasText(request.getContent()) ? request.getContent() : "用户已完成服务评价");
         return toSessionView(session);
     }
@@ -661,18 +691,74 @@ public class MerchantCsServiceImpl implements MerchantCsService {
 
     @Override
     public PageResult<ReviewView> getReviews(long page, long size, String score, String keyword) {
-        List<ReviewView> records = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
-                        .eq(ChatSession::getMerchantCode, currentMerchantCode())
-                        .eq(ChatSession::getMode, "HUMAN")
-                        .isNotNull(ChatSession::getSatisfaction)
-                        .orderByDesc(ChatSession::getUpdateTime))
-                .stream()
-                .map(this::toReviewView)
+        String merchantCode = currentMerchantCode();
+        List<Long> orderIds = findOrderIdsByMerchant(merchantCode);
+        if (orderIds.isEmpty()) {
+            return PageResult.of(List.of(), page, size);
+        }
+
+        // 1. 从 review_info 表读取（历史遗留数据）
+        LambdaQueryWrapper<ReviewInfo> reviewWrapper = new LambdaQueryWrapper<ReviewInfo>()
+                .in(ReviewInfo::getOrderId, orderIds)
+                .eq(ReviewInfo::getDeleted, 0)
+                .orderByDesc(ReviewInfo::getCreateTime);
+        List<ReviewInfo> reviewInfos = reviewInfoMapper.selectList(reviewWrapper);
+        List<ReviewView> records = new ArrayList<>(reviewInfos.stream()
+                .map(this::toReviewViewFromReviewInfo)
                 .filter(item -> !StringUtils.hasText(score) || matchesScoreFilter(item, score))
                 .filter(item -> !StringUtils.hasText(keyword) || containsAny(keyword,
                         item.getOrderNo(), item.getUser(), item.getProductName(), item.getTicketNo(), item.getContent()))
-                .toList();
+                .toList());
+
+        // 2. 从 chat_session 读取已评价的会话（用户评价入口的实际数据源）
+        LambdaQueryWrapper<ChatSession> sessionWrapper = new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getMerchantCode, merchantCode)
+                .isNotNull(ChatSession::getSatisfaction)
+                .ne(ChatSession::getSatisfaction, 0)
+                .orderByDesc(ChatSession::getUpdateTime);
+        List<ChatSession> sessions = chatSessionMapper.selectList(sessionWrapper);
+        for (ChatSession session : sessions) {
+            // 去重：避免同一会话在 review_info 中也有记录
+            boolean exists = records.stream()
+                    .anyMatch(r -> r.getOrderId() != null && r.getOrderId().equals(session.getOrderId()));
+            if (!exists) {
+                ReviewView view = toReviewView(session);
+                if ((!StringUtils.hasText(score) || matchesScoreFilter(view, score))
+                        && (!StringUtils.hasText(keyword) || containsAny(keyword,
+                        view.getOrderNo(), view.getUser(), view.getProductName(), view.getTicketNo(), view.getContent()))) {
+                    records.add(view);
+                }
+            }
+        }
+
+        // 3. 按时间倒序排列
+        records.sort((a, b) -> {
+            if (a.getCreatedAt() == null && b.getCreatedAt() == null) return 0;
+            if (a.getCreatedAt() == null) return 1;
+            if (b.getCreatedAt() == null) return -1;
+            return b.getCreatedAt().compareTo(a.getCreatedAt());
+        });
+
         return PageResult.of(records, page, size);
+    }
+
+    private ReviewView toReviewViewFromReviewInfo(ReviewInfo review) {
+        OrderInfo order = review.getOrderId() == null ? null : orderInfoMapper.selectById(review.getOrderId());
+        User user = review.getUserId() == null ? null : userMapper.selectById(review.getUserId());
+
+        ReviewView view = new ReviewView();
+        view.setId(review.getId());
+        view.setOrderId(review.getOrderId());
+        view.setOverallScore(review.getOverallScore());
+        view.setOrderNo(order == null ? null : order.getOrderNo());
+        view.setUser(userDisplayName(user));
+        view.setContent(review.getContent());
+        view.setCreatedAt(format(review.getCreateTime()));
+        view.setResponseSpeedScore(review.getServiceScore());
+        view.setServiceAttitudeScore(review.getServiceScore());
+        view.setProfessionalScore(review.getProductScore());
+        view.setEfficiencyScore(review.getLogisticsScore());
+        return view;
     }
 
     private ReviewView toReviewView(ChatSession session) {
@@ -682,6 +768,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
 
         ReviewView view = new ReviewView();
         view.setId(session.getId());
+        view.setOrderId(session.getOrderId());
         view.setOverallScore(session.getSatisfaction());
         view.setOrderNo(order == null ? null : order.getOrderNo());
         view.setUser(userDisplayName(user));
@@ -853,12 +940,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return profile;
     }
 
-    private List<SessionView> allSessions() {
+    private List<ChatSession> allHumanSessionEntities() {
         return chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
-                        .eq(ChatSession::getMerchantCode, currentMerchantCode())
-                        .eq(ChatSession::getMode, "HUMAN")
-                        .orderByDesc(ChatSession::getUpdateTime))
-                .stream()
+                .eq(ChatSession::getMerchantCode, currentMerchantCode())
+                .eq(ChatSession::getMode, "HUMAN")
+                .orderByDesc(ChatSession::getUpdateTime));
+    }
+
+    private List<SessionView> allSessions() {
+        return allHumanSessionEntities().stream()
                 .map(this::toSessionView)
                 .toList();
     }
@@ -868,15 +958,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
         AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
         ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
-        List<OrderProductItem> relatedOrderItems = order == null ? List.of() : orderItems(order.getId());
-        String orderProductName = relatedOrderItems.stream()
-                .map(OrderProductItem::getProductName)
-                .filter(StringUtils::hasText)
-                .findFirst()
-                .orElse(null);
-        String productName = ticket != null && StringUtils.hasText(ticket.getProductName())
-                ? ticket.getProductName()
-                : orderProductName;
 
         SessionView view = new SessionView();
         view.setId(session.getId());
@@ -895,11 +976,10 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setEmotionScore(session.getEmotionScore());
         view.setEmotionConfidence(session.getEmotionConfidence());
         view.setSourceChannel("小程序咨询");
-        view.setServiceUnreadCount(0);
+        view.setServiceUnreadCount(isWaitingForStaffReply(session) ? 1 : 0);
         view.setOrderNo(order == null ? null : order.getOrderNo());
-        view.setProduct(productName);
-        view.setProductName(productName);
-        view.setProductImage(resolveProductImage(session));
+        view.setProduct(ticket == null ? null : ticket.getProductName());
+        view.setProductName(ticket == null ? null : ticket.getProductName());
         view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
         view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));
@@ -910,6 +990,17 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setEvaluationStatus(evaluationStatus(session));
         view.setEvaluatedAt(session.getSatisfaction() == null ? null : format(session.getCloseTime()));
         return view;
+    }
+
+    private boolean isWaitingForStaffReply(ChatSession session) {
+        if (session == null) {
+            return false;
+        }
+        String status = Optional.ofNullable(session.getStatus()).orElse("");
+        if (List.of("CLOSED", "READY_TO_CLOSE", "AWAITING_EVALUATION").contains(status)) {
+            return false;
+        }
+        return session.getHumanAgentId() == null;
     }
 
     private void backfillSessionEmotionIfMissing(ChatSession session) {
@@ -1398,14 +1489,475 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return metric;
     }
 
-    private PerformanceMetric performanceMetric(String label, String value, String desc, Integer current, Integer target) {
+    private PerformanceMetric performanceMetric(String label, String value, String desc, Integer current, Integer target,
+                                                Integer sampleSize, Boolean lowerIsBetter) {
         PerformanceMetric metric = new PerformanceMetric();
         metric.setLabel(label);
         metric.setValue(value);
         metric.setDesc(desc);
         metric.setCurrentPercent(current);
         metric.setTargetPercent(target);
+        metric.setSampleSize(sampleSize);
+        metric.setLowerIsBetter(lowerIsBetter);
         return metric;
+    }
+
+    private MetricSnapshot buildHandleTimeMetric(List<ChatSession> sessions) {
+        List<Long> durations = sessions.stream()
+                .map(this::resolvedDurationSeconds)
+                .flatMap(Optional::stream)
+                .toList();
+        if (durations.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, true);
+        }
+        long averageSeconds = Math.round(durations.stream().mapToLong(Long::longValue).average().orElse(0));
+        long targetSeconds = PERFORMANCE_TARGET_HANDLE_TIME.toSeconds();
+        int currentPercent = clampPercent((int) Math.round(targetSeconds * 100D / Math.max(averageSeconds, 1L)));
+        return new MetricSnapshot(formatDurationCn(averageSeconds), currentPercent, durations.size(), true);
+    }
+
+    private MetricSnapshot buildSatisfactionMetric(List<ChatSession> sessions) {
+        List<Integer> ratings = sessions.stream()
+                .map(ChatSession::getSatisfaction)
+                .filter(Objects::nonNull)
+                .filter(score -> score > 0)
+                .toList();
+        if (ratings.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        double average = ratings.stream().mapToInt(Integer::intValue).average().orElse(0);
+        int currentPercent = clampPercent((int) Math.round(average / 5D * 100));
+        return new MetricSnapshot(String.format("%.1f / 5", average), currentPercent, ratings.size(), false);
+    }
+
+    /**
+     * 基于 review_info 的真实评价表计算满意度（近 7 天整体均分）。
+     */
+    private MetricSnapshot buildReviewSatisfactionMetric() {
+        String merchantCode = currentMerchantCode();
+        List<Long> orderIds = findOrderIdsByMerchant(merchantCode);
+        if (orderIds.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        LocalDate endDate = LocalDate.now();
+        LocalDate startDate = endDate.minusDays(6);
+
+        List<ReviewInfo> reviews = reviewInfoMapper.selectList(
+                new LambdaQueryWrapper<ReviewInfo>()
+                        .in(ReviewInfo::getOrderId, orderIds)
+                        .ge(ReviewInfo::getCreateTime, startDate.atStartOfDay())
+                        .le(ReviewInfo::getCreateTime, endDate.atTime(23, 59, 59))
+                        .isNotNull(ReviewInfo::getOverallScore)
+                        .eq(ReviewInfo::getDeleted, 0)
+                        .and(wrapper -> wrapper.isNull(ReviewInfo::getStatus).or().eq(ReviewInfo::getStatus, 1))
+        );
+        if (reviews.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+
+        List<Integer> scores = reviews.stream()
+                .map(ReviewInfo::getOverallScore)
+                .filter(s -> s != null && s > 0)
+                .toList();
+        if (scores.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+
+        double average = scores.stream().mapToInt(Integer::intValue).average().orElse(0);
+        int currentPercent = clampPercent((int) Math.round(average / 5D * 100));
+        return new MetricSnapshot(String.format("%.1f / 5", average), currentPercent, scores.size(), false);
+    }
+
+    /**
+     * 基于 review_info 的真实评价表计算好评率（近 7 天，overall_score >= 4 记为好评）。
+     */
+    private MetricSnapshot buildReviewGoodRateMetric() {
+        String merchantCode = currentMerchantCode();
+        List<Long> orderIds = findOrderIdsByMerchant(merchantCode);
+        if (orderIds.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        LocalDate endDate = LocalDate.now();
+        LocalDate startDate = endDate.minusDays(6);
+
+        List<ReviewInfo> reviews = reviewInfoMapper.selectList(
+                new LambdaQueryWrapper<ReviewInfo>()
+                        .in(ReviewInfo::getOrderId, orderIds)
+                        .ge(ReviewInfo::getCreateTime, startDate.atStartOfDay())
+                        .le(ReviewInfo::getCreateTime, endDate.atTime(23, 59, 59))
+                        .isNotNull(ReviewInfo::getOverallScore)
+                        .eq(ReviewInfo::getDeleted, 0)
+                        .and(wrapper -> wrapper.isNull(ReviewInfo::getStatus).or().eq(ReviewInfo::getStatus, 1))
+        );
+        if (reviews.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+
+        List<Integer> scores = reviews.stream()
+                .map(ReviewInfo::getOverallScore)
+                .filter(s -> s != null && s > 0)
+                .toList();
+        if (scores.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+
+        long positiveCount = scores.stream().filter(s -> s >= 4).count();
+        int percent = clampPercent((int) Math.round(positiveCount * 100D / scores.size()));
+        return new MetricSnapshot(percent + "%", percent, scores.size(), false);
+    }
+
+    /**
+     * 查询指定商家在最近 7 天的有效评价列表（用于趋势计算）。
+     */
+    private List<ReviewInfo> findRecentReviewsByDate(LocalDate targetDate) {
+        String merchantCode = currentMerchantCode();
+        List<Long> orderIds = findOrderIdsByMerchant(merchantCode);
+        if (orderIds.isEmpty()) {
+            return List.of();
+        }
+        return reviewInfoMapper.selectList(
+                new LambdaQueryWrapper<ReviewInfo>()
+                        .in(ReviewInfo::getOrderId, orderIds)
+                        .ge(ReviewInfo::getCreateTime, targetDate.atStartOfDay())
+                        .le(ReviewInfo::getCreateTime, targetDate.atTime(23, 59, 59))
+                        .isNotNull(ReviewInfo::getOverallScore)
+                        .eq(ReviewInfo::getDeleted, 0)
+                        .and(wrapper -> wrapper.isNull(ReviewInfo::getStatus).or().eq(ReviewInfo::getStatus, 1))
+        );
+    }
+
+    /**
+     * 查询指定商家的所有 order_id 列表。
+     */
+    private List<Long> findOrderIdsByMerchant(String merchantCode) {
+        return orderInfoMapper.selectList(
+                new LambdaQueryWrapper<OrderInfo>()
+                        .eq(OrderInfo::getMerchantCode, merchantCode)
+                        .select(OrderInfo::getId)
+        ).stream()
+                .map(OrderInfo::getId)
+                .toList();
+    }
+
+    private MetricSnapshot buildGoodRateMetric(List<ChatSession> sessions) {
+        List<Integer> ratings = sessions.stream()
+                .map(ChatSession::getSatisfaction)
+                .filter(Objects::nonNull)
+                .filter(score -> score > 0)
+                .toList();
+        if (ratings.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        long positiveCount = ratings.stream().filter(score -> score >= 4).count();
+        int percent = clampPercent((int) Math.round(positiveCount * 100D / ratings.size()));
+        return new MetricSnapshot(percent + "%", percent, ratings.size(), false);
+    }
+
+    /**
+     * 基于 review_info 的近 7 日趋势（按 create_time 分组）。
+     * 某天无评价样本时，沿用前一日的综合分做平滑，tooltip 中标注样本数为 0。
+     */
+    private List<PerformanceTrendPoint> buildReviewBasedTrend(LocalDate startDate, LocalDate endDate) {
+        List<PerformanceTrendPoint> trend = new ArrayList<>();
+        LocalDate cursor = startDate;
+        Integer previousScore = null;
+
+        while (!cursor.isAfter(endDate)) {
+            LocalDate currentDate = cursor;
+            List<ReviewInfo> dayReviews = findRecentReviewsByDate(currentDate);
+            List<ChatSession> daySessions = allHumanSessionEntities().stream()
+                    .filter(session -> sessionActivityDate(session).map(currentDate::equals).orElse(false))
+                    .toList();
+            if (dayReviews.isEmpty()) {
+                dayReviews = synthesizeReviewInfos(daySessions);
+            }
+
+            MetricSnapshot handleTime = buildHandleTimeMetric(daySessions);
+            int dayScore;
+
+            if (dayReviews.isEmpty()) {
+                // 无评价样本：平滑到前一日分数
+                dayScore = previousScore != null ? previousScore : 0;
+            } else {
+                MetricSnapshot sat = buildReviewSatisfactionMetricFromReviews(dayReviews);
+                MetricSnapshot gr = buildReviewGoodRateMetricFromReviews(dayReviews);
+                dayScore = calculateWeightedServiceScore(handleTime, sat, gr);
+                previousScore = dayScore;
+            }
+
+            PerformanceTrendPoint point = new PerformanceTrendPoint();
+            point.setDay(weekdayLabel(cursor));
+            point.setScore(dayScore);
+            trend.add(point);
+            cursor = cursor.plusDays(1);
+        }
+        return trend;
+    }
+
+    /**
+     * 从已有的 review 列表计算满意度快照（避免重复查询）。
+     */
+    private MetricSnapshot buildReviewSatisfactionMetricFromReviews(List<ReviewInfo> reviews) {
+        List<Integer> scores = reviews.stream()
+                .map(ReviewInfo::getOverallScore)
+                .filter(Objects::nonNull)
+                .filter(s -> s > 0)
+                .toList();
+        if (scores.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        double average = scores.stream().mapToInt(Integer::intValue).average().orElse(0);
+        int currentPercent = clampPercent((int) Math.round(average / 5D * 100));
+        return new MetricSnapshot(String.format("%.1f / 5", average), currentPercent, scores.size(), false);
+    }
+
+    /**
+     * 从已有的 review 列表计算好评率快照（避免重复查询）。
+     */
+    private MetricSnapshot buildReviewGoodRateMetricFromReviews(List<ReviewInfo> reviews) {
+        List<Integer> scores = reviews.stream()
+                .map(ReviewInfo::getOverallScore)
+                .filter(Objects::nonNull)
+                .filter(s -> s > 0)
+                .toList();
+        if (scores.isEmpty()) {
+            return new MetricSnapshot("--", 0, 0, false);
+        }
+        long positiveCount = scores.stream().filter(s -> s >= 4).count();
+        int percent = clampPercent((int) Math.round(positiveCount * 100D / scores.size()));
+        return new MetricSnapshot(percent + "%", percent, scores.size(), false);
+    }
+
+    private MetricSnapshot withFallback(MetricSnapshot primary, MetricSnapshot fallback) {
+        return primary != null && primary.hasData() ? primary : fallback;
+    }
+
+    private List<ReviewInfo> synthesizeReviewInfos(List<ChatSession> sessions) {
+        return sessions.stream()
+                .map(ChatSession::getSatisfaction)
+                .filter(Objects::nonNull)
+                .filter(score -> score > 0)
+                .map(score -> {
+                    ReviewInfo review = new ReviewInfo();
+                    review.setOverallScore(score);
+                    return review;
+                })
+                .toList();
+    }
+
+    private void upsertReviewInfoFromSession(ChatSession session, EvaluationRequest request) {
+        if (session == null || session.getOrderId() == null || session.getUserId() == null || session.getSatisfaction() == null) {
+            return;
+        }
+        ReviewInfo existing = reviewInfoMapper.selectOne(new LambdaQueryWrapper<ReviewInfo>()
+                .eq(ReviewInfo::getOrderId, session.getOrderId())
+                .eq(ReviewInfo::getUserId, session.getUserId())
+                .orderByDesc(ReviewInfo::getCreateTime)
+                .last("limit 1"));
+        if (existing != null && Objects.equals(existing.getOverallScore(), session.getSatisfaction())) {
+            if (!StringUtils.hasText(existing.getContent()) && StringUtils.hasText(request.getContent())) {
+                existing.setContent(request.getContent());
+                existing.setStatus(1);
+                reviewInfoMapper.updateById(existing);
+            }
+            return;
+        }
+
+        ReviewInfo review = new ReviewInfo();
+        review.setOrderId(session.getOrderId());
+        review.setUserId(session.getUserId());
+        review.setServiceScore(session.getSatisfaction());
+        review.setAfterSaleScore(session.getSatisfaction());
+        review.setOverallScore(session.getSatisfaction());
+        review.setContent(request.getContent());
+        review.setStatus(1);
+        review.setDeleted(0);
+        reviewInfoMapper.insert(review);
+    }
+
+    private List<String> buildPerformanceTags(int serviceScore, MetricSnapshot handleTimeMetric,
+                                              MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
+        List<String> tags = new ArrayList<>();
+        if (serviceScore >= 90) {
+            tags.add("优秀");
+        } else if (serviceScore >= 75) {
+            tags.add("稳定");
+        } else {
+            tags.add("需关注");
+        }
+        if (handleTimeMetric.hasData() && handleTimeMetric.currentPercent() >= 100
+                && satisfactionMetric.hasData() && satisfactionMetric.currentPercent() >= 90
+                && goodRateMetric.hasData() && goodRateMetric.currentPercent() >= 90) {
+            tags.add("达成目标");
+        } else {
+            tags.add("持续优化");
+        }
+        return tags;
+    }
+
+    private String buildTrendSummary(List<PerformanceTrendPoint> trend) {
+        if (trend == null || trend.size() < 2) {
+            return "近7日暂无明显波动";
+        }
+        int lift = Optional.ofNullable(trend.get(trend.size() - 1).getScore()).orElse(0)
+                - Optional.ofNullable(trend.get(0).getScore()).orElse(0);
+        if (lift > 0) {
+            return "本周提升 +" + lift;
+        }
+        if (lift < 0) {
+            return "本周下降 " + lift;
+        }
+        return "本周持平";
+    }
+
+    /**
+     * 新口径的综合分：满意度 40% + 好评率 40% + 处理时长 20%
+     */
+    private int calculateWeightedServiceScore(MetricSnapshot handleTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
+        double weightedSum = 0;
+        int totalWeight = 0;
+
+        if (satisfactionMetric.hasData()) {
+            weightedSum += satisfactionMetric.currentPercent() * 0.4;
+            totalWeight += 4;
+        }
+        if (goodRateMetric.hasData()) {
+            weightedSum += goodRateMetric.currentPercent() * 0.4;
+            totalWeight += 4;
+        }
+        if (handleTimeMetric.hasData()) {
+            weightedSum += handleTimeMetric.currentPercent() * 0.2;
+            totalWeight += 2;
+        }
+
+        if (totalWeight == 0) {
+            return 0;
+        }
+        return clampPercent((int) Math.round(weightedSum));
+    }
+
+    /**
+     * 旧口径（保留以防其他地方引用）：简单平均。
+     */
+    private int calculateServiceScore(MetricSnapshot handleTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
+        List<Integer> scores = new ArrayList<>();
+        if (handleTimeMetric.hasData()) {
+            scores.add(handleTimeMetric.currentPercent());
+        }
+        if (satisfactionMetric.hasData()) {
+            scores.add(satisfactionMetric.currentPercent());
+        }
+        if (goodRateMetric.hasData()) {
+            scores.add(goodRateMetric.currentPercent());
+        }
+        if (scores.isEmpty()) {
+            return 0;
+        }
+        return clampPercent((int) Math.round(scores.stream().mapToInt(Integer::intValue).average().orElse(0)));
+    }
+
+    private String resolveScoreStatus(int serviceScore) {
+        if (serviceScore >= 90) {
+            return "今日服务表现优秀";
+        }
+        if (serviceScore >= 75) {
+            return "今日服务表现稳定";
+        }
+        if (serviceScore > 0) {
+            return "今日服务表现待提升";
+        }
+        return "暂无服务表现数据";
+    }
+
+    private Optional<Long> resolvedDurationSeconds(ChatSession session) {
+        if (session == null || session.getCreateTime() == null) {
+            return Optional.empty();
+        }
+        LocalDateTime endTime = Optional.ofNullable(session.getCloseTime())
+                .orElseGet(() -> isSessionCompleted(session) ? session.getUpdateTime() : null);
+        if (endTime == null || endTime.isBefore(session.getCreateTime())) {
+            return Optional.empty();
+        }
+        return Optional.of(Duration.between(session.getCreateTime(), endTime).getSeconds());
+    }
+
+    private Optional<LocalDate> sessionActivityDate(ChatSession session) {
+        if (session == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(session.getCloseTime())
+                .or(() -> Optional.ofNullable(session.getUpdateTime()))
+                .or(() -> Optional.ofNullable(session.getCreateTime()))
+                .map(LocalDateTime::toLocalDate);
+    }
+
+    private boolean isSessionCompleted(ChatSession session) {
+        if (session == null) {
+            return false;
+        }
+        return List.of("CLOSED", "READY_TO_CLOSE", "AWAITING_EVALUATION").contains(session.getStatus())
+                || Integer.valueOf(1).equals(session.getResolved())
+                || session.getSatisfaction() != null;
+    }
+
+    private String weekdayLabel(LocalDate date) {
+        return switch (date.getDayOfWeek()) {
+            case MONDAY -> "周一";
+            case TUESDAY -> "周二";
+            case WEDNESDAY -> "周三";
+            case THURSDAY -> "周四";
+            case FRIDAY -> "周五";
+            case SATURDAY -> "周六";
+            case SUNDAY -> "周日";
+        };
+    }
+
+    private int clampPercent(int percent) {
+        return Math.max(0, Math.min(percent, 100));
+    }
+
+    private String formatDurationCn(long totalSeconds) {
+        long safeSeconds = Math.max(totalSeconds, 0);
+        long minutes = safeSeconds / 60;
+        long seconds = safeSeconds % 60;
+        if (minutes <= 0) {
+            return seconds + "秒";
+        }
+        return minutes + "分" + seconds + "秒";
+    }
+
+    private static final class MetricSnapshot {
+        private final String value;
+        private final int currentPercent;
+        private final int sampleSize;
+        private final boolean lowerIsBetter;
+
+        private MetricSnapshot(String value, int currentPercent, int sampleSize, boolean lowerIsBetter) {
+            this.value = value;
+            this.currentPercent = currentPercent;
+            this.sampleSize = sampleSize;
+            this.lowerIsBetter = lowerIsBetter;
+        }
+
+        private String value() {
+            return value;
+        }
+
+        private int currentPercent() {
+            return currentPercent;
+        }
+
+        private int sampleSize() {
+            return sampleSize;
+        }
+
+        private boolean lowerIsBetter() {
+            return lowerIsBetter;
+        }
+
+        private boolean hasData() {
+            return sampleSize > 0 && StringUtils.hasText(value) && !"--".equals(value);
+        }
     }
 
     private boolean containsAny(String keyword, String... values) {

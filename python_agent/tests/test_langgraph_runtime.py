@@ -128,11 +128,6 @@ class FakeLlm:
         }
 
 
-class FailingLlm:
-    def chat_json(self, **_: object) -> dict[str, object]:
-        raise RuntimeError("model unavailable")
-
-
 class FakeTools:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -143,41 +138,194 @@ class FakeTools:
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(name)
         if name == "search_user_orders":
-            keyword = str(arguments.get("keyword") or "ORD1783516556124")
-            has_existing_ticket = keyword == "ORD1783516556124"
             return ToolResult(
                 ok=True,
                 name=name,
                 data=[
                     {
-                        "orderNo": keyword,
-                        "productName": "Airpods pro3" if keyword == "ORD1783412781761" else "蛋白粉(巧克力味)",
-                        "productCategory": "数码" if keyword == "ORD1783412781761" else "食品",
+                        "orderNo": "ORD1783516556124",
+                        "productName": "蛋白粉(巧克力味)",
+                        "productCategory": "食品",
                         "merchantCode": "MERCHANT_DEMO",
-                        "existingTicketNo": "AS1783516664614" if has_existing_ticket else None,
-                        "afterSalesStatus": "PENDING_REVIEW" if has_existing_ticket else None,
+                        "existingTicketNo": "AS1783516664614",
+                        "afterSalesStatus": "PENDING_REVIEW",
                     }
                 ],
+            )
+        if name == "handoff_to_human":
+            return ToolResult(ok=True, name=name, data={"sessionMode": "HUMAN"})
+        if name == "append_chat_message":
+            return ToolResult(ok=True, name=name, data={"sessionId": 123})
+        return ToolResult(ok=False, name=name, error=f"unexpected tool call: {name}")
+
+
+class FakeUnverifiableImageTools:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def tool_specs(self) -> list[dict[str, object]]:
+        return []
+
+    def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
+        self.calls.append(name)
+        if name == "search_user_orders":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data=[
+                    {
+                        "orderNo": "ORD1783562416783",
+                        "productName": "蓝牙降噪耳机",
+                        "productCategory": "数码",
+                        "merchantCode": "MERCHANT_DEMO",
+                    }
+                ],
+            )
+        if name == "review_images":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "success": True,
+                    "all_clear": True,
+                    "has_damage_area": False,
+                    "has_outer_package": False,
+                    "has_logistics_label": False,
+                    "missing_visual_evidence": ["商品照片"],
+                    "summary": "图片中未见可自动核验的客观异常",
+                },
+            )
+        if name == "retrieve_knowledge":
+            return ToolResult(ok=True, name=name, data={"hits": [], "mode": "pgvector"})
+        if name == "create_after_sales_ticket":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "ticketNo": "AS1783562492249",
+                    "ticket_id": "AS1783562492249",
+                    "status": "PENDING_REVIEW",
+                },
+            )
+        if name == "handoff_to_human":
+            return ToolResult(ok=True, name=name, data={"sessionMode": "HUMAN"})
+        if name == "append_chat_message":
+            return ToolResult(ok=True, name=name, data={"sessionId": 456})
+        return ToolResult(ok=False, name=name, error=f"unexpected tool call: {name}")
+
+
+class FakeExistingTicketImageTools:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def tool_specs(self) -> list[dict[str, object]]:
+        return []
+
+    def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
+        self.calls.append(name)
+        if name == "search_user_orders":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data=[
+                    {
+                        "orderNo": "ORD1783564088864",
+                        "productName": "蓝牙降噪耳机",
+                        "productCategory": "数码",
+                        "merchantCode": "MERCHANT_DEMO",
+                        "existingTicketNo": "AS1783564161927",
+                        "afterSalesStatus": "PENDING_REVIEW",
+                    }
+                ],
+            )
+        if name == "review_images":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "success": True,
+                    "all_clear": True,
+                    "has_damage_area": False,
+                    "has_outer_package": False,
+                    "has_logistics_label": False,
+                    "missing_visual_evidence": ["商品照片"],
+                    "summary": "图片中未见可自动核验的客观异常",
+                },
+            )
+        if name == "retrieve_knowledge":
+            return ToolResult(ok=True, name=name, data={"hits": [], "mode": "pgvector"})
+        if name == "handoff_to_human":
+            return ToolResult(ok=True, name=name, data={"sessionMode": "HUMAN"})
+        if name == "append_chat_message":
+            return ToolResult(ok=True, name=name, data={"sessionId": 789})
+        return ToolResult(ok=False, name=name, error=f"unexpected tool call: {name}")
+
+
+class FakeDamageImageTools:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.create_arguments: dict[str, object] | None = None
+
+    def tool_specs(self) -> list[dict[str, object]]:
+        return []
+
+    def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
+        self.calls.append(name)
+        if name == "search_user_orders":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data=[
+                    {
+                        "orderNo": "ORD1783595519525",
+                        "productName": "蓝牙降噪耳机",
+                        "productCategory": "数码",
+                        "merchantCode": "MERCHANT_DEMO",
+                    }
+                ],
+            )
+        if name == "review_images":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "success": True,
+                    "all_clear": False,
+                    "has_damage_area": True,
+                    "has_outer_package": False,
+                    "has_logistics_label": False,
+                    "missing_visual_evidence": ["外包装照片", "物流面单照片"],
+                    "summary": "图片可见耳机外壳破裂",
+                },
             )
         if name == "retrieve_knowledge":
             return ToolResult(
                 ok=True,
                 name=name,
                 data={
-                    "mode": "lexical_fallback",
+                    "mode": "pgvector",
                     "hits": [
                         {
-                            "title": "质量问题凭证要求",
-                            "snippet": "请上传商品问题照片或视频、问题描述。",
-                            "metadata": {"default_evidence": ["商品问题照片或视频", "问题描述"]},
+                            "title": "数码商品破损售后规则",
+                            "snippet": "商品破损需要提供商品问题照片和问题描述，图片清晰可见破损即可进入审核。",
+                            "metadata": {"default_evidence": ["商品问题照片", "问题描述"]},
                         }
                     ],
                 },
             )
-        if name == "handoff_to_human":
-            return ToolResult(ok=True, name=name, data={"sessionMode": "HUMAN"})
+        if name == "create_after_sales_ticket":
+            self.create_arguments = arguments
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "ticketNo": "AS1783595588024",
+                    "ticket_id": "AS1783595588024",
+                    "status": "PROCESSING" if arguments.get("auto_approved") else "PENDING_REVIEW",
+                },
+            )
         if name == "append_chat_message":
-            return ToolResult(ok=True, name=name, data={"sessionId": 123})
+            return ToolResult(ok=True, name=name, data={"sessionId": 999})
         return ToolResult(ok=False, name=name, error=f"unexpected tool call: {name}")
 
 
@@ -201,25 +349,78 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertIn("handoff_to_human", result["tool_trace"][-3]["tool"])
         self.assertNotIn("retrieve_knowledge", tools.calls)
 
-    def test_llm_failure_uses_guarded_flow_instead_of_raising(self) -> None:
-        tools = FakeTools()
-        agent = LangGraphAfterSalesAgent(tools=tools, llm=FailingLlm())
+    def test_uploaded_image_and_description_handoff_when_image_cannot_verify_claim(self) -> None:
+        tools = FakeUnverifiableImageTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=FakeLlm())
 
         result = agent.handle(
             {
                 "user_id": "1",
                 "session_id": 456,
-                "message": "耳机的质量真的差，左右耳的音量听的都不一样",
-                "order_id": "ORD1783412781761",
+                "message": "耳机声音有问题,有时候听不清,而且还会带电流声",
+                "order_id": "ORD1783562416783",
+                "attachments": [{"name": "earphone.jpg", "kind": "图片", "source": "https://example.com/earphone.jpg"}],
+            }
+        )
+
+        self.assertTrue(result["need_human"])
+        self.assertEqual("HUMAN", result["session_mode"])
+        self.assertIn("AS1783562492249", result["assistant_reply"])
+        self.assertIn("人工复核", result["assistant_reply"])
+        self.assertIn("review_images", tools.calls)
+        self.assertIn("retrieve_knowledge", tools.calls)
+        self.assertIn("create_after_sales_ticket", tools.calls)
+        self.assertIn("handoff_to_human", tools.calls)
+        self.assertLess(tools.calls.index("create_after_sales_ticket"), tools.calls.index("handoff_to_human"))
+
+    def test_existing_ticket_with_uploaded_image_runs_visual_review_before_reply(self) -> None:
+        tools = FakeExistingTicketImageTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=FakeLlm())
+
+        result = agent.handle(
+            {
+                "user_id": "1",
+                "session_id": 789,
+                "message": "耳机声音有问题,经常听不清,而且偶尔还会有电流声",
+                "order_id": "ORD1783564088864",
+                "attachments": [{"name": "earphone.jpg", "kind": "图片", "source": "https://example.com/earphone.jpg"}],
+            }
+        )
+
+        self.assertTrue(result["need_human"])
+        self.assertEqual("HUMAN", result["session_mode"])
+        self.assertIn("AS1783564161927", result["assistant_reply"])
+        self.assertIn("人工复核", result["assistant_reply"])
+        self.assertIn("review_images", tools.calls)
+        self.assertIn("retrieve_knowledge", tools.calls)
+        self.assertIn("handoff_to_human", tools.calls)
+        self.assertNotIn("create_after_sales_ticket", tools.calls)
+
+    def test_damage_image_and_description_satisfy_evidence_and_auto_approve(self) -> None:
+        tools = FakeDamageImageTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=FakeLlm())
+
+        result = agent.handle(
+            {
+                "user_id": "1",
+                "session_id": 999,
+                "message": "耳机刚刚打开,还没有使用,就发现外壳破裂",
+                "order_id": "ORD1783595519525",
+                "attachments": [{"name": "damage.jpg", "kind": "图片", "source": "https://example.com/damage.jpg"}],
             }
         )
 
         self.assertFalse(result["need_human"])
         self.assertEqual("AI", result["session_mode"])
-        self.assertIn("商品问题照片或视频", result["assistant_reply"])
-        self.assertEqual(["商品问题照片或视频", "问题描述"], result["evidence_needed"])
-        self.assertIn("search_user_orders", tools.calls)
+        self.assertIn("处理中", result["assistant_reply"])
+        self.assertIn("review_images", tools.calls)
         self.assertIn("retrieve_knowledge", tools.calls)
+        self.assertIn("create_after_sales_ticket", tools.calls)
+        self.assertIsNotNone(tools.create_arguments)
+        self.assertTrue(tools.create_arguments["auto_approved"])
+        classify = tools.create_arguments["ai_classify_result"]
+        self.assertEqual([], classify["evidence_needed"])
+        self.assertEqual("AI_RECOMMEND_APPROVE", classify["verdict"])
 
 
 if __name__ == "__main__":

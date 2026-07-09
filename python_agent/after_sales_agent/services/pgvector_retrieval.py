@@ -4,12 +4,14 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import logging
 import time
 import socket
-import http.client
 import urllib.error
 import urllib.request
 from typing import Any
+
+logger = logging.getLogger("after_sales_agent.rag")
 
 
 @dataclass(frozen=True)
@@ -60,10 +62,12 @@ def _read_local_env() -> dict[str, str]:
     candidates = [
         Path.cwd() / "db.local.env",
         Path.cwd() / "python_agent" / "db.local.env",
-        Path(__file__).resolve().parents[2] / "db.local.env",
+        Path(__file__).resolve().parents[3] / "db.local.env",
     ]
     values: dict[str, str] = {}
+    logger.debug("_read_local_env cwd=%s", Path.cwd())
     for path in candidates:
+        logger.debug("_read_local_env try: %s (exists=%s)", path, path.exists())
         if not path.exists():
             continue
         for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -72,6 +76,7 @@ def _read_local_env() -> dict[str, str]:
                 continue
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip().strip('"').strip("'")
+        logger.debug("_read_local_env loaded from: %s", path)
         break
     return values
 
@@ -103,7 +108,32 @@ class PgVectorKnowledgeRetriever:
         normalized_query = str(query or "").strip()
         if not normalized_query:
             return {"mode": "skipped", "hits": [], "query": normalized_query}
+        logger.info(
+            "rag retrieve start query=%s merchant=%s category=%s scene=%s intent=%s dsn=%s",
+            normalized_query[:160],
+            merchant_code,
+            product_category,
+            scene,
+            intent,
+            "SET" if self.config.dsn else "EMPTY",
+        )
         if not self.config.dsn:
+            local = self._local_knowledge_fallback(
+                query=normalized_query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                top_k=top_k,
+            )
+            if local["hits"]:
+                local["mode"] = "local_json_fallback"
+                local["trace"]["reason"] = "PGVECTOR_DSN is empty"
+                logger.warning("rag pgvector dsn missing, fallback to local json hits=%s", len(local["hits"]))
+                return local
+            logger.warning("rag pgvector dsn missing and local json fallback has no hits")
             return {
                 "mode": "pgvector_not_configured",
                 "hits": [],
@@ -124,6 +154,16 @@ class PgVectorKnowledgeRetriever:
         try:
             embedding = self._embed(normalized_query)
         except Exception as exc:
+            local = self._local_knowledge_fallback(
+                query=normalized_query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                top_k=top_k,
+            )
             lexical = self._lexical_fallback(
                 query=normalized_query,
                 merchant_code=merchant_code,
@@ -134,18 +174,24 @@ class PgVectorKnowledgeRetriever:
                 policy_version=policy_version,
                 top_k=top_k,
             )
+            error_info = self._embedding_error_info(exc)
+            logger.error("rag embedding failed mode=%s detail=%s", error_info.get("type"), error_info)
+            if local["hits"]:
+                local["mode"] = "local_json_fallback_after_embedding_error"
+                local["trace"]["embedding_error"] = error_info
+                logger.warning("rag fallback to local json after embedding error hits=%s", len(local["hits"]))
+                return local
             if lexical["hits"]:
                 lexical["mode"] = "lexical_fallback_after_embedding_error"
-                lexical["trace"]["embedding_error"] = {"error": exc.__class__.__name__, "message": str(exc)}
+                lexical["trace"]["embedding_error"] = error_info
+                logger.warning("rag fallback to lexical after embedding error hits=%s", len(lexical["hits"]))
                 return lexical
             return {
                 "mode": "embedding_error",
                 "hits": [],
                 "query": normalized_query,
-                "trace": {"error": exc.__class__.__name__, "message": str(exc)},
+                "trace": error_info,
             }
-        filters: list[str] = ["kd.status = 1", "COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'"]
-        params: list[Any] = [self._vector_literal(embedding)]
         metadata_filters = {
             "merchant_code": merchant_code,
             "product_category": product_category,
@@ -154,43 +200,19 @@ class PgVectorKnowledgeRetriever:
             "source_type": source_type,
             "policy_version": policy_version,
         }
-        if merchant_code:
-            filters.append("kd.merchant_code = %s")
-            params.append(str(merchant_code))
-        if product_category:
-            filters.append("(kd.product_category = %s OR kd.product_category IS NULL OR kd.product_category IN ('general', '通用'))")
-            params.append(str(product_category))
-        if scene:
-            filters.append("(kd.scene = %s OR kd.scene IS NULL)")
-            params.append(str(scene))
-        if intent:
-            filters.append("(kd.intent = %s OR kd.intent IS NULL)")
-            params.append(str(intent))
-        if source_type:
-            filters.append("kd.source_type = %s")
-            params.append(str(source_type))
-        if policy_version:
-            filters.append("(kd.policy_version = %s OR kd.policy_version IS NULL)")
-            params.append(str(policy_version))
-
-        where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
         limit = max(1, min(int(top_k or self.config.top_k), 10))
-        sql = f"""
-            SELECT kc.id, kc.document_type, kd.source_code, kc.chunk_text, kc.metadata,
-                   kd.title, kd.product_category, kd.scene, kd.intent, kd.policy_version, kd.tags, kd.merchant_code,
-                   1 - (kc.embedding <=> %s::vector) AS score
-            FROM knowledge_chunk kc
-            JOIN knowledge_document kd ON kd.id = kc.document_id
-            {where_sql}
-            ORDER BY kc.embedding <=> %s::vector
-            LIMIT {limit}
-        """
-        params.append(self._vector_literal(embedding))
         try:
-            with psycopg.connect(self.config.dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-                    rows = cur.fetchall()
+            hits = self._vector_search(
+                psycopg_module=psycopg,
+                embedding=embedding,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                limit=limit,
+            )
         except Exception as exc:
             return {
                 "mode": "pgvector_error",
@@ -198,38 +220,6 @@ class PgVectorKnowledgeRetriever:
                 "query": normalized_query,
                 "trace": {"error": exc.__class__.__name__, "message": str(exc)},
             }
-
-        hits = []
-        for row in rows:
-            metadata = row[4]
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
-            metadata = {
-                **(metadata or {}),
-                "title": row[5],
-                "product_category": row[6],
-                "scene": row[7],
-                "intent": row[8],
-                "policy_version": row[9],
-                "tags": row[10] or [],
-                "merchant_code": row[11],
-                "source_type": row[1],
-                "source_code": str(row[2]),
-            }
-            hits.append(
-                {
-                    "id": row[0],
-                    "source_type": row[1],
-                    "source_code": str(row[2]),
-                    "title": metadata.get("title") or row[1],
-                    "snippet": row[3],
-                    "score": round(float(row[12] or 0), 4),
-                    "metadata": metadata,
-                }
-            )
         lexical = self._lexical_fallback(
             query=normalized_query,
             merchant_code=merchant_code,
@@ -246,12 +236,182 @@ class PgVectorKnowledgeRetriever:
             if lexical["hits"]:
                 lexical["mode"] = "lexical_fallback_after_empty_vector"
                 lexical["trace"]["vector_filters"] = metadata_filters
+                logger.warning("rag vector returned empty, fallback to lexical hits=%s", len(lexical["hits"]))
                 return lexical
+            relaxed = self._relaxed_retrieve_after_empty_vector(
+                psycopg_module=psycopg,
+                embedding=embedding,
+                query=normalized_query,
+                merchant_code=merchant_code,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                limit=limit,
+                strict_filters=metadata_filters,
+                top_k=top_k,
+            )
+            if relaxed["hits"]:
+                return relaxed
+        logger.info("rag retrieve success mode=pgvector hits=%s", len(hits))
         return {
             "mode": "pgvector",
             "query": normalized_query,
             "hits": hits,
             "trace": {"filters": metadata_filters, "top_k": limit},
+        }
+
+    def _relaxed_retrieve_after_empty_vector(
+        self,
+        *,
+        psycopg_module: Any,
+        embedding: list[float],
+        query: str,
+        merchant_code: str | None,
+        intent: str | None,
+        source_type: str | None,
+        policy_version: str | None,
+        limit: int,
+        strict_filters: dict[str, Any],
+        top_k: int | None,
+    ) -> dict[str, Any]:
+        relaxed_filters = {
+            "merchant_code": merchant_code,
+            "product_category": None,
+            "scene": None,
+            "intent": intent,
+            "source_type": source_type,
+            "policy_version": policy_version,
+        }
+        logger.warning("rag strict filters empty, retry relaxed filters strict=%s relaxed=%s", strict_filters, relaxed_filters)
+        vector_hits = self._vector_search(
+            psycopg_module=psycopg_module,
+            embedding=embedding,
+            merchant_code=merchant_code,
+            product_category=None,
+            scene=None,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            limit=limit,
+        )
+        lexical = self._lexical_fallback(
+            query=query,
+            merchant_code=merchant_code,
+            product_category=None,
+            scene=None,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            top_k=top_k,
+        )
+        if vector_hits:
+            hits = self._merge_and_rerank_hits(vector_hits, lexical.get("hits") or [], query, limit)
+            logger.warning("rag relaxed vector fallback hits=%s", len(hits))
+            return {
+                "mode": "pgvector_relaxed_filters",
+                "query": query,
+                "hits": hits,
+                "trace": {"strict_filters": strict_filters, "filters": relaxed_filters, "top_k": limit},
+            }
+        if lexical["hits"]:
+            lexical["mode"] = "lexical_fallback_after_relaxed_filters"
+            lexical["trace"]["strict_filters"] = strict_filters
+            lexical["trace"]["relaxed_filters"] = relaxed_filters
+            logger.warning("rag relaxed lexical fallback hits=%s", len(lexical["hits"]))
+            return lexical
+        return {
+            "mode": "pgvector_relaxed_filters",
+            "query": query,
+            "hits": [],
+            "trace": {"strict_filters": strict_filters, "filters": relaxed_filters, "top_k": limit},
+        }
+
+    def _vector_search(
+        self,
+        *,
+        psycopg_module: Any,
+        embedding: list[float],
+        merchant_code: str | None,
+        product_category: str | None,
+        scene: str | None,
+        intent: str | None,
+        source_type: str | None,
+        policy_version: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        filters: list[str] = ["kd.status = 1", "COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'"]
+        params: list[Any] = [self._vector_literal(embedding)]
+        if merchant_code:
+            filters.append("kd.merchant_code = %s")
+            params.append(str(merchant_code))
+        if product_category:
+            category_aliases = self._product_category_aliases(product_category)
+            placeholders = ", ".join(["%s"] * len(category_aliases))
+            filters.append(
+                f"(kd.product_category IN ({placeholders}) OR kd.product_category IS NULL OR kd.product_category IN ('general', '通用'))"
+            )
+            params.extend(category_aliases)
+        if scene:
+            scene_aliases = self._scene_aliases(scene)
+            placeholders = ", ".join(["%s"] * len(scene_aliases))
+            filters.append(f"(kd.scene IN ({placeholders}) OR kd.scene IS NULL)")
+            params.extend(scene_aliases)
+        if intent:
+            filters.append("(kd.intent = %s OR kd.intent IS NULL)")
+            params.append(str(intent))
+        if source_type:
+            filters.append("kd.source_type = %s")
+            params.append(str(source_type))
+        if policy_version:
+            filters.append("(kd.policy_version = %s OR kd.policy_version IS NULL)")
+            params.append(str(policy_version))
+
+        where_sql = "WHERE " + " AND ".join(filters)
+        sql = f"""
+            SELECT kc.id, kc.document_type, kd.source_code, kc.chunk_text, kc.metadata,
+                   kd.title, kd.product_category, kd.scene, kd.intent, kd.policy_version, kd.tags, kd.merchant_code,
+                   1 - (kc.embedding <=> %s::vector) AS score
+            FROM knowledge_chunk kc
+            JOIN knowledge_document kd ON kd.id = kc.document_id
+            {where_sql}
+            ORDER BY kc.embedding <=> %s::vector
+            LIMIT {limit}
+        """
+        params.append(self._vector_literal(embedding))
+        with psycopg_module.connect(self.config.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        return [self._row_to_hit(row) for row in rows]
+
+    @staticmethod
+    def _row_to_hit(row: Any) -> dict[str, Any]:
+        metadata = row[4]
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        metadata = {
+            **(metadata or {}),
+            "title": row[5],
+            "product_category": row[6],
+            "scene": row[7],
+            "intent": row[8],
+            "policy_version": row[9],
+            "tags": row[10] or [],
+            "merchant_code": row[11],
+            "source_type": row[1],
+            "source_code": str(row[2]),
+        }
+        return {
+            "id": row[0],
+            "source_type": row[1],
+            "source_code": str(row[2]),
+            "title": metadata.get("title") or row[1],
+            "snippet": row[3],
+            "score": round(float(row[12] or 0), 4),
+            "metadata": metadata,
         }
 
     def _merge_and_rerank_hits(
@@ -331,11 +491,17 @@ class PgVectorKnowledgeRetriever:
             filters.append("kd.merchant_code = %s")
             filter_params.append(str(merchant_code))
         if product_category:
-            filters.append("(kd.product_category = %s OR kd.product_category IS NULL OR kd.product_category IN ('general', '通用'))")
-            filter_params.append(str(product_category))
+            category_aliases = self._product_category_aliases(product_category)
+            placeholders = ", ".join(["%s"] * len(category_aliases))
+            filters.append(
+                f"(kd.product_category IN ({placeholders}) OR kd.product_category IS NULL OR kd.product_category IN ('general', '通用'))"
+            )
+            filter_params.extend(category_aliases)
         if scene:
-            filters.append("(kd.scene = %s OR kd.scene IS NULL)")
-            filter_params.append(str(scene))
+            scene_aliases = self._scene_aliases(scene)
+            placeholders = ", ".join(["%s"] * len(scene_aliases))
+            filters.append(f"(kd.scene IN ({placeholders}) OR kd.scene IS NULL)")
+            filter_params.extend(scene_aliases)
         if intent:
             filters.append("(kd.intent = %s OR kd.intent IS NULL)")
             filter_params.append(str(intent))
@@ -460,6 +626,190 @@ class PgVectorKnowledgeRetriever:
             return 1.5
         return 1.0
 
+    @staticmethod
+    def _scene_aliases(scene: str | None) -> list[str]:
+        value = str(scene or "").strip()
+        if not value:
+            return []
+        alias_map = {
+            "damage": ["damage", "product_damage"],
+            "product_damage": ["product_damage", "damage"],
+            "quality_issue": ["quality_issue"],
+            "package_damage": ["package_damage"],
+            "wrong_or_missing_items": ["wrong_or_missing_items"],
+            "logistics_issue": ["logistics_issue", "logistics_damage"],
+            "logistics_damage": ["logistics_damage", "logistics_issue"],
+        }
+        aliases = alias_map.get(value, [value])
+        return list(dict.fromkeys(aliases))
+
+    @staticmethod
+    def _product_category_aliases(product_category: str | None) -> list[str]:
+        value = str(product_category or "").strip()
+        if not value:
+            return []
+        lowered = value.lower()
+        alias_map = {
+            "数码": ["数码", "digital", "headphone", "phone"],
+            "digital": ["digital", "数码", "headphone", "phone"],
+            "耳机": ["耳机", "headphone", "digital", "数码"],
+            "蓝牙耳机": ["蓝牙耳机", "耳机", "headphone", "digital", "数码"],
+            "蓝牙降噪耳机": ["蓝牙降噪耳机", "蓝牙耳机", "耳机", "headphone", "digital", "数码"],
+            "headphone": ["headphone", "耳机", "digital", "数码"],
+            "手机": ["手机", "phone", "digital", "数码"],
+            "phone": ["phone", "手机", "digital", "数码"],
+            "综合": ["综合", "general", "通用"],
+            "通用": ["通用", "general"],
+            "general": ["general", "通用"],
+        }
+        aliases = alias_map.get(value) or alias_map.get(lowered) or [value]
+        return list(dict.fromkeys([str(item).strip() for item in aliases if str(item).strip()]))
+
+    def _local_knowledge_fallback(
+        self,
+        *,
+        query: str,
+        merchant_code: str | None = None,
+        product_category: str | None = None,
+        scene: str | None = None,
+        intent: str | None = None,
+        source_type: str | None = None,
+        policy_version: str | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, Any]:
+        knowledge = self._load_local_policy_knowledge()
+        if not knowledge:
+            return {"mode": "local_json_missing", "query": query, "hits": [], "trace": {"reason": "policy-knowledge-base.json missing"}}
+
+        hits: list[dict[str, Any]] = []
+        scene_aliases = set(self._scene_aliases(scene))
+        limit = max(1, min(int(top_k or self.config.top_k), 10))
+
+        for item in knowledge.get("scene_evidence_knowledge") or []:
+            if not isinstance(item, dict):
+                continue
+            item_scene = str(item.get("scene") or "").strip()
+            if scene_aliases and item_scene not in scene_aliases:
+                continue
+            default_evidence = item.get("default_evidence")
+            snippet = str(item.get("description") or "")
+            hits.append(
+                {
+                    "id": f"local-scene-{item_scene}",
+                    "source_type": "scene_evidence",
+                    "source_code": item_scene,
+                    "title": str(item.get("label") or item_scene),
+                    "snippet": snippet,
+                    "score": 0.99,
+                    "metadata": {
+                        "scene": item_scene,
+                        "default_evidence": default_evidence if isinstance(default_evidence, list) else [],
+                        "merchant_code": merchant_code,
+                        "product_category": product_category,
+                        "intent": intent,
+                        "policy_version": policy_version,
+                    },
+                }
+            )
+
+        query_lower = query.lower()
+        for section_name, source_name in (
+            ("after_sales_policy_knowledge", "after_sales_policy"),
+            ("faq_knowledge", "faq"),
+            ("product_knowledge", "product_knowledge"),
+            ("review_interpretation_knowledge", "review_interpretation"),
+            ("reply_template_knowledge", "reply_template"),
+        ):
+            for item in knowledge.get(section_name) or []:
+                if not isinstance(item, dict):
+                    continue
+                text = " ".join(str(item.get(key) or "") for key in ("title", "question", "summary", "content", "template", "meaning", "description"))
+                if not text.strip():
+                    continue
+                score = self._local_text_match_score(query_lower, text.lower())
+                if score <= 0:
+                    continue
+                item_scene = str(item.get("scene") or "").strip()
+                if scene_aliases and item_scene and item_scene not in scene_aliases:
+                    continue
+                item_category = str(item.get("product_category") or item.get("product_name") or "").strip()
+                category_aliases = {alias.lower() for alias in self._product_category_aliases(product_category)}
+                if (
+                    product_category
+                    and item_category
+                    and item_category.lower() not in category_aliases
+                    and item_category not in {"general", "通用"}
+                ):
+                    continue
+                hits.append(
+                    {
+                        "id": f"local-{section_name}-{item.get('code') or item.get('policy_code') or item.get('product_id') or len(hits)}",
+                        "source_type": source_name,
+                        "source_code": str(item.get("code") or item.get("policy_code") or item.get("question") or item.get("title") or len(hits)),
+                        "title": str(item.get("title") or item.get("question") or item.get("policy_name") or section_name),
+                        "snippet": text[:700],
+                        "score": round(score, 4),
+                        "metadata": item,
+                    }
+                )
+
+        hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        return {
+            "mode": "local_json_fallback",
+            "query": query,
+            "hits": hits[:limit],
+            "trace": {
+                "scene": scene,
+                "product_category": product_category,
+                "merchant_code": merchant_code,
+            },
+        }
+
+    @staticmethod
+    def _local_text_match_score(query: str, text: str) -> float:
+        tokens = [token for token in PgVectorKnowledgeRetriever._lexical_tokens(query) if token]
+        if not tokens:
+            return 0.0
+        matched = sum(1 for token in tokens if token.lower() in text)
+        if matched == 0:
+            return 0.0
+        return min(0.55 + matched * 0.08, 0.95)
+
+    @staticmethod
+    def _load_local_policy_knowledge() -> dict[str, Any]:
+        candidates = [
+            Path.cwd() / "src" / "main" / "resources" / "agent-knowledge-base" / "policy-knowledge-base.json",
+            Path(__file__).resolve().parents[3] / "src" / "main" / "resources" / "agent-knowledge-base" / "policy-knowledge-base.json",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _embedding_error_info(exc: Exception) -> dict[str, Any]:
+        message = str(exc)
+        lowered = message.lower()
+        info = {
+            "error": exc.__class__.__name__,
+            "message": message,
+            "type": "embedding_error",
+        }
+        if "10013" in message or "permission" in lowered or "访问套接字" in message:
+            info["type"] = "network_blocked"
+            info["hint"] = "Outbound connection to embedding service is blocked by local OS/network policy."
+        elif "timed out" in lowered or "timeout" in lowered:
+            info["type"] = "network_timeout"
+            info["hint"] = "Embedding service request timed out."
+        elif "name or service not known" in lowered or "nodename nor servname provided" in lowered:
+            info["type"] = "dns_error"
+            info["hint"] = "Embedding host DNS resolution failed."
+        return info
+
     def _embed(self, text: str) -> list[float]:
         return self.embed_many([text])[0]
 
@@ -542,14 +892,7 @@ class PgVectorKnowledgeRetriever:
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
                 raise RuntimeError(f"embedding request failed with HTTP {exc.code}: {error_body}") from exc
-            except (
-                urllib.error.URLError,
-                TimeoutError,
-                socket.timeout,
-                http.client.RemoteDisconnected,
-                http.client.HTTPException,
-                ConnectionError,
-            ) as exc:
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
                 last_error = exc
                 if attempt >= self.config.embedding_max_retries:
                     break

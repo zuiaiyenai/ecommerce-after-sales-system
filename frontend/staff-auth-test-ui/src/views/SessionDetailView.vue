@@ -2,11 +2,14 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
+  closeSession,
   getSession,
   getSessionMessages,
   getSessions,
   resolveAssetUrl,
-  sendSessionMessage
+  requestSessionEvaluation,
+  sendSessionMessage,
+  submitSessionEvaluation
 } from '../api/merchantCs';
 
 const route = useRoute();
@@ -17,6 +20,7 @@ const sessions = ref([]);
 const messages = ref([]);
 const draft = ref('');
 const sending = ref(false);
+const actionLoading = ref('');
 const activeFilter = ref('ACTIVE');
 let ws = null;
 let wsReconnectTimer = null;
@@ -55,8 +59,29 @@ const recommendedReply = computed(() => {
   return '您好，我先帮您核对订单和售后记录，请您稍等一下。';
 });
 
+const evaluationHint = computed(() => {
+  const status = session.value?.status;
+  if (status === 'PROCESSING') {
+    return '问题处理完成后会自动邀请用户评价，也可以在这里手动补发。';
+  }
+  if (status === 'AWAITING_EVALUATION') {
+    return `评价请求已发送，30 分钟内未评价将转为待客服关闭。发送时间：${session.value?.evaluationRequestedAt || '暂无'}`;
+  }
+  if (status === 'READY_TO_CLOSE') {
+    return '用户 30 分钟内未评价，客服现在可以关闭会话。';
+  }
+  if (status === 'RESOLVED') {
+    return `用户已完成评价，会话自动进入已完成。评分：${session.value?.rating || 5} 星`;
+  }
+  if (status === 'CLOSED') {
+    return '该会话已从列表移除，历史内容仍会保留。';
+  }
+  return '当前会话仍在接入或处理中。';
+});
+
 const hasRelatedOrder = computed(() => Boolean(session.value?.orderId));
 const userScore = computed(() => (`${session.value?.emotion || ''}`.includes('预警') ? '4.2' : '4.8'));
+const isActionBusy = computed(() => Boolean(actionLoading.value));
 const userEmotionMessages = computed(() =>
   messages.value.filter((message) => message.senderRole === 'USER' && message.emotionLabel)
 );
@@ -155,6 +180,13 @@ function connectWebSocket(sessionId) {
   }
 }
 
+async function refreshSession(updated) {
+  session.value = { ...session.value, ...updated };
+  const page = await getSessions();
+  sessions.value = page.records || [];
+  shell?.refreshShell();
+}
+
 async function handleSend() {
   if (!draft.value.trim() || sending.value) {
     return;
@@ -166,8 +198,48 @@ async function handleSend() {
     draft.value = '';
     shell?.setAction('消息已发送');
     await loadPage();
+    shell?.refreshShell();
   } finally {
     sending.value = false;
+  }
+}
+
+async function handleRequestEvaluation() {
+  actionLoading.value = 'request';
+  try {
+    const updated = await requestSessionEvaluation(route.params.sessionId);
+    await refreshSession(updated);
+    shell?.setAction('已发送评价请求');
+  } catch (error) {
+    shell?.setAction(error.message || '当前状态不能发送评价请求');
+  } finally {
+    actionLoading.value = '';
+  }
+}
+
+async function handleSubmitEvaluation() {
+  actionLoading.value = 'submit';
+  try {
+    const updated = await submitSessionEvaluation(route.params.sessionId, 5, '用户已完成服务评价');
+    await refreshSession(updated);
+    shell?.setAction('用户评价完成，会话已完成');
+  } catch (error) {
+    shell?.setAction(error.message || '当前状态不能提交评价');
+  } finally {
+    actionLoading.value = '';
+  }
+}
+
+async function handleClose() {
+  actionLoading.value = 'close';
+  try {
+    const updated = await closeSession(route.params.sessionId);
+    await refreshSession(updated);
+    shell?.setAction('会话已移除');
+  } catch (error) {
+    shell?.setAction(error.message || '移除失败');
+  } finally {
+    actionLoading.value = '';
   }
 }
 
@@ -304,6 +376,17 @@ function emotionSummary(label) {
     ANGRY: '用户情绪风险高，建议优先处理并考虑转人工升级。'
   };
   return summaryMap[String(label || '').toUpperCase()] || '暂未获取到明确情绪判断。';
+}
+
+function knowledgeSourceLabel(sourceType) {
+  const sourceMap = {
+    faq: 'FAQ',
+    product: '商品知识',
+    policy: '售后政策',
+    scene_evidence: '场景举证',
+    review_interpretation: '评价解释'
+  };
+  return sourceMap[String(sourceType || '').toLowerCase()] || sourceType || '知识来源';
 }
 
 watch(() => route.params.sessionId, loadPage);

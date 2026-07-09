@@ -77,7 +77,7 @@ class QwenEmotionBackendTest(unittest.TestCase):
             emotion_score=0.25,
             confidence=0.90,
             need_human_priority=True,
-            reason="用户要求人工处理",
+            reason="user requested human support",
             raw={},
         )
 
@@ -88,20 +88,20 @@ class QwenEmotionBackendTest(unittest.TestCase):
         self.assertEqual((0.30, 0.55), QwenEmotionBackend.SCORE_RANGES["anxious"])
         self.assertEqual((0.50, 0.75), QwenEmotionBackend.SCORE_RANGES["dissatisfied"])
 
-    def test_normalize_result_clamps_score_into_label_range(self) -> None:
+    def test_normalize_result_keeps_in_range_values(self) -> None:
         result = QwenEmotionResult(
             label="calm",
             emotion_score=0.52,
             confidence=0.98,
             need_human_priority=False,
-            reason="用户普通追问",
+            reason="normal follow-up question",
             raw={},
         )
 
         normalized = QwenEmotionBackend._normalize_result(result)
-        self.assertEqual("calm", normalized.label)
-        self.assertEqual(0.30, normalized.emotion_score)
-        self.assertEqual(0.78, normalized.confidence)
+        self.assertEqual("dissatisfied", normalized.label)
+        self.assertEqual(0.52, normalized.emotion_score)
+        self.assertEqual(0.98, normalized.confidence)
 
     def test_normalize_result_keeps_handoff_priority_independent(self) -> None:
         result = QwenEmotionResult(
@@ -109,42 +109,107 @@ class QwenEmotionBackendTest(unittest.TestCase):
             emotion_score=0.98,
             confidence=0.65,
             need_human_priority=True,
-            reason="用户要求升级处理",
+            reason="user asked to escalate handling",
             raw={},
         )
 
         normalized = QwenEmotionBackend._normalize_result(result)
-        self.assertEqual("dissatisfied", normalized.label)
-        self.assertEqual(0.70, normalized.emotion_score)
+        self.assertEqual("angry", normalized.label)
+        self.assertEqual(0.98, normalized.emotion_score)
         self.assertTrue(normalized.need_human_priority)
 
-    def test_apply_message_priors_downgrades_handoff_request(self) -> None:
+    def test_needs_self_check_when_score_exceeds_one(self) -> None:
         result = QwenEmotionResult(
-            label="dissatisfied",
-            emotion_score=0.74,
-            confidence=0.91,
-            need_human_priority=True,
-            reason="模型原始结果偏高",
+            label="anxious",
+            emotion_score=1.20,
+            confidence=0.90,
+            need_human_priority=False,
+            reason="score is out of valid range",
             raw={},
         )
 
-        normalized = QwenEmotionBackend._apply_message_priors("转人工", result)
-        self.assertEqual("anxious", normalized.label)
-        self.assertEqual(0.42, normalized.emotion_score)
+        self.assertTrue(QwenEmotionBackend._needs_self_check(result))
 
-    def test_apply_message_priors_recognizes_positive_ack(self) -> None:
+    def test_needs_self_check_when_confidence_exceeds_one(self) -> None:
         result = QwenEmotionResult(
             label="calm",
-            emotion_score=0.30,
-            confidence=0.78,
+            emotion_score=0.20,
+            confidence=1.20,
             need_human_priority=False,
-            reason="普通确认",
+            reason="confidence is invalid",
             raw={},
         )
 
-        normalized = QwenEmotionBackend._apply_message_priors("好的谢谢", result)
+        self.assertTrue(QwenEmotionBackend._needs_self_check(result))
+
+    def test_normalize_result_keeps_in_range_score_unchanged(self) -> None:
+        result = QwenEmotionResult(
+            label="anxious",
+            emotion_score=0.44,
+            confidence=0.88,
+            need_human_priority=False,
+            reason="already valid anxious result",
+            raw={},
+        )
+
+        normalized = QwenEmotionBackend._normalize_result(result)
+        self.assertEqual("anxious", normalized.label)
+        self.assertEqual(0.44, normalized.emotion_score)
+        self.assertEqual(0.88, normalized.confidence)
+
+    def test_normalize_result_clamps_negative_score_to_zero(self) -> None:
+        result = QwenEmotionResult(
+            label="satisfied",
+            emotion_score=-0.40,
+            confidence=0.93,
+            need_human_priority=False,
+            reason="negative score should be clamped",
+            raw={},
+        )
+
+        normalized = QwenEmotionBackend._normalize_result(result)
         self.assertEqual("satisfied", normalized.label)
-        self.assertEqual(0.12, normalized.emotion_score)
+        self.assertEqual(0.0, normalized.emotion_score)
+        self.assertEqual(0.93, normalized.confidence)
+
+    def test_normalize_result_clamps_score_above_one(self) -> None:
+        result = QwenEmotionResult(
+            label="angry",
+            emotion_score=1.40,
+            confidence=0.92,
+            need_human_priority=True,
+            reason="score above one should be clamped",
+            raw={},
+        )
+
+        normalized = QwenEmotionBackend._normalize_result(result)
+        self.assertEqual("angry", normalized.label)
+        self.assertEqual(1.0, normalized.emotion_score)
+        self.assertEqual(0.92, normalized.confidence)
+        self.assertTrue(normalized.need_human_priority)
+
+    def test_label_from_score_maps_satisfied(self) -> None:
+        self.assertEqual("satisfied", QwenEmotionBackend._label_from_score(0.05))
+
+    def test_label_from_score_maps_calm(self) -> None:
+        self.assertEqual("calm", QwenEmotionBackend._label_from_score(0.20))
+
+    def test_label_from_score_maps_anxious(self) -> None:
+        self.assertEqual("anxious", QwenEmotionBackend._label_from_score(0.40))
+
+    def test_label_from_score_maps_dissatisfied(self) -> None:
+        self.assertEqual("dissatisfied", QwenEmotionBackend._label_from_score(0.60))
+
+    def test_label_from_score_maps_angry(self) -> None:
+        self.assertEqual("angry", QwenEmotionBackend._label_from_score(0.88))
+
+    def test_parse_required_bool_supports_yes_and_no(self) -> None:
+        self.assertTrue(QwenEmotionBackend._parse_required_bool("yes", "need_human_priority"))
+        self.assertFalse(QwenEmotionBackend._parse_required_bool("no", "need_human_priority"))
+
+    def test_parse_required_bool_rejects_invalid_text(self) -> None:
+        with self.assertRaises(Exception):
+            QwenEmotionBackend._parse_required_bool("maybe", "need_human_priority")
 
 
 if __name__ == "__main__":

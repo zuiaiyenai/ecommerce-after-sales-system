@@ -80,6 +80,10 @@ def build_langgraph_entry_payload(data: dict[str, Any], emotion_context: dict[st
                 "order_id": selected.get("order_id") or selected.get("orderId"),
                 "product_name": selected.get("product_name") or selected.get("productName"),
                 "merchant_code": selected.get("merchant_code") or selected.get("merchantCode"),
+                "category": selected.get("category") or selected.get("product_category") or selected.get("productCategory"),
+                "status": selected.get("status"),
+                "after_sales_status": selected.get("after_sales_status") or selected.get("afterSalesStatus"),
+                "uploaded_evidence": selected.get("uploaded_evidence") or selected.get("uploadedEvidence") or [],
             },
         }
     if emotion_context:
@@ -131,11 +135,19 @@ def build_recent_history_messages(payload_history: list[Any] | tuple[Any, ...] |
 
 
 def analyze_chat_emotion(data: dict[str, Any]) -> dict[str, Any] | None:
+    logger = logging.getLogger("api_server.emotion")
     try:
         message = str(data.get("message") or "").strip()
         attachments = build_attachments(data.get("attachments"))
         if not message and not attachments:
             return None
+        logger.info(
+            "emotion request message=%s attachments=%d session_id=%s order_id=%s",
+            message[:200],
+            len(attachments),
+            data.get("session_id") or data.get("sessionId"),
+            data.get("order_id") or data.get("orderId") or "",
+        )
 
         selected = data.get("selected_order") if isinstance(data.get("selected_order"), dict) else {}
         user_id = (
@@ -160,7 +172,7 @@ def analyze_chat_emotion(data: dict[str, Any]) -> dict[str, Any] | None:
             recent_history=history,
             recent_user_messages=tuple(message.content for message in history if message.role == "user"),
         )
-        return {
+        result = {
             "label": emotion.label.value,
             "score": emotion.score,
             "confidence": emotion.confidence,
@@ -170,7 +182,10 @@ def analyze_chat_emotion(data: dict[str, Any]) -> dict[str, Any] | None:
             "comfort_prefix": emotion.comfort_prefix,
             "comfort_examples": list(emotion.comfort_examples),
         }
-    except Exception:
+        logger.info("emotion final context=%s", json.dumps(result, ensure_ascii=False, default=str))
+        return result
+    except Exception as exc:
+        logger.exception("emotion analyze failed error=%s", exc)
         return None
 
 
@@ -409,6 +424,9 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             "emotion_label": emotion_context.get("label") if emotion_context else None,
             "emotion_score": emotion_context.get("score") if emotion_context else None,
             "emotion_confidence": emotion_context.get("confidence") if emotion_context else None,
+            "need_human_priority": emotion_context.get("need_human_priority") if emotion_context else None,
+            "triggers": emotion_context.get("triggers") if emotion_context else None,
+            "reply_tone": emotion_context.get("reply_tone") if emotion_context else None,
             "trace": trace.to_dict(),
         }
         self._send_json(payload)

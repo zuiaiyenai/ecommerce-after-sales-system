@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { getOrders, shipOrder } from '../api/merchantCs';
 
 const router = useRouter();
+const shell = inject('merchantCsShell', null);
 const keyword = ref('');
 const activeStatus = ref('ALL');
 const orders = ref([]);
@@ -80,6 +81,7 @@ async function handleShip(orderId) {
   try {
     await shipOrder(orderId);
     await loadOrders();
+    shell?.refreshShell();
   } catch (err) {
     error.value = err.message || '发货失败';
   } finally {

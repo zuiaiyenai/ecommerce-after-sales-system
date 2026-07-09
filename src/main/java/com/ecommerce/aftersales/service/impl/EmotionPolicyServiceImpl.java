@@ -1,15 +1,20 @@
 package com.ecommerce.aftersales.service.impl;
 
 import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.dto.EmotionPolicyDtos.*;
+import com.ecommerce.aftersales.service.AgentGatewayService;
 import com.ecommerce.aftersales.service.EmotionPolicyService;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,10 +22,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class EmotionPolicyServiceImpl implements EmotionPolicyService {
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    private final AgentGatewayService agentGatewayService;
     private final AtomicLong idGenerator = new AtomicLong(1000L);
     private final Map<Long, EmotionPolicyDetail> versionStore = new LinkedHashMap<>();
     private EmotionPolicyDetail draftPolicy;
@@ -115,7 +122,7 @@ public class EmotionPolicyServiceImpl implements EmotionPolicyService {
     @Override
     public synchronized EmotionPolicyTestResponse testPolicy(EmotionPolicyTestRequest request) {
         EmotionPolicyDetail policy = draftPolicy != null ? draftPolicy : publishedPolicy;
-        return EmotionPolicyPreviewEngine.preview(policy, request);
+        return EmotionPolicyPreviewEngine.preview(policy, request, agentGatewayService);
     }
 
     private EmotionPolicyDetail buildDefaultPolicy() {
@@ -360,24 +367,25 @@ public class EmotionPolicyServiceImpl implements EmotionPolicyService {
         private EmotionPolicyPreviewEngine() {
         }
 
-        private static EmotionPolicyTestResponse preview(EmotionPolicyDetail policy, EmotionPolicyTestRequest request) {
-            EmotionThresholds thresholds = policy != null && policy.getThresholds() != null
-                    ? policy.getThresholds() : defaultThresholds();
-            EmotionWeights weights = policy != null && policy.getWeights() != null
-                    ? policy.getWeights() : defaultWeights();
+        private static EmotionPolicyTestResponse preview(
+                EmotionPolicyDetail policy,
+                EmotionPolicyTestRequest request,
+                AgentGatewayService agentGatewayService
+        ) {
             EmotionTrendPolicy trendPolicy = policy != null && policy.getTrend() != null
                     ? policy.getTrend() : defaultTrend();
 
             List<EmotionTurnView> timeline = new ArrayList<>();
+            List<String> historyTexts = request.getHistoryTexts() == null ? List.of() : request.getHistoryTexts();
             if (request.getHistoryTexts() != null) {
                 for (String text : request.getHistoryTexts()) {
                     if (text == null || text.isBlank()) {
                         continue;
                     }
-                    timeline.add(scoreTurn(text, true, thresholds, weights, policy));
+                    timeline.add(analyzeTurn(text, true, historyTexts, timeline.size(), agentGatewayService));
                 }
             }
-            EmotionTurnView current = scoreTurn(request.getText(), false, thresholds, weights, policy);
+            EmotionTurnView current = analyzeTurn(request.getText(), false, historyTexts, timeline.size(), agentGatewayService);
             timeline.add(current);
 
             String trend = resolveTrend(timeline);
@@ -407,129 +415,49 @@ public class EmotionPolicyServiceImpl implements EmotionPolicyService {
             response.setScore(current.getScore());
             response.setTrend(trend);
             response.setConsecutiveRises(consecutiveRises);
-            response.setNeedHuman("ANGRY".equalsIgnoreCase(current.getLabel()) || !escalationSignals.isEmpty());
-            response.setReplyTone(resolveReplyTone(current.getLabel(), escalationSignals));
+            response.setNeedHuman(resolveNeedHuman(current, escalationSignals));
+            response.setReplyTone(resolveReplyTone(current.getLabel(), escalationSignals, current.getTriggers()));
             response.setMatchedRules(current.getTriggers());
             response.setEscalationSignals(escalationSignals);
-            response.setSummary(buildSummary(current.getLabel(), current.getScore(), escalationSignals));
+            response.setSummary(buildSummary(current, escalationSignals));
             response.setTimeline(timeline);
             return response;
         }
 
-        private static EmotionTurnView scoreTurn(String text,
-                                                 boolean fromHistory,
-                                                 EmotionThresholds thresholds,
-                                                 EmotionWeights weights,
-                                                 EmotionPolicyDetail policy) {
+        private static EmotionTurnView analyzeTurn(
+                String text,
+                boolean fromHistory,
+                List<String> historyTexts,
+                int historyCount,
+                AgentGatewayService agentGatewayService
+        ) {
             String normalized = text == null ? "" : text.trim();
-            int score = 0;
-            List<String> triggers = new ArrayList<>();
-            if (policy != null && policy.getKeywordRules() != null) {
-                for (EmotionKeywordRule rule : policy.getKeywordRules()) {
-                    if (rule == null || Boolean.FALSE.equals(rule.getEnabled())) {
-                        continue;
-                    }
-                    score += applyKeywordRule(normalized, rule, triggers);
+            AgentGatewayDtos.EmotionAnalyzeRequest analyzeRequest = new AgentGatewayDtos.EmotionAnalyzeRequest();
+            analyzeRequest.setMessage(normalized);
+            List<AgentGatewayDtos.ConversationMessageDto> recentHistory = new ArrayList<>();
+            for (int i = 0; i < Math.min(historyCount, historyTexts.size()); i++) {
+                String historyText = historyTexts.get(i);
+                if (!StringUtils.hasText(historyText)) {
+                    continue;
                 }
-                if (policy.getComboRules() != null) {
-                    for (EmotionComboRule rule : policy.getComboRules()) {
-                        if (rule == null || Boolean.FALSE.equals(rule.getEnabled())) {
-                            continue;
-                        }
-                        if (comboMatched(normalized, rule.getGroups())) {
-                            score += safeInt(rule.getBonus());
-                            triggers.add(rule.getName());
-                        }
-                    }
-                }
+                AgentGatewayDtos.ConversationMessageDto dto = new AgentGatewayDtos.ConversationMessageDto();
+                dto.setRole("user");
+                dto.setContent(historyText);
+                recentHistory.add(dto);
             }
-            score += punctuationScore(normalized, weights);
-            score = Math.min(score, 100);
+            analyzeRequest.setRecent_history(recentHistory);
+            AgentGatewayDtos.EmotionAnalyzeResponse analyzed = agentGatewayService.analyzeEmotion(analyzeRequest);
+
             EmotionTurnView view = new EmotionTurnView();
             view.setText(normalized);
-            view.setScore(score);
-            view.setLabel(resolveLabel(score, thresholds));
-            view.setTriggers(triggers.stream().distinct().toList());
+            view.setScore(toPercentScore(analyzed.getEmotion_score()));
+            view.setConfidence(toPercentScore(analyzed.getEmotion_confidence()));
+            view.setLabel(normalizeEmotionLabel(analyzed.getEmotion_label()));
+            view.setNeedHumanPriority(Boolean.TRUE.equals(analyzed.getNeed_human_priority()));
+            view.setTriggers(analyzed.getTriggers() == null ? Collections.emptyList() : analyzed.getTriggers().stream().distinct().toList());
             view.setFromHistory(fromHistory);
             view.setCreatedAt(now());
             return view;
-        }
-
-        private static int applyKeywordRule(String text, EmotionKeywordRule rule, List<String> triggers) {
-            if (rule.getKeywords() == null || rule.getKeywords().isEmpty()) {
-                return 0;
-            }
-            List<String> matched = new ArrayList<>();
-            for (String keyword : rule.getKeywords()) {
-                if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
-                    matched.add(keyword);
-                }
-            }
-            if (matched.isEmpty()) {
-                return 0;
-            }
-            triggers.addAll(matched);
-            triggers.add(rule.getName());
-            int extra = Math.max(0, matched.size() - 1) * safeInt(rule.getExtraPerMatch());
-            return safeInt(rule.getScore()) + extra;
-        }
-
-        private static boolean comboMatched(String text, List<List<String>> groups) {
-            if (groups == null || groups.isEmpty()) {
-                return false;
-            }
-            for (List<String> group : groups) {
-                boolean matched = false;
-                if (group != null) {
-                    for (String keyword : group) {
-                        if (keyword != null && !keyword.isBlank() && text.contains(keyword)) {
-                            matched = true;
-                            break;
-                        }
-                    }
-                }
-                if (!matched) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private static int punctuationScore(String text, EmotionWeights weights) {
-            int score = 0;
-            if (text.contains("!!!") || text.contains("???")) {
-                score += safeInt(weights.getPunctuationTriple());
-            }
-            if (countChar(text, '!') >= 3) {
-                score += safeInt(weights.getPunctuationExclamation());
-            }
-            if (countChar(text, '?') >= 3) {
-                score += safeInt(weights.getPunctuationQuestion());
-            }
-            return score;
-        }
-
-        private static int countChar(String text, char target) {
-            int count = 0;
-            for (int i = 0; i < text.length(); i++) {
-                if (text.charAt(i) == target) {
-                    count++;
-                }
-            }
-            return count;
-        }
-
-        private static String resolveLabel(int score, EmotionThresholds thresholds) {
-            if (score >= safeInt(thresholds.getAngry())) {
-                return "ANGRY";
-            }
-            if (score >= safeInt(thresholds.getDissatisfied())) {
-                return "DISSATISFIED";
-            }
-            if (score >= safeInt(thresholds.getAnxious())) {
-                return "ANXIOUS";
-            }
-            return "CALM";
         }
 
         private static String resolveTrend(List<EmotionTurnView> timeline) {
@@ -577,8 +505,21 @@ public class EmotionPolicyServiceImpl implements EmotionPolicyService {
             return 0;
         }
 
-        private static String resolveReplyTone(String label, List<String> escalationSignals) {
+        private static boolean resolveNeedHuman(EmotionTurnView current, List<String> escalationSignals) {
+            if (Boolean.TRUE.equals(current.getNeedHumanPriority())) {
+                return true;
+            }
+            if (!escalationSignals.isEmpty()) {
+                return true;
+            }
+            return "ANGRY".equalsIgnoreCase(current.getLabel());
+        }
+
+        private static String resolveReplyTone(String label, List<String> escalationSignals, List<String> triggers) {
             if (!escalationSignals.isEmpty() && ("DISSATISFIED".equalsIgnoreCase(label) || "ANGRY".equalsIgnoreCase(label))) {
+                return "priority_human_support";
+            }
+            if (triggers != null && triggers.contains("qwen_reasoned") && "ANGRY".equalsIgnoreCase(label)) {
                 return "priority_human_support";
             }
             return switch (label == null ? "CALM" : label.toUpperCase()) {
@@ -589,13 +530,36 @@ public class EmotionPolicyServiceImpl implements EmotionPolicyService {
             };
         }
 
-        private static String buildSummary(String label, int score, List<String> escalationSignals) {
+        private static String buildSummary(EmotionTurnView current, List<String> escalationSignals) {
             StringBuilder builder = new StringBuilder();
-            builder.append("Current emotion: ").append(label).append(", score: ").append(score).append(".");
+            builder.append("Current emotion: ").append(current.getLabel())
+                    .append(", score: ").append(current.getScore());
+            if (current.getConfidence() != null) {
+                builder.append(", confidence: ").append(current.getConfidence()).append("%");
+            }
+            builder.append(".");
+            if (current.getTriggers() != null && !current.getTriggers().isEmpty()) {
+                builder.append(" Triggers: ").append(String.join(", ", current.getTriggers())).append(".");
+            }
             if (!escalationSignals.isEmpty()) {
                 builder.append(" Escalation signals: ").append(String.join(", ", escalationSignals)).append(".");
             }
             return builder.toString();
+        }
+
+        private static int toPercentScore(Double value) {
+            if (value == null) {
+                return 0;
+            }
+            double normalized = value > 1 ? value / 100.0 : value;
+            return Math.max(0, Math.min(100, (int) Math.round(normalized * 100)));
+        }
+
+        private static String normalizeEmotionLabel(String label) {
+            if (!StringUtils.hasText(label)) {
+                return "CALM";
+            }
+            return label.trim().toUpperCase();
         }
 
         private static EmotionThresholds defaultThresholds() {

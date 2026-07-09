@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from .llm import LLMError, OpenAICompatibleClient, OpenAICompatibleConfig
 from ..models import Attachment, ImageReviewItem, ImageReviewResult
 from ..infra.trace import TraceRecorder
+
+logger = logging.getLogger("after_sales_agent.vision")
 
 
 class VisionReviewService:
@@ -117,6 +120,12 @@ class VisionReviewService:
             image_urls=[attachment.source or ""],
             temperature=0.0,
             max_tokens=180,
+        )
+        logger.info(
+            "vision raw result index=%s name=%s raw=%s",
+            index,
+            attachment.name,
+            json.dumps(raw, ensure_ascii=False, default=str)[:1200],
         )
         return self._parse_single_pass_item(raw, index)
 

@@ -177,6 +177,9 @@ public class AgentGatewayDtos {
         private String emotion_label;
         private Double emotion_score;
         private Double emotion_confidence;
+        private Boolean need_human_priority;
+        private List<String> triggers;
+        private String reply_tone;
         private Map<String, Object> trace;
     }
 

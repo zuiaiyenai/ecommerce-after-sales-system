@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   getCurrentStaff,
   getDashboardTodos,
+  getOrders,
   getSessions,
   getTickets,
   logout,
@@ -23,6 +24,7 @@ const todos = ref([]);
 const sessions = ref([]);
 const tickets = ref([]);
 const ticketTotal = ref(0);
+const pendingShipmentCount = ref(0);
 const showLogoutAnimation = ref(false);
 const THEME_KEY = 'merchant_cs_theme';
 const LOGOUT_DURATION_MS = 3000;
@@ -47,6 +49,7 @@ function toFiniteNumber(value, fallback = 0) {
 }
 
 const safeTicketTotal = computed(() => toFiniteNumber(ticketTotal.value));
+const safePendingShipmentCount = computed(() => toFiniteNumber(pendingShipmentCount.value));
 
 function setAction(message) {
   actionMessage.value = message;
@@ -61,17 +64,19 @@ async function loadShellData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [profile, todoData, sessionPage, ticketPage] = await Promise.all([
+    const [profile, todoData, sessionPage, ticketPage, pendingShipmentPage] = await Promise.all([
       getCurrentStaff(),
       getDashboardTodos(),
       getSessions({ size: 100 }),
-      getTickets({ size: 100 })
+      getTickets({ size: 100 }),
+      getOrders({ status: 'PAID', size: 1 })
     ]);
     staff.value = profile;
     todos.value = todoData;
     sessions.value = sessionPage.records || [];
     tickets.value = ticketPage.records || [];
     ticketTotal.value = toFiniteNumber(ticketPage.total, tickets.value.length);
+    pendingShipmentCount.value = toFiniteNumber(pendingShipmentPage.total, pendingShipmentPage.records?.length || 0);
   } catch (error) {
     errorMessage.value = error.message || '基础数据加载失败';
   } finally {
@@ -195,6 +200,7 @@ onBeforeUnmount(() => {
       :sessions="sessions"
       :tickets="tickets"
       :ticket-total="safeTicketTotal"
+      :pending-shipment-count="safePendingShipmentCount"
       :todos="todos"
       :show-logout="showLogout"
       @toggle-status="handleToggleStatus"

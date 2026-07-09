@@ -110,12 +110,11 @@ function waitSeconds(item) {
 }
 
 function waitLabel(item) {
-  const seconds = waitSeconds(item);
-  if (!seconds) {
-    return '已回复';
-  }
-  const minutes = Math.floor(seconds / 60);
-  return `等待 ${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  return hasStaffReply(item) ? '已回复' : '未回复';
+}
+
+function hasStaffReply(item) {
+  return Number(item?.serviceUnreadCount || 0) === 0 && Boolean(item?.serviceId);
 }
 
 onMounted(() => {

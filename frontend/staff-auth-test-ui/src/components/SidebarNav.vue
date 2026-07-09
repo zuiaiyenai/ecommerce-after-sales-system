@@ -16,6 +16,10 @@ const props = defineProps({
     type: Number,
     default: 0
   },
+  pendingShipmentCount: {
+    type: Number,
+    default: 0
+  },
   todos: {
     type: Array,
     default: () => []
@@ -30,7 +34,11 @@ defineEmits(['toggleStatus', 'logout']);
 
 const route = useRoute();
 const router = useRouter();
-const activeSessionCount = computed(() => props.sessions.filter((item) => !['RESOLVED', 'CLOSED'].includes(item.status)).length);
+const activeSessionCount = computed(() =>
+  props.sessions.filter((item) => !['RESOLVED', 'CLOSED', 'READY_TO_CLOSE', 'AWAITING_EVALUATION'].includes(item.status))
+    .filter((item) => Number(item.serviceUnreadCount || 0) > 0 || !item.serviceId)
+    .length
+);
 
 const pendingTicketCount = computed(() => props.tickets.filter((item) => item.status === 'PENDING_REVIEW').length);
 
@@ -44,9 +52,10 @@ const navItems = computed(() => [
     count: activeSessionCount.value
   },
   { to: '/tickets', key: 'tickets', label: '售后申请', icon: 'clipboard', count: pendingTicketCount.value },
-  { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
+  { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify', count: props.pendingShipmentCount },
   { to: '/products', key: 'products', label: '商品管理', icon: 'package' },
   { to: '/reviews', key: 'reviews', label: '用户评价', icon: 'star' },
+  { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.todos.length },
   { to: '/profile', key: 'profile', label: '个人中心', icon: 'user' }
 ]);
 
@@ -108,7 +117,7 @@ function handleNavClick(item) {
             <path v-for="path in iconPaths[item.icon]" :key="path" :d="path" />
           </svg>
         </span>
-        <span class="nav-label">{{ item.label }}</span>
+        <span>{{ item.label }}</span>
         <em v-if="item.count">{{ item.count }}</em>
       </button>
     </nav>

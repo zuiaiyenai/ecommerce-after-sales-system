@@ -14,7 +14,6 @@ import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.CreateSessionResponse;
 import com.ecommerce.aftersales.dto.UserChatDtos.HideSessionRequest;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageRequest;
-import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.dto.UserChatDtos.SendMessageResponse;
 import com.ecommerce.aftersales.dto.WsChatMessage;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
@@ -25,7 +24,6 @@ import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
-import com.ecommerce.aftersales.service.AgentGatewayService;
 import com.ecommerce.aftersales.service.ChatEmotionAnalysisService;
 import com.ecommerce.aftersales.service.NotificationService;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,9 +40,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
 @RestController
 @RequestMapping("/chat")
 public class UserChatController {
@@ -64,7 +59,6 @@ public class UserChatController {
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final NotificationService notificationService;
     private final ChatEmotionAnalysisService chatEmotionAnalysisService;
-    private final AgentGatewayService agentGatewayService;
 
     public UserChatController(ChatSessionMapper chatSessionMapper,
                               ChatMessageMapper chatMessageMapper,
@@ -72,8 +66,7 @@ public class UserChatController {
                               OrderInfoMapper orderInfoMapper,
                               ChatWebSocketHandler chatWebSocketHandler,
                               NotificationService notificationService,
-                              ChatEmotionAnalysisService chatEmotionAnalysisService,
-                              AgentGatewayService agentGatewayService) {
+                              ChatEmotionAnalysisService chatEmotionAnalysisService) {
         this.chatSessionMapper = chatSessionMapper;
         this.chatMessageMapper = chatMessageMapper;
         this.afterSalesTicketMapper = afterSalesTicketMapper;
@@ -81,7 +74,6 @@ public class UserChatController {
         this.chatWebSocketHandler = chatWebSocketHandler;
         this.notificationService = notificationService;
         this.chatEmotionAnalysisService = chatEmotionAnalysisService;
-        this.agentGatewayService = agentGatewayService;
     }
 
     @PostMapping("/session")
@@ -176,22 +168,6 @@ public class UserChatController {
         } else {
             session.setStatus(STATUS_AI_ACTIVE);
             chatSessionMapper.updateById(session);
-            try {
-                AgentGatewayDtos.ChatRequest agentRequest = new AgentGatewayDtos.ChatRequest();
-                agentRequest.setUser_id(String.valueOf(session.getUserId()));
-                agentRequest.setOrder_id(session.getOrderId() == null ? null : String.valueOf(session.getOrderId()));
-                agentRequest.setSession_id(session.getId());
-                agentRequest.setMessage(request.getMessage());
-                AgentGatewayDtos.ChatResponse agentResponse = agentGatewayService.chat(agentRequest);
-                if (agentResponse != null && agentResponse.getAssistant_reply() != null) {
-                    reply = agentResponse.getAssistant_reply();
-                    addMessage(session.getId(), "ASSISTANT", reply, "TEXT");
-                }
-            } catch (Exception e) {
-                log.warn("AI agent reply failed for session {}: {}", session.getId(), e.getMessage());
-                reply = "抱歉，智能客服暂时无法处理您的请求，请稍后重试或发送\"转人工\"联系人工客服。";
-                addMessage(session.getId(), "ASSISTANT", reply, "TEXT");
-            }
         }
 
         SendMessageResponse response = new SendMessageResponse();
@@ -199,7 +175,7 @@ public class UserChatController {
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setReply(reply);
-        response.setMessage(transferToHuman || humanSession ? "MESSAGE_SENT_TO_HUMAN" : "MESSAGE_REPLIED");
+        response.setMessage(transferToHuman || humanSession ? "MESSAGE_SENT_TO_HUMAN" : "MESSAGE_RECORDED");
         return ApiResponse.success("发送成功", response);
     }
 

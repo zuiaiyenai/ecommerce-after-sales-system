@@ -1,5 +1,13 @@
 <template>
   <view class="page">
+    <view class="nav-bar">
+      <view class="back-btn" @tap="goBack">
+        <text class="back-icon">←</text>
+      </view>
+      <text class="nav-title">{{ sessionMode === 'HUMAN' ? '人工客服' : '智能售后助手' }}</text>
+      <view class="nav-right"></view>
+    </view>
+
     <view class="fixed-context">
       <view v-if="hasOrder" class="order-card">
         <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
@@ -223,6 +231,35 @@ function isImagePlaceholderMessage(message) {
   return message?.type !== 'IMAGE' && String(message?.content || '') === '[图片]'
 }
 
+function getMessageTimeMs(message) {
+  const value = message?.createdAt || message?.time || ''
+  if (!value) return 0
+  const normalized = String(value).replace(/-/g, '/')
+  const timestamp = Date.parse(normalized)
+  return Number.isNaN(timestamp) ? 0 : timestamp
+}
+
+function isSameMinute(a, b) {
+  const timeA = getMessageTimeMs(a)
+  const timeB = getMessageTimeMs(b)
+  if (!timeA || !timeB) return false
+  return Math.abs(timeA - timeB) < 60000
+}
+
+function insertLocalImageMessage(allMessages, imageMessage) {
+  const sameSendTextIndex = allMessages.findIndex(
+    (msg) => msg.role === imageMessage.role && msg.type === 'TEXT' && isSameMinute(msg, imageMessage)
+  )
+  if (sameSendTextIndex >= 0) {
+    allMessages.splice(sameSendTextIndex, 0, imageMessage)
+    return
+  }
+
+  let insertIndex = allMessages.findIndex((msg) => getMessageTimeMs(msg) > getMessageTimeMs(imageMessage))
+  if (insertIndex < 0) insertIndex = allMessages.length
+  allMessages.splice(insertIndex, 0, imageMessage)
+}
+
 function mergeLocalImageMessages(remoteMessages, localImages) {
   const imageQueue = [...localImages]
   const consumed = new Set()
@@ -252,22 +289,14 @@ function mergeLocalImageMessages(remoteMessages, localImages) {
     )
     if (exists) return
 
-    // 添加到数组中
-    allMessages.push(imageMessage)
+    // 图片消息不一定会作为独立远端消息返回；按同一分钟的用户文字前插，避免历史回填后跑到欢迎语上方或文字下方。
+    insertLocalImageMessage(allMessages, imageMessage)
   })
+  return allMessages
+}
 
-  // 先按完整时间排序，如果时间相同则按sequence排序
-  return allMessages.sort((a, b) => {
-    const timeA = a.createdAt || a.time || '00:00'
-    const timeB = b.createdAt || b.time || '00:00'
-    const timeCompare = timeA.localeCompare(timeB)
-    if (timeCompare !== 0) return timeCompare
-
-    // 时间相同，按sequence排序
-    const seqA = a.sequence ?? 999999
-    const seqB = b.sequence ?? 999999
-    return seqA - seqB
-  })
+function goBack() {
+  uni.navigateBack()
 }
 
 function copyOrderNo() {
@@ -605,12 +634,12 @@ async function sendAgentMessage({
 }) {
   const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
   if (renderLocal) {
-    // 先渲染文字，再渲染图片，保证顺序正确
+    // 图文同时发送时先展示图片，再展示文字描述，避免历史回填后顺序错乱
+    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath))
     // 如果text是占位符[图片]，不渲染
     if (text && text !== '[图片]') {
       addMessage('user', text)
     }
-    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath))
     persistConversation()
   }
   if (sessionMode.value === 'HUMAN') {
@@ -877,6 +906,42 @@ onLoad(async (options) => {
   flex-direction: column;
   height: 100vh;
   background: #f0eeea;
+}
+
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32rpx 28rpx;
+  background: #ffffff;
+  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
+}
+
+.back-btn,
+.nav-right {
+  width: 64rpx;
+  height: 64rpx;
+}
+
+.back-btn {
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 16rpx;
+  background: #f5f3ef;
+}
+
+.back-icon,
+.nav-title {
+  color: #1a1a1a;
+}
+
+.back-icon {
+  font-size: 32rpx;
+}
+
+.nav-title {
+  font-size: 32rpx;
+  font-weight: 800;
 }
 
 .fixed-context {
