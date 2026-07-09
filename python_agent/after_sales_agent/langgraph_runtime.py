@@ -138,12 +138,16 @@ class LangGraphAfterSalesAgent:
         logger.info("   order_id_hint: %s", state.get("order_id_hint"))
         logger.info("   existing tool_results: %d", len(state.get("tool_results") or []))
 
-        raw = self.llm.chat_json(
-            system_prompt=self._planner_system_prompt(),
-            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-            temperature=0.1,
-            max_tokens=700,
-        )
+        try:
+            raw = self.llm.chat_json(
+                system_prompt=self._planner_system_prompt(),
+                user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
+                temperature=0.1,
+                max_tokens=700,
+            )
+        except Exception as exc:
+            logger.warning("LLM planner failed, using guarded fallback: %s", exc)
+            raw = self._guarded_after_sales_action(state) or self._safe_final_reply_action(state)
         logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
@@ -259,12 +263,16 @@ class LangGraphAfterSalesAgent:
             return state
 
         logger.info("   🤖 LLM decider 决策中...")
-        raw = self.llm.chat_json(
-            system_prompt=self._decider_system_prompt(),
-            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-            temperature=0.1,
-            max_tokens=700,
-        )
+        try:
+            raw = self.llm.chat_json(
+                system_prompt=self._decider_system_prompt(),
+                user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
+                temperature=0.1,
+                max_tokens=700,
+            )
+        except Exception as exc:
+            logger.warning("LLM decider failed, using guarded fallback: %s", exc)
+            raw = self._guarded_after_sales_action(state) or self._safe_final_reply_action(state)
         logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if self._claims_ticket_created(raw.get("assistant_reply")) and not self._has_successful_tool(state, "create_after_sales_ticket"):
@@ -816,6 +824,18 @@ class LangGraphAfterSalesAgent:
         }
 
     @staticmethod
+    def _safe_final_reply_action(state: AgentGraphState) -> dict[str, Any]:
+        evidence_needed = state.get("evidence_needed") or ["商品问题照片或视频", "问题描述"]
+        return {
+            "action": "final_reply",
+            "tool_name": None,
+            "tool_arguments": {},
+            "assistant_reply": "已了解您的售后问题。当前智能处理暂时不稳定，我会先记录您的描述；请补充商品问题照片或视频，稍后可继续为您核对售后规则。",
+            "need_human": False,
+            "evidence_needed": evidence_needed,
+        }
+
+    @staticmethod
     def _selected_order(state: AgentGraphState) -> dict[str, Any] | None:
         orders = LangGraphAfterSalesAgent._latest_tool_data(state, "search_user_orders")
         if not isinstance(orders, list) or not orders:
@@ -872,7 +892,7 @@ class LangGraphAfterSalesAgent:
         text = str(state.get("message") or "")
         if any(word in text for word in ("破", "裂", "坏", "损", "碎", "断")):
             return "DAMAGE"
-        if any(word in text for word in ("质量", "电流", "异响", "噪", "充电", "充不", "充了", "掉电", "耗电", "续航", "开不了机", "无法开机", "死机", "重启", "卡顿")):
+        if any(word in text for word in ("质量", "电流", "异响", "噪", "音量", "左右耳", "左右声道", "一边大", "一边小", "声音不一样", "充电", "充不", "充了", "掉电", "耗电", "续航", "开不了机", "无法开机", "死机", "重启", "卡顿")):
             return "QUALITY"
         return "OTHER"
 
@@ -908,6 +928,7 @@ class LangGraphAfterSalesAgent:
         markers = (
             "充电", "充不", "充了", "冲了", "掉电", "耗电", "电池", "续航", "电量",
             "电流声", "异响", "杂音", "噪音", "破音",
+            "音量", "左右耳", "左右声道", "一边大", "一边小", "声音不一样",
             "开不了机", "无法开机", "死机", "重启", "卡顿", "闪屏",
             "无声", "没声音", "单边无声", "连接不上", "断连", "蓝牙",
             "按键失灵", "触控失灵", "功能", "故障", "质量问题",

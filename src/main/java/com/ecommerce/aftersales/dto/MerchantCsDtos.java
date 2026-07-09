@@ -143,6 +143,7 @@ public final class MerchantCsDtos {
         private String orderNo;
         private String product;
         private String productName;
+        private String productImage;
         private String ticketNo;
         private String lastMessageContent;
         private String lastMessageTime;

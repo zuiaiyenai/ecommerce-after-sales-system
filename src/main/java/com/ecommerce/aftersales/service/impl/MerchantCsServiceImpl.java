@@ -868,6 +868,15 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
         AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
         ChatMessage lastMessage = lastMessage(session.getId()).orElse(null);
+        List<OrderProductItem> relatedOrderItems = order == null ? List.of() : orderItems(order.getId());
+        String orderProductName = relatedOrderItems.stream()
+                .map(OrderProductItem::getProductName)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
+        String productName = ticket != null && StringUtils.hasText(ticket.getProductName())
+                ? ticket.getProductName()
+                : orderProductName;
 
         SessionView view = new SessionView();
         view.setId(session.getId());
@@ -888,8 +897,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         view.setSourceChannel("小程序咨询");
         view.setServiceUnreadCount(0);
         view.setOrderNo(order == null ? null : order.getOrderNo());
-        view.setProduct(ticket == null ? null : ticket.getProductName());
-        view.setProductName(ticket == null ? null : ticket.getProductName());
+        view.setProduct(productName);
+        view.setProductName(productName);
+        view.setProductImage(resolveProductImage(session));
         view.setTicketNo(ticket == null ? null : ticket.getTicketNo());
         view.setLastMessageContent(lastMessage == null ? null : lastMessage.getContent());
         view.setLastMessageTime(lastMessage == null ? format(session.getUpdateTime()) : format(lastMessage.getCreateTime()));

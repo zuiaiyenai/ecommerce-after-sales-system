@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import time
 import socket
+import http.client
 import urllib.error
 import urllib.request
 from typing import Any
@@ -541,7 +542,14 @@ class PgVectorKnowledgeRetriever:
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
                 raise RuntimeError(f"embedding request failed with HTTP {exc.code}: {error_body}") from exc
-            except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                socket.timeout,
+                http.client.RemoteDisconnected,
+                http.client.HTTPException,
+                ConnectionError,
+            ) as exc:
                 last_error = exc
                 if attempt >= self.config.embedding_max_retries:
                     break

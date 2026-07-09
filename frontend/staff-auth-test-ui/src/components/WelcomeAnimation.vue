@@ -261,7 +261,7 @@ onBeforeUnmount(() => {
 .welcome-overlay {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 100;
   display: grid;
   place-items: center;
   overflow: hidden;

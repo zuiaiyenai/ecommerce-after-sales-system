@@ -128,6 +128,11 @@ class FakeLlm:
         }
 
 
+class FailingLlm:
+    def chat_json(self, **_: object) -> dict[str, object]:
+        raise RuntimeError("model unavailable")
+
+
 class FakeTools:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -138,19 +143,36 @@ class FakeTools:
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(name)
         if name == "search_user_orders":
+            keyword = str(arguments.get("keyword") or "ORD1783516556124")
+            has_existing_ticket = keyword == "ORD1783516556124"
             return ToolResult(
                 ok=True,
                 name=name,
                 data=[
                     {
-                        "orderNo": "ORD1783516556124",
-                        "productName": "蛋白粉(巧克力味)",
-                        "productCategory": "食品",
+                        "orderNo": keyword,
+                        "productName": "Airpods pro3" if keyword == "ORD1783412781761" else "蛋白粉(巧克力味)",
+                        "productCategory": "数码" if keyword == "ORD1783412781761" else "食品",
                         "merchantCode": "MERCHANT_DEMO",
-                        "existingTicketNo": "AS1783516664614",
-                        "afterSalesStatus": "PENDING_REVIEW",
+                        "existingTicketNo": "AS1783516664614" if has_existing_ticket else None,
+                        "afterSalesStatus": "PENDING_REVIEW" if has_existing_ticket else None,
                     }
                 ],
+            )
+        if name == "retrieve_knowledge":
+            return ToolResult(
+                ok=True,
+                name=name,
+                data={
+                    "mode": "lexical_fallback",
+                    "hits": [
+                        {
+                            "title": "质量问题凭证要求",
+                            "snippet": "请上传商品问题照片或视频、问题描述。",
+                            "metadata": {"default_evidence": ["商品问题照片或视频", "问题描述"]},
+                        }
+                    ],
+                },
             )
         if name == "handoff_to_human":
             return ToolResult(ok=True, name=name, data={"sessionMode": "HUMAN"})
@@ -178,6 +200,26 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertIn("AS1783516664614", result["assistant_reply"])
         self.assertIn("handoff_to_human", result["tool_trace"][-3]["tool"])
         self.assertNotIn("retrieve_knowledge", tools.calls)
+
+    def test_llm_failure_uses_guarded_flow_instead_of_raising(self) -> None:
+        tools = FakeTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=FailingLlm())
+
+        result = agent.handle(
+            {
+                "user_id": "1",
+                "session_id": 456,
+                "message": "耳机的质量真的差，左右耳的音量听的都不一样",
+                "order_id": "ORD1783412781761",
+            }
+        )
+
+        self.assertFalse(result["need_human"])
+        self.assertEqual("AI", result["session_mode"])
+        self.assertIn("商品问题照片或视频", result["assistant_reply"])
+        self.assertEqual(["商品问题照片或视频", "问题描述"], result["evidence_needed"])
+        self.assertIn("search_user_orders", tools.calls)
+        self.assertIn("retrieve_knowledge", tools.calls)
 
 
 if __name__ == "__main__":

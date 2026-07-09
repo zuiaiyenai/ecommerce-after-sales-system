@@ -51,6 +51,13 @@ public class PgVectorDataSourceConfig {
         return ds;
     }
 
+    @Primary
+    @Bean(name = {"transactionManager", "mysqlTransactionManager"})
+    public PlatformTransactionManager mysqlTransactionManager(
+            @Qualifier("mysqlDataSource") DataSource mysqlDataSource) {
+        return new DataSourceTransactionManager(mysqlDataSource);
+    }
+
     // ==================== PgVector 向量数据源 ====================
 
     @Value("${pgvector.datasource.url}")

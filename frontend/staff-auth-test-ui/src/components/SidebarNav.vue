@@ -47,7 +47,6 @@ const navItems = computed(() => [
   { to: '/orders', key: 'orders', label: '订单核验', icon: 'verify' },
   { to: '/products', key: 'products', label: '商品管理', icon: 'package' },
   { to: '/reviews', key: 'reviews', label: '用户评价', icon: 'star' },
-  { to: '/notices', key: 'notices', label: '消息通知', icon: 'bell', count: props.todos.length },
   { to: '/profile', key: 'profile', label: '个人中心', icon: 'user' }
 ]);
 
@@ -109,7 +108,7 @@ function handleNavClick(item) {
             <path v-for="path in iconPaths[item.icon]" :key="path" :d="path" />
           </svg>
         </span>
-        <span>{{ item.label }}</span>
+        <span class="nav-label">{{ item.label }}</span>
         <em v-if="item.count">{{ item.count }}</em>
       </button>
     </nav>

@@ -1,49 +1,156 @@
-# 售后知识库初始化脚本 (Windows PowerShell)
+# Initialize the local PostgreSQL/pgvector knowledge base.
+# Run from the repository root or from python_agent:
+#   powershell -ExecutionPolicy Bypass -File python_agent\setup_knowledge_base.ps1
+
+param(
+    [string]$ContainerName = $env:PGVECTOR_CONTAINER
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not $ContainerName) {
+    $ContainerName = "ecommerce-pgvector"
+}
+
+$ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$EnvFile = Join-Path $PSScriptRoot "db.local.env"
+$SchemaFile = Join-Path $ProjectRoot "sql\pgvector_schema.sql"
+$BaseSeedFile = Join-Path $ProjectRoot "sql\seed_knowledge_base.sql"
+$ExtendedSeedFile = Join-Path $ProjectRoot "sql\seed_extended_after_sales_knowledge.sql"
+
+function Test-HostPsql {
+    return [bool](Get-Command psql -ErrorAction SilentlyContinue)
+}
+
+function Test-DockerCli {
+    return [bool](Get-Command docker -ErrorAction SilentlyContinue)
+}
+
+function Import-LocalEnv {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "Missing local env file: $Path" -ForegroundColor Red
+        exit 1
+    }
+
+    foreach ($rawLine in Get-Content -LiteralPath $Path) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) {
+            continue
+        }
+        $parts = $line.Split("=", 2)
+        $key = $parts[0].Trim()
+        $value = $parts[1].Trim().Trim('"').Trim("'")
+        if ($key) {
+            Set-Item -Path "Env:$key" -Value $value
+        }
+    }
+}
+
+function Invoke-PgSqlCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Sql
+    )
+
+    $env:PGPASSWORD = "ecommerce_pgvector"
+    if (Test-HostPsql) {
+        & psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c $Sql
+    } elseif (Test-DockerCli) {
+        & docker exec $ContainerName psql -v ON_ERROR_STOP=1 -U ecommerce -d ecommerce_rag -c $Sql
+    } else {
+        Write-Host "Missing psql and docker. Install Docker Desktop or PostgreSQL client first." -ForegroundColor Red
+        exit 1
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "PostgreSQL command failed."
+    }
+}
+
+function Invoke-PgSqlFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $env:PGPASSWORD = "ecommerce_pgvector"
+    if (Test-HostPsql) {
+        & psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U ecommerce -d ecommerce_rag -f $Path
+    } elseif (Test-DockerCli) {
+        $containerPath = "/tmp/" + [System.IO.Path]::GetFileName($Path)
+        & docker cp $Path "${ContainerName}:$containerPath"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to copy SQL file into container: $Path"
+        }
+        & docker exec $ContainerName psql -v ON_ERROR_STOP=1 -U ecommerce -d ecommerce_rag -f $containerPath
+    } else {
+        Write-Host "Missing psql and docker. Install Docker Desktop or PostgreSQL client first." -ForegroundColor Red
+        exit 1
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "PostgreSQL file execution failed: $Path"
+    }
+}
+
+function Invoke-PythonScript {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath
+    )
+
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        & python $ScriptPath
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 $ScriptPath
+    } else {
+        Write-Host "Missing Python. Install Python 3.11+ and make python or py available in PATH." -ForegroundColor Red
+        exit 1
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python script failed: $ScriptPath"
+    }
+}
 
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "售后知识库初始化" -ForegroundColor Cyan
+Write-Host "After-sales knowledge base initialization" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
-# 检查PostgreSQL连接
 Write-Host ""
-Write-Host "检查PostgreSQL连接..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-$testConnection = & psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "SELECT 1;" 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ 无法连接到PostgreSQL，请检查：" -ForegroundColor Red
-    Write-Host "  1. PostgreSQL服务是否启动" -ForegroundColor Red
-    Write-Host "  2. 数据库ecommerce_rag是否存在" -ForegroundColor Red
-    Write-Host "  3. 用户ecommerce权限是否正确" -ForegroundColor Red
-    exit 1
-}
-Write-Host "✓ PostgreSQL连接正常" -ForegroundColor Green
+Write-Host "Loading local env: $EnvFile" -ForegroundColor Yellow
+Import-LocalEnv -Path $EnvFile
 
-# 步骤1: 导入知识库数据
 Write-Host ""
-Write-Host "步骤1: 导入知识库文档..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-& psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -f ..\sql\seed_knowledge_base.sql
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ 知识库文档导入完成" -ForegroundColor Green
-} else {
-    Write-Host "❌ 知识库文档导入失败" -ForegroundColor Red
-    exit 1
-}
+Write-Host "Checking PostgreSQL connection..." -ForegroundColor Yellow
+Invoke-PgSqlCommand "SELECT 1;"
+Write-Host "PostgreSQL connection OK" -ForegroundColor Green
 
-# 步骤2: 检查DASHSCOPE_API_KEY
 Write-Host ""
-Write-Host "步骤2: 检查Embedding配置..." -ForegroundColor Yellow
-if (-not (Test-Path "db.local.env")) {
-    Write-Host "❌ 未找到db.local.env文件" -ForegroundColor Red
-    exit 1
-}
+Write-Host "Applying pgvector schema..." -ForegroundColor Yellow
+Invoke-PgSqlFile $SchemaFile
 
-$envContent = Get-Content "db.local.env" -Raw
-if ($envContent -notmatch "DASHSCOPE_API_KEY\s*=\s*sk-") {
-    Write-Host "⚠️  警告：DASHSCOPE_API_KEY未配置或被注释" -ForegroundColor Yellow
-    Write-Host "   请在db.local.env中配置：DASHSCOPE_API_KEY=sk-your-key" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Resetting knowledge tables..." -ForegroundColor Yellow
+Invoke-PgSqlCommand "TRUNCATE TABLE knowledge_document CASCADE;"
+
+Write-Host ""
+Write-Host "Importing knowledge documents..." -ForegroundColor Yellow
+Invoke-PgSqlFile $BaseSeedFile
+Invoke-PgSqlFile $ExtendedSeedFile
+Write-Host "Knowledge documents imported" -ForegroundColor Green
+
+$hasEmbeddingKey = [bool]$env:DASHSCOPE_API_KEY -or [bool]$env:BAILIAN_API_KEY
+if (-not $hasEmbeddingKey) {
     Write-Host ""
-    Write-Host "是否继续？(将跳过向量生成) [y/N]" -ForegroundColor Yellow
+    Write-Host "DASHSCOPE_API_KEY/BAILIAN_API_KEY is missing in db.local.env." -ForegroundColor Yellow
+    Write-Host "Vector chunks will not be generated. Lexical fallback can still read knowledge_document." -ForegroundColor Yellow
+    Write-Host "Continue without embeddings? [y/N]" -ForegroundColor Yellow
     $continue = Read-Host
     if ($continue -ne "y" -and $continue -ne "Y") {
         exit 0
@@ -53,55 +160,33 @@ if ($envContent -notmatch "DASHSCOPE_API_KEY\s*=\s*sk-") {
     $skipEmbedding = $false
 }
 
-# 步骤3: 生成向量embeddings
 if (-not $skipEmbedding) {
     Write-Host ""
-    Write-Host "步骤3: 生成向量embeddings..." -ForegroundColor Yellow
-    Write-Host "   这可能需要几分钟，请耐心等待..." -ForegroundColor Gray
-    python ingest_pgvector_knowledge.py
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "✓ 向量embeddings生成完成" -ForegroundColor Green
-    } else {
-        Write-Host "❌ 向量embeddings生成失败" -ForegroundColor Red
-        exit 1
+    Write-Host "Generating vector embeddings..." -ForegroundColor Yellow
+    Push-Location $PSScriptRoot
+    try {
+        Invoke-PythonScript ".\ingest_pgvector_knowledge.py"
+    } finally {
+        Pop-Location
     }
-} else {
-    Write-Host ""
-    Write-Host "步骤3: 跳过向量生成" -ForegroundColor Yellow
+    Write-Host "Vector embeddings generated" -ForegroundColor Green
 }
 
-# 步骤4: 查看结果
 Write-Host ""
-Write-Host "步骤4: 查看知识库统计..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-
-Write-Host ""
-Write-Host "知识库文档统计：" -ForegroundColor Cyan
-& psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "
-SELECT
-    source_type as 类型,
-    COUNT(*) as 文档数
+Write-Host "Knowledge document stats:" -ForegroundColor Cyan
+Invoke-PgSqlCommand @"
+SELECT source_type, COUNT(*) AS document_count
 FROM knowledge_document
 WHERE status = 1
 GROUP BY source_type
 ORDER BY source_type;
-"
+"@
 
 if (-not $skipEmbedding) {
     Write-Host ""
-    Write-Host "向量chunk统计：" -ForegroundColor Cyan
-    & psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "
-    SELECT COUNT(*) as 总chunk数 FROM knowledge_chunk;
-    "
+    Write-Host "Knowledge chunk stats:" -ForegroundColor Cyan
+    Invoke-PgSqlCommand "SELECT COUNT(*) AS chunk_count FROM knowledge_chunk;"
 }
 
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "知识库初始化完成！" -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Cyan
-
-if ($skipEmbedding) {
-    Write-Host ""
-    Write-Host "⚠️  提醒：向量embeddings未生成，AI将无法检索知识库" -ForegroundColor Yellow
-    Write-Host "   请配置DASHSCOPE_API_KEY后重新运行此脚本" -ForegroundColor Yellow
-}
+Write-Host "Knowledge base initialization complete." -ForegroundColor Green

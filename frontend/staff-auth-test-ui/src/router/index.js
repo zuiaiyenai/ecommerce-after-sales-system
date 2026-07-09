@@ -31,8 +31,16 @@ const routes = [
     children: [
       { path: '', redirect: '/admin/dashboard' },
       { path: 'dashboard', name: 'adminDashboard', component: AdminDashboardView, meta: { title: '管理员首页' } },
-      { path: 'accounts', name: 'adminAccounts', component: AdminAccountsView, meta: { title: '客服账号管理' } },
-      { path: 'knowledge', name: 'adminKnowledge', component: AdminKnowledgeView, meta: { title: '知识治理' } }
+      {
+        path: 'accounts',
+        name: 'adminAccounts',
+        component: AdminAccountsView,
+        meta: {
+          title: '客服账号管理',
+          subtitle: '统一管理客服账号、商家归属、接待能力与知识权限'
+        }
+      },
+      { path: 'knowledge', name: 'adminKnowledge', component: AdminKnowledgeView, meta: { title: '知识库管理' } }
     ]
   },
   {
@@ -59,7 +67,6 @@ const router = createRouter({
   routes
 });
 
-// Navigation guard: require auth for all routes except login
 router.beforeEach((to, from, next) => {
   if (to.name === 'login' || to.name === 'adminLogin') {
     next();

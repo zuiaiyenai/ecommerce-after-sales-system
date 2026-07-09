@@ -816,9 +816,10 @@ function clampPercent(value) {
 .target-card {
   isolation: isolate;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 12px;
-  min-height: 146px;
+  grid-template-rows: auto 12px auto;
+  align-content: space-between;
+  gap: 11px;
+  min-height: 148px;
   padding: 14px;
   overflow: hidden;
   background:
@@ -878,14 +879,8 @@ function clampPercent(value) {
   overflow-wrap: anywhere;
 }
 
-.target-card-handleTime .target-card-head {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 7px;
-}
-
 .target-card-handleTime .target-value {
-  justify-self: start;
-  font-size: 21px;
+  font-size: 20px;
 }
 
 .target-track {
@@ -920,14 +915,17 @@ function clampPercent(value) {
 }
 
 .target-card-foot {
-  align-self: end;
   align-items: center;
+  gap: 8px;
 }
 
 .target-card-foot span {
   min-width: 0;
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .target-status {

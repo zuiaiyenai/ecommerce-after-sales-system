@@ -394,7 +394,7 @@ onMounted(loadProducts);
 
     <!-- Create/Edit Modal -->
     <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-      <div class="modal-box">
+      <div class="modal-box product-modal">
         <h3>{{ editingProduct ? '编辑商品' : '新增商品' }}</h3>
 
         <label class="form-field">
@@ -1072,5 +1072,71 @@ onMounted(loadProducts);
   border-color: #ffad73;
   color: #101722;
   background: #ffad73;
+}
+
+:global(html[data-theme="dark"]) .product-modal {
+  color: #f8fafc;
+}
+
+:global(html[data-theme="dark"]) .product-modal h3,
+:global(html[data-theme="dark"]) .product-modal .form-field > span {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc;
+}
+
+:global(html[data-theme="dark"]) .product-modal .form-field > span em {
+  color: #ff8a7a !important;
+  -webkit-text-fill-color: #ff8a7a;
+}
+
+:global(html[data-theme="dark"]) .product-modal .form-field input,
+:global(html[data-theme="dark"]) .product-modal .form-field select,
+:global(html[data-theme="dark"]) .product-modal .form-field textarea {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc;
+  background: rgba(9, 14, 22, 0.78) !important;
+}
+
+:global(html[data-theme="dark"]) .product-modal .form-field input::placeholder,
+:global(html[data-theme="dark"]) .product-modal .form-field textarea::placeholder {
+  color: #b8c4d4 !important;
+  -webkit-text-fill-color: #b8c4d4;
+  opacity: 1;
+}
+
+:global(html[data-theme="dark"]) .product-modal .form-field select option {
+  color: #f8fafc;
+  background: #111a27;
+}
+
+:global(html[data-theme="dark"]) .product-modal .product-image-placeholder,
+:global(html[data-theme="dark"]) .product-modal .image-upload-actions small {
+  color: #dbe6f3 !important;
+  -webkit-text-fill-color: #dbe6f3;
+}
+
+:global(html[data-theme="dark"]) .product-modal .product-image-placeholder {
+  background: rgba(9, 14, 22, 0.78);
+}
+
+:global(html[data-theme="dark"]) .product-modal .file-button {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc;
+}
+
+:global(html[data-theme="dark"]) .status-tag {
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+  -webkit-text-fill-color: currentColor;
+}
+
+:global(html[data-theme="dark"]) .status-tag.on-sale {
+  color: #064e2c;
+  background: #bbf7d0;
+}
+
+:global(html[data-theme="dark"]) .status-tag.off-sale {
+  color: #5f1111;
+  background: #fecaca;
 }
 </style>

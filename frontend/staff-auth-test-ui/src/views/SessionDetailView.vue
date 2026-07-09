@@ -2,14 +2,11 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
-  closeSession,
   getSession,
   getSessionMessages,
   getSessions,
   resolveAssetUrl,
-  requestSessionEvaluation,
-  sendSessionMessage,
-  submitSessionEvaluation
+  sendSessionMessage
 } from '../api/merchantCs';
 
 const route = useRoute();
@@ -20,7 +17,6 @@ const sessions = ref([]);
 const messages = ref([]);
 const draft = ref('');
 const sending = ref(false);
-const actionLoading = ref('');
 const activeFilter = ref('ACTIVE');
 let ws = null;
 let wsReconnectTimer = null;
@@ -59,29 +55,8 @@ const recommendedReply = computed(() => {
   return '您好，我先帮您核对订单和售后记录，请您稍等一下。';
 });
 
-const evaluationHint = computed(() => {
-  const status = session.value?.status;
-  if (status === 'PROCESSING') {
-    return '问题处理完成后会自动邀请用户评价，也可以在这里手动补发。';
-  }
-  if (status === 'AWAITING_EVALUATION') {
-    return `评价请求已发送，30 分钟内未评价将转为待客服关闭。发送时间：${session.value?.evaluationRequestedAt || '暂无'}`;
-  }
-  if (status === 'READY_TO_CLOSE') {
-    return '用户 30 分钟内未评价，客服现在可以关闭会话。';
-  }
-  if (status === 'RESOLVED') {
-    return `用户已完成评价，会话自动进入已完成。评分：${session.value?.rating || 5} 星`;
-  }
-  if (status === 'CLOSED') {
-    return '该会话已从列表移除，历史内容仍会保留。';
-  }
-  return '当前会话仍在接入或处理中。';
-});
-
 const hasRelatedOrder = computed(() => Boolean(session.value?.orderId));
 const userScore = computed(() => (`${session.value?.emotion || ''}`.includes('预警') ? '4.2' : '4.8'));
-const isActionBusy = computed(() => Boolean(actionLoading.value));
 const userEmotionMessages = computed(() =>
   messages.value.filter((message) => message.senderRole === 'USER' && message.emotionLabel)
 );
@@ -123,24 +98,6 @@ const emotionEscalationText = computed(() => {
     return '用户情绪较前面已有缓和，当前可以继续按流程推进。';
   }
   return '用户情绪整体保持同一等级，重点看最新一句的诉求变化。';
-});
-
-const latestKnowledgeMessage = computed(() => {
-  const candidates = [...messages.value]
-    .filter((message) => message.senderRole === 'SERVICE' && ((message.knowledgeHits && message.knowledgeHits.length) || message.knowledgeHitCount))
-    .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
-  return candidates[0] || null;
-});
-const latestKnowledgeHits = computed(() => latestKnowledgeMessage.value?.knowledgeHits || []);
-const latestKnowledgeSummary = computed(() => {
-  const message = latestKnowledgeMessage.value;
-  if (!message) {
-    return '当前还没有可展示的知识命中记录，等 AI 基于知识库生成回复后会显示在这里。';
-  }
-  const hitCount = message.knowledgeHitCount ?? latestKnowledgeHits.value.length;
-  const sourceTypes = [...new Set(latestKnowledgeHits.value.map((item) => item.sourceType).filter(Boolean))];
-  const sourceText = sourceTypes.length ? sourceTypes.map(knowledgeSourceLabel).join(' / ') : '未区分来源';
-  return `最近一条 AI 回复使用了 ${hitCount || 0} 条知识，来源：${sourceText}。`;
 });
 
 async function loadPage() {
@@ -198,13 +155,6 @@ function connectWebSocket(sessionId) {
   }
 }
 
-async function refreshSession(updated) {
-  session.value = { ...session.value, ...updated };
-  const page = await getSessions();
-  sessions.value = page.records || [];
-  shell?.refreshShell();
-}
-
 async function handleSend() {
   if (!draft.value.trim() || sending.value) {
     return;
@@ -218,45 +168,6 @@ async function handleSend() {
     await loadPage();
   } finally {
     sending.value = false;
-  }
-}
-
-async function handleRequestEvaluation() {
-  actionLoading.value = 'request';
-  try {
-    const updated = await requestSessionEvaluation(route.params.sessionId);
-    await refreshSession(updated);
-    shell?.setAction('已发送评价请求');
-  } catch (error) {
-    shell?.setAction(error.message || '当前状态不能发送评价请求');
-  } finally {
-    actionLoading.value = '';
-  }
-}
-
-async function handleSubmitEvaluation() {
-  actionLoading.value = 'submit';
-  try {
-    const updated = await submitSessionEvaluation(route.params.sessionId, 5, '用户已完成服务评价');
-    await refreshSession(updated);
-    shell?.setAction('用户评价完成，会话已完成');
-  } catch (error) {
-    shell?.setAction(error.message || '当前状态不能提交评价');
-  } finally {
-    actionLoading.value = '';
-  }
-}
-
-async function handleClose() {
-  actionLoading.value = 'close';
-  try {
-    const updated = await closeSession(route.params.sessionId);
-    await refreshSession(updated);
-    shell?.setAction('会话已移除');
-  } catch (error) {
-    shell?.setAction(error.message || '移除失败');
-  } finally {
-    actionLoading.value = '';
   }
 }
 
@@ -395,17 +306,6 @@ function emotionSummary(label) {
   return summaryMap[String(label || '').toUpperCase()] || '暂未获取到明确情绪判断。';
 }
 
-function knowledgeSourceLabel(sourceType) {
-  const sourceMap = {
-    faq: 'FAQ',
-    product: '商品知识',
-    policy: '售后政策',
-    scene_evidence: '场景举证',
-    review_interpretation: '评价解释'
-  };
-  return sourceMap[String(sourceType || '').toLowerCase()] || sourceType || '知识来源';
-}
-
 watch(() => route.params.sessionId, loadPage);
 onMounted(loadPage);
 onUnmounted(() => {
@@ -541,36 +441,6 @@ onUnmounted(() => {
     </article>
 
     <aside class="session-template-assist">
-      <section class="template-assist-card evaluation-card">
-        <div class="template-card-title">
-          <h2>评价与关闭</h2>
-          <span :class="['session-status', statusTone(session?.status)]">{{ statusLabel(session?.status) }}</span>
-        </div>
-        <p>{{ evaluationHint }}</p>
-        <p v-if="session?.rating" class="evaluation-real-result">
-          真实评分：{{ session.rating }} 星
-          <span v-if="session.evaluationContent">｜{{ session.evaluationContent }}</span>
-        </p>
-        <div class="evaluation-action-grid">
-          <button
-            type="button"
-            class="template-primary-blue"
-            :disabled="session?.status !== 'PROCESSING' || isActionBusy"
-            @click="handleRequestEvaluation"
-          >
-            {{ actionLoading === 'request' ? '发送中' : '发送评价请求' }}
-          </button>
-          <button
-            type="button"
-            class="ghost-mini danger"
-            :disabled="session?.status === 'CLOSED' || isActionBusy"
-            @click="handleClose"
-          >
-            {{ actionLoading === 'close' ? '处理中' : '×' }}
-          </button>
-        </div>
-      </section>
-
       <section class="template-assist-card">
         <div class="template-card-title">
           <h2>AI 智能辅助</h2>
@@ -611,32 +481,6 @@ onUnmounted(() => {
           <strong>{{ statusLabel(session?.status) }}</strong>
           <span>情绪标签</span>
           <strong>{{ session?.emotion || '中性' }}</strong>
-        </div>
-      </section>
-
-      <section class="template-assist-card knowledge-hit-card">
-        <div class="template-card-title">
-          <h2>知识命中来源</h2>
-          <span>{{ latestKnowledgeMessage?.knowledgeRetrievalMode || '未命中' }}</span>
-        </div>
-
-        <div class="knowledge-hit-summary">
-          <strong>{{ latestKnowledgeMessage?.knowledgeQuery || '暂无检索词' }}</strong>
-          <p>{{ latestKnowledgeSummary }}</p>
-        </div>
-
-        <div v-if="latestKnowledgeHits.length" class="knowledge-hit-list">
-          <div v-for="(item, index) in latestKnowledgeHits" :key="`${item.sourceCode || item.title}-${index}`" class="knowledge-hit-item">
-            <div class="knowledge-hit-head">
-              <span class="knowledge-source-chip">{{ knowledgeSourceLabel(item.sourceType) }}</span>
-              <strong>{{ item.title || item.sourceCode || '知识片段' }}</strong>
-            </div>
-            <p>{{ item.summary || item.snippet || '暂无摘要' }}</p>
-            <small>命中分数 {{ item.score ?? '--' }}</small>
-          </div>
-        </div>
-        <div v-else class="knowledge-hit-empty">
-          当前会话还没有可展示的知识命中记录。
         </div>
       </section>
 
@@ -694,72 +538,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.knowledge-hit-card {
-  gap: 14px;
-}
-
-.knowledge-hit-summary {
-  padding: 14px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.08), rgba(15, 23, 42, 0.04));
-}
-
-.knowledge-hit-summary strong {
-  display: block;
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.knowledge-hit-summary p,
-.knowledge-hit-item p,
-.knowledge-hit-empty {
-  margin: 6px 0 0;
-  color: #475569;
-  line-height: 1.6;
-}
-
-.knowledge-hit-list {
-  display: grid;
-  gap: 12px;
-}
-
-.knowledge-hit-item {
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: #fff;
-}
-
-.knowledge-hit-head {
-  display: grid;
-  gap: 8px;
-}
-
-.knowledge-source-chip {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.12);
-  color: #0369a1;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.knowledge-hit-item small {
-  display: block;
-  margin-top: 8px;
-  color: #64748b;
-}
-
-.knowledge-hit-empty {
-  padding: 14px;
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.9);
-}
-
 .emotion-monitor-card {
   gap: 16px;
 }
@@ -890,9 +668,6 @@ onUnmounted(() => {
 }
 
 /* Liquid glass refinements */
-.knowledge-hit-summary,
-.knowledge-hit-item,
-.knowledge-hit-empty,
 .emotion-snapshot,
 .emotion-meter,
 .emotion-trend-item,
@@ -904,19 +679,16 @@ onUnmounted(() => {
   box-shadow: 0 12px 32px rgba(31, 41, 55, 0.08);
 }
 
-.knowledge-hit-summary,
 .emotion-snapshot {
   background:
     linear-gradient(135deg, rgba(255, 138, 61, 0.12), rgba(49, 120, 198, 0.08)),
     rgba(255, 255, 255, 0.58);
 }
 
-.knowledge-hit-item,
 .emotion-trend-item {
   border-radius: var(--radius-md);
 }
 
-.knowledge-hit-empty,
 .emotion-empty,
 .emotion-meter {
   border-radius: 16px;
@@ -927,9 +699,6 @@ onUnmounted(() => {
   box-shadow: inset 0 1px 2px rgba(31, 41, 55, 0.08);
 }
 
-:global(html[data-theme="dark"]) .knowledge-hit-summary,
-:global(html[data-theme="dark"]) .knowledge-hit-item,
-:global(html[data-theme="dark"]) .knowledge-hit-empty,
 :global(html[data-theme="dark"]) .emotion-snapshot,
 :global(html[data-theme="dark"]) .emotion-meter,
 :global(html[data-theme="dark"]) .emotion-trend-item,
@@ -939,22 +708,17 @@ onUnmounted(() => {
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
 }
 
-:global(html[data-theme="dark"]) .knowledge-hit-summary,
 :global(html[data-theme="dark"]) .emotion-snapshot {
   background:
     linear-gradient(135deg, rgba(255, 138, 61, 0.14), rgba(115, 169, 240, 0.1)),
     rgba(17, 26, 39, 0.64);
 }
 
-:global(html[data-theme="dark"]) .knowledge-hit-summary strong,
 :global(html[data-theme="dark"]) .emotion-snapshot-main strong,
 :global(html[data-theme="dark"]) .emotion-meter strong {
   color: var(--text);
 }
 
-:global(html[data-theme="dark"]) .knowledge-hit-summary p,
-:global(html[data-theme="dark"]) .knowledge-hit-item p,
-:global(html[data-theme="dark"]) .knowledge-hit-empty,
 :global(html[data-theme="dark"]) .emotion-snapshot-main p,
 :global(html[data-theme="dark"]) .emotion-trend-copy p,
 :global(html[data-theme="dark"]) .emotion-preview,

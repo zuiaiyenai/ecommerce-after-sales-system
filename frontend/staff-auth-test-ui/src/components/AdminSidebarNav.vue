@@ -36,7 +36,7 @@ function isActive(item) {
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar admin-sidebar">
     <div class="brand-block">
       <div class="brand-mark">A</div>
       <div>

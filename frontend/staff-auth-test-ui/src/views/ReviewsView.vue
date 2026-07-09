@@ -429,7 +429,7 @@ onMounted(loadPage);
 }
 
 .review-score em {
-  color: #c97b5a;
+  color: #d99a00;
   letter-spacing: 1px;
 }
 
@@ -544,7 +544,7 @@ onMounted(loadPage);
 
 .score-detail-row em {
   flex: 1;
-  color: #c97b5a;
+  color: #d99a00;
   font-style: normal;
   letter-spacing: 2px;
 }
@@ -769,5 +769,11 @@ onMounted(loadPage);
 :global(html[data-theme="dark"]) .review-content-box span,
 :global(html[data-theme="dark"]) .review-content-box p {
   color: var(--text);
+}
+
+:global(html[data-theme="dark"]) .review-score em,
+:global(html[data-theme="dark"]) .score-detail-row em {
+  color: #f6c453;
+  text-shadow: 0 0 14px rgba(246, 196, 83, 0.22);
 }
 </style>

@@ -89,14 +89,13 @@ function pushDashboard() {
   };
   routeTransitionTimer = window.setTimeout(clearRouteTransition, 1200);
   if (!supportsViewTransition) {
-    router.push('/dashboard').finally(clearRouteTransition);
-    return;
+    return router.push('/dashboard').finally(clearRouteTransition);
   }
   try {
     const transition = document.startViewTransition(() => router.push('/dashboard'));
-    transition.finished.finally(clearRouteTransition);
+    return transition.finished.finally(clearRouteTransition);
   } catch {
-    router.push('/dashboard').finally(clearRouteTransition);
+    return router.push('/dashboard').finally(clearRouteTransition);
   }
 }
 
@@ -104,8 +103,10 @@ function enterDashboard() {
   if (welcomeFinished) return;
   welcomeFinished = true;
   clearScheduledDashboardEnter();
-  showWelcome.value = false;
-  pushDashboard();
+  pushDashboard().catch(() => {
+    showWelcome.value = false;
+    welcomeFinished = false;
+  });
 }
 
 function skipWelcome() {

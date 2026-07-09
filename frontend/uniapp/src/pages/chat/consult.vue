@@ -1,13 +1,5 @@
 <template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">{{ sessionMode === 'HUMAN' ? '人工客服' : '智能售后助手' }}</text>
-      <view class="nav-right"></view>
-    </view>
-
     <view class="fixed-context">
       <view v-if="hasOrder" class="order-card">
         <image class="order-product-img" :src="normalizeImageUrl(orderInfo.productIcon)" mode="aspectFill" />
@@ -276,10 +268,6 @@ function mergeLocalImageMessages(remoteMessages, localImages) {
     const seqB = b.sequence ?? 999999
     return seqA - seqB
   })
-}
-
-function goBack() {
-  uni.navigateBack()
 }
 
 function copyOrderNo() {
@@ -889,42 +877,6 @@ onLoad(async (options) => {
   flex-direction: column;
   height: 100vh;
   background: #f0eeea;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
-}
-
-.back-btn,
-.nav-right {
-  width: 64rpx;
-  height: 64rpx;
-}
-
-.back-btn {
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon,
-.nav-title {
-  color: #1a1a1a;
-}
-
-.back-icon {
-  font-size: 32rpx;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
 }
 
 .fixed-context {

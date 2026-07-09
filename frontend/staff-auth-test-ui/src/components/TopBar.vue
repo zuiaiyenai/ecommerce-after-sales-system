@@ -20,6 +20,7 @@ const route = useRoute();
 const router = useRouter();
 
 const title = computed(() => route.meta.title || '商家客服端');
+const subtitle = computed(() => route.meta.subtitle || '');
 const showLogout = computed(() => props.showLogout);
 const showBack = computed(() => route.name === 'sessionDetail' || route.name === 'ticketDetail' || route.name === 'orderDetail');
 const themeLabel = computed(() => (props.themeMode === 'dark' ? '夜间模式' : '日间模式'));
@@ -37,8 +38,9 @@ function handleBack() {
 <template>
   <header class="topbar">
     <div>
-      <span class="eyebrow">当前页面</span>
+      <span class="eyebrow">当前页面 / {{ title }}</span>
       <h1>{{ title }}</h1>
+      <p v-if="subtitle">{{ subtitle }}</p>
     </div>
     <div class="topbar-actions">
       <button v-if="showBack" type="button" class="ghost-mini" @click="handleBack">返回上一页</button>

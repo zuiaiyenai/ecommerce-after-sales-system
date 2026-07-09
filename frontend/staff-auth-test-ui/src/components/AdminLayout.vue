@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, provide, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   getAdminOverview,
@@ -10,6 +10,7 @@ import {
 } from '../api/adminConsole';
 import AdminSidebarNav from './AdminSidebarNav.vue';
 import TopBar from './TopBar.vue';
+import WelcomeAnimation from './WelcomeAnimation.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -20,12 +21,17 @@ const admin = ref(null);
 const overview = ref(null);
 const accountTotal = ref(0);
 const knowledgeTotal = ref(0);
+const showLogoutAnimation = ref(false);
 const THEME_KEY = 'merchant_cs_theme';
+const LOGOUT_DURATION_MS = 3000;
 const savedTheme = localStorage.getItem(THEME_KEY);
 const themeMode = ref(
   savedTheme || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
 );
 let themeAnimationTimer = 0;
+let logoutFinished = false;
+let logoutEnterTimer = 0;
+let routeTransitionTimer = 0;
 
 const isDarkTheme = computed(() => themeMode.value === 'dark');
 const fullHeightRoutes = ['adminDashboard', 'adminAccounts', 'adminKnowledge'];
@@ -61,9 +67,59 @@ async function loadShellData() {
 }
 
 async function handleLogout() {
+  if (showLogoutAnimation.value) {
+    return;
+  }
+
+  errorMessage.value = '';
+  actionMessage.value = '';
   await logoutAdmin();
+  logoutFinished = false;
+  showLogoutAnimation.value = true;
+  scheduleLoginEnterFallback();
   setAction('已退出管理员端');
-  router.push('/admin/login');
+}
+
+function pushLogin() {
+  const root = document.documentElement;
+
+  root.classList.add('welcome-route-transition');
+
+  const clearRouteTransition = () => {
+    window.clearTimeout(routeTransitionTimer);
+    root.classList.remove('welcome-route-transition');
+  };
+  routeTransitionTimer = window.setTimeout(clearRouteTransition, 1200);
+
+  return router.replace('/admin/login').finally(clearRouteTransition);
+}
+
+function enterLogin() {
+  if (logoutFinished) {
+    return;
+  }
+
+  logoutFinished = true;
+  window.clearTimeout(logoutEnterTimer);
+  showLogoutAnimation.value = false;
+  pushLogin().catch(() => {
+    showLogoutAnimation.value = false;
+  });
+}
+
+function skipLogoutAnimation() {
+  enterLogin();
+}
+
+function finishLogoutAnimation() {
+  enterLogin();
+}
+
+function scheduleLoginEnterFallback() {
+  window.clearTimeout(logoutEnterTimer);
+  logoutEnterTimer = window.setTimeout(() => {
+    enterLogin();
+  }, LOGOUT_DURATION_MS + 300);
 }
 
 function toggleTheme() {
@@ -95,10 +151,16 @@ provide('adminShell', {
 });
 
 onMounted(loadShellData);
+
+onBeforeUnmount(() => {
+  window.clearTimeout(themeAnimationTimer);
+  window.clearTimeout(logoutEnterTimer);
+  window.clearTimeout(routeTransitionTimer);
+});
 </script>
 
 <template>
-  <main class="app-shell">
+  <main :class="['app-shell', 'admin-shell', { 'logout-active': showLogoutAnimation }]">
     <AdminSidebarNav
       :admin="admin"
       :account-total="accountTotal"
@@ -118,5 +180,14 @@ onMounted(loadShellData);
       <div v-else-if="actionMessage" class="status-banner success">{{ actionMessage }}</div>
       <RouterView />
     </section>
+
+    <WelcomeAnimation
+      v-if="showLogoutAnimation"
+      :duration-ms="LOGOUT_DURATION_MS"
+      title="Goodbye"
+      :show-skip="false"
+      @skip="skipLogoutAnimation"
+      @finished="finishLogoutAnimation"
+    />
   </main>
 </template>
