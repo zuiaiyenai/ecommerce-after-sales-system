@@ -45,6 +45,14 @@ const visibleAccounts = computed(() => {
 });
 
 const activeCount = computed(() => accounts.value.filter((item) => item.status === 'ACTIVE').length);
+const pendingCount = computed(() => accounts.value.filter((item) => item.status === 'PENDING_APPROVAL').length);
+const totalCapacity = computed(() => accounts.value.reduce((sum, item) => sum + Number(item.maxSessionCount || 0), 0));
+const selectedLoadSummary = computed(() => {
+  if (!selectedAccount.value) {
+    return String(totalCapacity.value);
+  }
+  return `${Number(selectedAccount.value.currentSessionCount || 0)}/${Number(selectedAccount.value.maxSessionCount || 0)}`;
+});
 
 const editorTitle = computed(() => {
   return selectedAccount.value ? '编辑客服账号' : '新建客服账号';
@@ -55,10 +63,12 @@ async function loadPage() {
   try {
     const page = await getAgentAccounts();
     accounts.value = page.records || [];
+
     if (!selectedAccountId.value && accounts.value.length) {
       selectAccount(accounts.value[0]);
       return;
     }
+
     if (selectedAccountId.value && !accounts.value.some((item) => item.id === selectedAccountId.value)) {
       if (accounts.value.length) {
         selectAccount(accounts.value[0]);
@@ -112,7 +122,7 @@ async function saveAccount() {
     shell?.setAction?.('客服账号已更新');
   } else {
     const created = await createAgentAccount({ ...form });
-    shell?.setAction?.(`已新建客服账号：${created.account}`);
+    shell?.setAction?.(`已创建客服账号：${created.account}`);
   }
 
   await loadPage();
@@ -130,14 +140,17 @@ async function toggleStatus(targetStatus) {
   if (!selectedAccount.value) {
     return;
   }
+
   await updateAgentAccount(selectedAccount.value.id, { status: targetStatus });
+
   if (targetStatus === 'ACTIVE') {
-    shell?.setAction?.('账号已审核通过并启用');
+    shell?.setAction?.('账号已启用');
   } else if (targetStatus === 'PENDING_APPROVAL') {
     shell?.setAction?.('账号已改回待审批');
   } else {
     shell?.setAction?.('账号已停用');
   }
+
   await loadPage();
 }
 
@@ -149,11 +162,12 @@ async function approveSelectedAccount() {
     shell?.setAction?.('审批前请先补全账号、姓名和商家编号');
     return;
   }
+
   await updateAgentAccount(selectedAccount.value.id, {
     ...form,
     status: 'ACTIVE'
   });
-  shell?.setAction?.('注册申请已审核通过，客服可直接账号密码登录');
+  shell?.setAction?.('注册申请已审核通过，客服可直接使用账号密码登录');
   await loadPage();
 }
 
@@ -243,20 +257,53 @@ onMounted(loadPage);
           <div>
             <span class="eyebrow">Editor</span>
             <h3>右侧主区域负责编辑当前选中的账号</h3>
-            <p>这里可以直接修改客服账号的基础信息、接待上限、知识范围和状态，不再额外拆出右侧栏。</p>
+            <p>这里可以直接修改客服账号的基础信息、接待上限、知识范围和状态，不再额外拆出侧栏。</p>
           </div>
           <div class="admin-editor-badges" v-if="selectedAccount">
-            <span class="tag">{{ selectedAccount.onlineStatus }}</span>
-            <span class="tag">{{ selectedAccount.currentSessionCount }}/{{ selectedAccount.maxSessionCount }}</span>
+            <span class="tag">{{ selectedAccount.onlineStatus || 'OFFLINE' }}</span>
+            <span class="tag">{{ selectedAccount.currentSessionCount || 0 }}/{{ selectedAccount.maxSessionCount || 0 }}</span>
             <span class="tag">{{ selectedAccount.merchantCode }}</span>
           </div>
+        </section>
+
+        <section class="admin-console-metrics">
+          <article class="admin-metric-card accent-orange">
+            <span>Total Accounts</span>
+            <strong>{{ accounts.length }}</strong>
+          </article>
+          <article class="admin-metric-card accent-blue">
+            <span>Pending Approval</span>
+            <strong>{{ pendingCount }}</strong>
+          </article>
+          <article class="admin-metric-card accent-green">
+            <span>Active</span>
+            <strong>{{ activeCount }}</strong>
+          </article>
+          <article class="admin-metric-card accent-slate">
+            <span>Session Capacity</span>
+            <strong>{{ selectedLoadSummary }}</strong>
+          </article>
+        </section>
+
+        <section class="admin-console-toolbar">
+          <button type="button" class="primary-action compact" @click="saveAccount">保存账号</button>
+          <button type="button" class="ghost-mini" @click="createNewAccountDraft">新建账号</button>
+          <button type="button" class="ghost-mini" @click="loadPage">刷新列表</button>
+          <button
+            v-if="selectedAccount && selectedAccount.status === 'PENDING_APPROVAL'"
+            type="button"
+            class="ghost-mini"
+            @click="approveSelectedAccount"
+          >
+            审核通过
+          </button>
         </section>
 
         <section class="admin-console-form-card">
           <div class="admin-form-grid">
             <label class="admin-field">
               <span>账号</span>
-              <input v-model.trim="form.account" placeholder="例如 cs_demo" />
+              <input v-model.trim="form.account" placeholder="例如：cs_demo" />
             </label>
             <label class="admin-field">
               <span>姓名</span>
@@ -264,7 +311,7 @@ onMounted(loadPage);
             </label>
             <label class="admin-field">
               <span>商家编号</span>
-              <input v-model.trim="form.merchantCode" placeholder="自动绑定商家编号" />
+              <input v-model.trim="form.merchantCode" placeholder="请输入商家编号" />
             </label>
             <label class="admin-field">
               <span>手机号</span>
@@ -284,7 +331,7 @@ onMounted(loadPage);
             </label>
             <label class="admin-field admin-field-full">
               <span>知识范围</span>
-              <input v-model.trim="form.knowledgeScope" placeholder="例如 通用售后 / 数码保修" />
+              <input v-model.trim="form.knowledgeScope" placeholder="例如：通用售后 / 数码保修" />
             </label>
             <label class="admin-field admin-field-full">
               <span>备注</span>

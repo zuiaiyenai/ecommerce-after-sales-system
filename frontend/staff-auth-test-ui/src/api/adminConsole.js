@@ -21,8 +21,9 @@ function saveToken(newToken) {
 }
 
 async function request(path, options = {}) {
+  const hasFormData = options.body instanceof FormData;
   const headers = {
-    'Content-Type': 'application/json',
+    ...(hasFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {})
   };
@@ -39,6 +40,33 @@ async function request(path, options = {}) {
     throw new Error(payload.message || `管理员接口请求失败（HTTP ${response.status}）`);
   }
   return payload.data;
+}
+
+function mapKnowledgeRecord(item) {
+  return {
+    id: item.id,
+    code: item.sourceCode,
+    name: item.title,
+    type: item.sourceType,
+    status: item.status === 1 ? 'ENABLED' : 'DISABLED',
+    description: item.content || '',
+    merchantCode: item.merchantCode || '',
+    productCategory: item.productCategory || '',
+    scene: item.scene || '',
+    intent: item.intent || '',
+    policyVersion: item.policyVersion || 'v1.0',
+    tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
+    updatedAt: item.updatedAt,
+    createdAt: item.createdAt,
+    chunkCount: item.chunkCount || 0,
+    ingestionStatus: item.ingestionStatus || 'SUCCESS',
+    ingestionSourceType: item.ingestionSourceType || 'TEXT',
+    fileName: item.fileName || '',
+    fileUrl: item.fileUrl || '',
+    errorMessage: item.errorMessage || '',
+    scope: item.scope || 'MERCHANT',
+    metadata: item.metadata || {}
+  };
 }
 
 export async function loginAdmin(credentials) {
@@ -92,25 +120,7 @@ export async function resetAgentPassword(accountId) {
 
 export async function getKnowledgeLibraries() {
   const data = await request('/api/admin/knowledge/list?page=1&pageSize=100');
-  const records = (data || []).map((item) => {
-    const tagsList = item.tags || [];
-    return {
-      id: item.id,
-      code: item.sourceCode,
-      name: item.title,
-      type: item.sourceType,
-      status: item.status === 1 ? 'ENABLED' : 'DISABLED',
-      description: item.content || '',
-      merchantCode: item.merchantCode || '',
-      productCategory: item.productCategory || '',
-      scene: item.scene || '',
-      intent: item.intent || '',
-      policyVersion: item.policyVersion || 'v1.0',
-      tags: Array.isArray(tagsList) ? tagsList.join(', ') : '',
-      updatedAt: item.updatedAt,
-      chunkCount: item.chunkCount || 0
-    };
-  });
+  const records = (data || []).map(mapKnowledgeRecord);
   return {
     records,
     total: records.length
@@ -119,56 +129,27 @@ export async function getKnowledgeLibraries() {
 
 export async function getKnowledgeLibrary(libraryId) {
   const item = await request(`/api/admin/knowledge/${libraryId}`);
-  const tagsList = item.tags || [];
-  return {
-    id: item.id,
-    code: item.sourceCode,
-    name: item.title,
-    type: item.sourceType,
-    status: item.status === 1 ? 'ENABLED' : 'DISABLED',
-    description: item.content || '',
-    merchantCode: item.merchantCode || '',
-    productCategory: item.productCategory || '',
-    scene: item.scene || '',
-    intent: item.intent || '',
-    policyVersion: item.policyVersion || 'v1.0',
-    tags: Array.isArray(tagsList) ? tagsList.join(', ') : '',
-    updatedAt: item.updatedAt,
-    chunkCount: item.chunkCount || 0
-  };
+  return mapKnowledgeRecord(item);
+}
+
+export async function createKnowledgeTextImport(payload) {
+  return request('/api/admin/knowledge/import/text', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function createKnowledgeFileImport(formData) {
+  return request('/api/admin/knowledge/import/file', {
+    method: 'POST',
+    body: formData
+  });
 }
 
 export async function updateKnowledgeLibrary(libraryId, payload) {
   return request(`/api/admin/knowledge/${libraryId}`, {
     method: 'PUT',
-    body: JSON.stringify({
-      title: payload.name,
-      content: payload.description,
-      productCategory: payload.productCategory || null,
-      scene: payload.scene || null,
-      intent: payload.intent || null,
-      policyVersion: payload.policyVersion || null,
-      tags: payload.tags ? payload.tags.split(',').map(t => t.trim()).filter(Boolean) : null,
-      status: payload.status === 'ENABLED' ? 1 : 0
-    })
-  });
-}
-
-export async function createKnowledgeLibrary(payload) {
-  return request('/api/admin/knowledge/upload', {
-    method: 'POST',
-    body: JSON.stringify({
-      sourceType: payload.type,
-      sourceCode: payload.code,
-      merchantCode: payload.merchantCode || 'MERCHANT_DEMO',
-      title: payload.name,
-      content: payload.description || payload.name,
-      productCategory: payload.productCategory || null,
-      scene: payload.scene || null,
-      intent: payload.intent || null,
-      policyVersion: payload.policyVersion || 'v1.0',
-      tags: payload.tags ? payload.tags.split(',').map(t => t.trim()).filter(Boolean) : null
-    })
+    body: JSON.stringify(payload)
   });
 }
 

@@ -4,15 +4,13 @@ import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
 
-/**
- * 知识库管理接口
- * 用于管理员上传、编辑、删除售后政策知识库
- */
 @RestController
 @RequestMapping("/admin/knowledge")
 @RequiredArgsConstructor
@@ -20,28 +18,38 @@ public class KnowledgeManagementController {
 
     private final KnowledgeService knowledgeService;
 
-    /**
-     * 上传新的知识库文档
-     * 会自动切片并生成向量embeddings
-     */
+    @PostMapping("/import/text")
+    public ApiResponse<Map<String, Object>> importTextKnowledge(
+            @RequestBody KnowledgeUploadDto.TextImportRequest request
+    ) {
+        return ApiResponse.success("知识导入任务已创建", knowledgeService.createTextImport(request));
+    }
+
+    @PostMapping(value = "/import/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<Map<String, Object>> importFileKnowledge(
+            @RequestParam("title") String title,
+            @RequestParam("knowledgeType") String knowledgeType,
+            @RequestParam(value = "scope", defaultValue = "MERCHANT") String scope,
+            @RequestParam(value = "merchantCode", required = false) String merchantCode,
+            @RequestParam(value = "status", defaultValue = "ENABLED") String status,
+            @RequestParam("file") MultipartFile file
+    ) {
+        return ApiResponse.success(
+                "文件导入任务已创建",
+                knowledgeService.createFileImport(title, knowledgeType, scope, merchantCode, status, file)
+        );
+    }
+
     @PostMapping("/upload")
     public ApiResponse<Map<String, Object>> uploadKnowledge(@RequestBody KnowledgeUploadDto.UploadRequest request) {
-        Map<String, Object> result = knowledgeService.uploadKnowledge(request);
-        return ApiResponse.success("知识库上传成功", result);
+        return ApiResponse.success("兼容导入任务已创建", knowledgeService.uploadKnowledge(request));
     }
 
-    /**
-     * 批量上传知识库文档
-     */
     @PostMapping("/batch-upload")
     public ApiResponse<Map<String, Object>> batchUploadKnowledge(@RequestBody List<KnowledgeUploadDto.UploadRequest> requests) {
-        Map<String, Object> result = knowledgeService.batchUploadKnowledge(requests);
-        return ApiResponse.success("批量上传成功", result);
+        return ApiResponse.success("批量导入任务已创建", knowledgeService.batchUploadKnowledge(requests));
     }
 
-    /**
-     * 查询知识库列表
-     */
     @GetMapping("/list")
     public ApiResponse<List<KnowledgeUploadDto.KnowledgeInfo>> listKnowledge(
             @RequestParam(required = false) String sourceType,
@@ -49,62 +57,44 @@ public class KnowledgeManagementController {
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "20") Integer pageSize
     ) {
-        List<KnowledgeUploadDto.KnowledgeInfo> list = knowledgeService.listKnowledge(sourceType, merchantCode, page, pageSize);
-        return ApiResponse.success("查询成功", list);
+        return ApiResponse.success("查询成功", knowledgeService.listKnowledge(sourceType, merchantCode, page, pageSize));
     }
 
     @GetMapping("/{id}")
     public ApiResponse<KnowledgeUploadDto.KnowledgeInfo> getKnowledge(@PathVariable Long id) {
-        KnowledgeUploadDto.KnowledgeInfo info = knowledgeService.getKnowledgeById(id);
-        return ApiResponse.success("查询成功", info);
+        return ApiResponse.success("查询成功", knowledgeService.getKnowledgeById(id));
     }
 
-    /**
-     * 更新知识库文档
-     */
     @PutMapping("/{id}")
     public ApiResponse<Map<String, Object>> updateKnowledge(
             @PathVariable Long id,
             @RequestBody KnowledgeUploadDto.UpdateRequest request
     ) {
-        Map<String, Object> result = knowledgeService.updateKnowledge(id, request);
-        return ApiResponse.success("更新成功", result);
+        return ApiResponse.success("更新成功", knowledgeService.updateKnowledge(id, request));
     }
 
-    /**
-     * 删除知识库文档
-     */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> deleteKnowledge(@PathVariable Long id) {
         knowledgeService.deleteKnowledge(id);
         return ApiResponse.success("删除成功", null);
     }
 
-    /**
-     * 重新生成向量embeddings（当embedding模型更换时）
-     */
     @PostMapping("/reindex")
     public ApiResponse<Map<String, Object>> reindexAll() {
-        Map<String, Object> result = knowledgeService.reindexAll();
-        return ApiResponse.success("重建索引成功", result);
+        return ApiResponse.success("已触发全量重建", knowledgeService.reindexAll());
     }
 
     @PostMapping("/{id}/sync")
     public ApiResponse<Map<String, Object>> syncKnowledge(@PathVariable Long id) {
-        Map<String, Object> result = knowledgeService.syncKnowledge(id);
-        return ApiResponse.success("同步任务已触发", result);
+        return ApiResponse.success("已触发重新处理", knowledgeService.syncKnowledge(id));
     }
 
-    /**
-     * 测试知识库检索
-     */
     @GetMapping("/test-retrieval")
     public ApiResponse<List<Map<String, Object>>> testRetrieval(
             @RequestParam String query,
             @RequestParam(required = false) String merchantCode,
             @RequestParam(defaultValue = "5") Integer topK
     ) {
-        List<Map<String, Object>> results = knowledgeService.testRetrieval(query, merchantCode, topK);
-        return ApiResponse.success("检索成功", results);
+        return ApiResponse.success("检索成功", knowledgeService.testRetrieval(query, merchantCode, topK));
     }
 }

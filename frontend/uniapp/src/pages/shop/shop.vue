@@ -1,13 +1,5 @@
 ﻿<template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">演示购买</text>
-      <view class="nav-right"></view>
-    </view>
-
     <scroll-view class="product-list" scroll-y>
       <view v-if="products.length === 0" class="empty">
         <text class="empty-icon">□</text>
@@ -18,7 +10,6 @@
         <image class="product-image" :src="normalizeImageUrl(product.mainImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ product.productName }}</text>
-          <text class="merchant-line">商家：{{ product.merchantDisplayName || product.merchantCode || '演示商家' }}</text>
           <text class="product-desc">{{ product.description || product.category }}</text>
           <view class="product-bottom">
             <text class="product-price">¥{{ product.price }}</text>
@@ -35,7 +26,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { normalizeImageUrl, request } from '../../utils/request'
 
 const products = ref([])
 const buyingId = ref(null)
@@ -50,10 +41,6 @@ async function loadProducts() {
   } catch (e) {
     uni.showToast({ title: '商品加载失败', icon: 'none' })
   }
-}
-
-function goBack() {
-  uni.navigateBack()
 }
 
 async function buy(product) {
@@ -88,40 +75,8 @@ async function buy(product) {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
 .product-list {
-  height: calc(100vh - 128rpx);
+  height: 100vh;
   padding: 24rpx 28rpx;
   box-sizing: border-box;
 }
@@ -158,20 +113,13 @@ async function buy(product) {
 
 .product-desc {
   display: -webkit-box;
-  margin-top: 8rpx;
+  margin-top: 10rpx;
   font-size: 24rpx;
   line-height: 1.5;
   color: #888;
   overflow: hidden;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-}
-
-.merchant-line {
-  display: block;
-  margin-top: 8rpx;
-  font-size: 22rpx;
-  color: #8a776c;
 }
 
 .product-bottom {
@@ -188,14 +136,22 @@ async function buy(product) {
 }
 
 .buy-btn {
+  min-width: 128rpx;
   height: 56rpx;
   line-height: 56rpx;
+  margin: 0;
   padding: 0 24rpx;
+  box-sizing: border-box;
   border-radius: 28rpx;
   background: linear-gradient(135deg, #c97b5a, #b86a4a);
   color: #ffffff;
   font-size: 22rpx;
   font-weight: 700;
+  border: none;
+  white-space: nowrap;
+}
+
+.buy-btn::after {
   border: none;
 }
 

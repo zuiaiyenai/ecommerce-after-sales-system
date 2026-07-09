@@ -3,7 +3,8 @@
     <!-- 顶部用户信息 -->
     <view class="header">
       <view class="user-row" @tap="editProfile">
-        <view class="avatar">{{ initial }}</view>
+        <image v-if="avatarUrl" class="avatar avatar-image" :src="avatarUrl" mode="aspectFill" />
+        <view v-else class="avatar">{{ initial }}</view>
         <view class="user-info">
           <text class="user-name">{{ userInfo.nickname || '用户' }}</text>
           <text class="user-phone">{{ maskPhone(userInfo.phone) }}</text>
@@ -115,8 +116,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
 import { resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const userInfo = ref({})
@@ -139,6 +140,22 @@ const initial = computed(() => {
   const name = userInfo.value.nickname || '用户'
   return name.slice(0, 1)
 })
+
+const avatarUrl = computed(() => normalizeImageUrl(userInfo.value.avatarUrl))
+
+async function loadUserInfo() {
+  userInfo.value = uni.getStorageSync('userInfo') || {}
+  try {
+    const profile = await request({ url: '/miniapp/user/profile' })
+    userInfo.value = {
+      ...userInfo.value,
+      ...profile
+    }
+    uni.setStorageSync('userInfo', userInfo.value)
+  } catch (e) {
+    console.error('加载用户资料失败', e)
+  }
+}
 
 async function loadBadges() {
   try {
@@ -173,12 +190,16 @@ function markSeen(key) {
 }
 
 onLoad(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
+  loadUserInfo()
   uni.setNavigationBarColor({
     frontColor: '#000000',
     backgroundColor: '#ffffff'
   })
   loadBadges()
+})
+
+onShow(() => {
+  loadUserInfo()
 })
 
 function maskPhone(phone) {
@@ -276,6 +297,12 @@ function logout() {
   color: #ffffff;
   font-weight: 900;
   font-size: 40rpx;
+}
+
+.avatar-image {
+  display: block;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .user-info {

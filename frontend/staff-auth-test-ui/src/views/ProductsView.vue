@@ -202,6 +202,14 @@ function handleSearch() {
   loadProducts();
 }
 
+function handleStatusFilter(nextStatus) {
+  if (statusFilter.value === nextStatus) {
+    return;
+  }
+  statusFilter.value = nextStatus;
+  handleSearch();
+}
+
 function priceText(val) {
   if (val == null) return '-';
   return Number(val).toFixed(2);
@@ -317,9 +325,17 @@ onMounted(loadProducts);
           placeholder="搜索商品名称/编码..."
           @keyup.enter="handleSearch"
         />
-        <select v-model="statusFilter" class="filter-select" @change="handleSearch">
-          <option v-for="opt in statusOptions" :key="opt.key" :value="opt.key">{{ opt.label }}</option>
-        </select>
+        <div class="product-filter-row" aria-label="商品状态筛选">
+          <button
+            v-for="opt in statusOptions"
+            :key="opt.key"
+            type="button"
+            :class="['filter-chip', { active: statusFilter === opt.key }]"
+            @click="handleStatusFilter(opt.key)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <button type="button" class="ghost-mini" @click="handleSearch">搜索</button>
       </div>
       <button type="button" class="template-primary-blue" @click="openCreate">+ 新增商品</button>
@@ -483,6 +499,7 @@ onMounted(loadProducts);
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .search-input {
@@ -494,13 +511,34 @@ onMounted(loadProducts);
   font-size: 14px;
 }
 
-.filter-select {
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 14px;
+.product-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.product-filter-row .filter-chip {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
   background: #fff;
+  font-size: 13px;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.product-filter-row .filter-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(31, 38, 48, 0.08);
+}
+
+.product-filter-row .filter-chip.active {
+  border-color: var(--dark);
+  color: #fff;
+  background: var(--dark);
+  font-weight: 700;
 }
 
 .products-table-wrap {
@@ -520,7 +558,10 @@ onMounted(loadProducts);
   text-align: left;
   padding: 12px 16px;
   border-bottom: 1px solid #f0f0f0;
+  color: #2f3a46;
   font-size: 14px;
+  font-weight: 500;
+  background: #fff;
 }
 
 .products-table th {
@@ -528,6 +569,17 @@ onMounted(loadProducts);
   font-weight: 600;
   color: #555;
   font-size: 13px;
+}
+
+.products-table td:nth-child(2),
+.products-table td:nth-child(3) {
+  color: #4b5563;
+}
+
+.products-table td:nth-child(4),
+.product-name-cell span:last-child {
+  color: #1e2228;
+  font-weight: 700;
 }
 
 .product-name-cell {
@@ -736,5 +788,289 @@ onMounted(loadProducts);
 .ghost-mini:hover {
   border-color: #1677ff;
   color: #1677ff;
+}
+
+:global(html[data-theme="dark"]) .products-table-wrap {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.2);
+}
+
+:global(html[data-theme="dark"]) .search-input {
+  border-color: var(--line);
+  color: #c2cedd;
+  background: #121b28;
+}
+
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip {
+  min-height: 34px;
+  padding: 0 13px;
+  border-color: var(--line) !important;
+  color: #c2cedd !important;
+  background: #121b28 !important;
+}
+
+:global(html[data-theme="dark"]) .search-input::placeholder {
+  color: #7f8da0;
+}
+
+:global(html[data-theme="dark"]) .search-input:focus,
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip:hover {
+  border-color: #3e5875 !important;
+  background: #182437 !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+:global(html[data-theme="dark"]) .search-input:focus {
+  border-color: #3e5875;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(115, 169, 240, 0.16);
+}
+
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip.active {
+  border-color: #ffad73 !important;
+  color: #101722 !important;
+  background: #ffad73 !important;
+}
+
+:global(html[data-theme="dark"]) .products-table th {
+  border-bottom-color: var(--line);
+  color: #f4f7fb;
+  background: #111a27;
+}
+
+:global(html[data-theme="dark"]) .products-table td {
+  border-bottom-color: var(--line);
+  color: #dbe4ef;
+  background: #111a27;
+  font-weight: 600;
+}
+
+:global(html[data-theme="dark"]) .products-table td:nth-child(2),
+:global(html[data-theme="dark"]) .products-table td:nth-child(3) {
+  color: #d1dceb;
+}
+
+:global(html[data-theme="dark"]) .products-table tbody tr {
+  transition: background 160ms ease, color 160ms ease;
+}
+
+:global(html[data-theme="dark"]) .products-table tbody tr:hover td {
+  background: #162233;
+}
+
+:global(html[data-theme="dark"]) .product-name-cell span:last-child,
+:global(html[data-theme="dark"]) .products-table td:nth-child(4) {
+  color: #f4f7fb;
+  font-weight: 700;
+}
+
+:global(html[data-theme="dark"]) .products-table tbody tr:hover .product-name-cell span:last-child {
+  color: #ffad73;
+}
+
+:global(html[data-theme="dark"]) .product-thumb-sm {
+  border-color: var(--line);
+  background: #121b28;
+}
+
+:global(html[data-theme="dark"]) .product-thumb-sm.fallback {
+  color: #ffad73;
+}
+
+:global(html[data-theme="dark"]) .modal-overlay {
+  background: rgba(4, 8, 14, 0.68);
+}
+
+:global(html[data-theme="dark"]) .modal-box {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+}
+
+:global(html[data-theme="dark"]) .modal-box h3,
+:global(html[data-theme="dark"]) .form-field span {
+  color: #f4f7fb;
+}
+
+:global(html[data-theme="dark"]) .form-field input,
+:global(html[data-theme="dark"]) .form-field select,
+:global(html[data-theme="dark"]) .form-field textarea {
+  border-color: var(--line);
+  color: var(--text);
+  background: #121b28;
+}
+
+:global(html[data-theme="dark"]) .form-field input:focus,
+:global(html[data-theme="dark"]) .form-field select:focus,
+:global(html[data-theme="dark"]) .form-field textarea:focus {
+  border-color: #3e5875;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(115, 169, 240, 0.16);
+}
+
+:global(html[data-theme="dark"]) .product-image-preview,
+:global(html[data-theme="dark"]) .product-image-placeholder {
+  border-color: var(--line);
+  color: var(--muted);
+  background: #111a27;
+}
+
+:global(html[data-theme="dark"]) .image-upload-actions small {
+  color: var(--muted);
+}
+
+:global(html[data-theme="dark"]) .ghost-mini {
+  border-color: var(--line);
+  color: var(--text);
+  background: #121b28;
+}
+
+:global(html[data-theme="dark"]) .ghost-mini:hover {
+  border-color: #ffad73;
+  color: #ffad73;
+  background: #182437;
+}
+
+/* Liquid glass refinements */
+.search-input {
+  border-color: var(--glass-border);
+  border-radius: 16px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.56);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.search-input:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  outline: none;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.14);
+}
+
+.product-filter-row .filter-chip,
+.ghost-mini {
+  border-color: var(--glass-border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.52);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+}
+
+.product-filter-row .filter-chip:hover,
+.ghost-mini:hover {
+  border-color: rgba(255, 138, 61, 0.38);
+  color: #c45009;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 14px 34px rgba(255, 107, 26, 0.12);
+}
+
+.product-filter-row .filter-chip.active,
+.template-primary-blue {
+  border-color: rgba(255, 138, 61, 0.72);
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-orange), var(--brand-orange-deep));
+  box-shadow: 0 16px 34px rgba(255, 107, 26, 0.24);
+}
+
+.products-table-wrap {
+  border-color: var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+
+.products-table th,
+.products-table td {
+  border-bottom-color: rgba(220, 228, 236, 0.68);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.products-table th {
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.products-table tbody tr:hover td {
+  background: rgba(255, 248, 242, 0.72);
+}
+
+.modal-overlay {
+  background: rgba(15, 23, 42, 0.32);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.modal-box {
+  border: 1px solid var(--glass-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 28px 86px rgba(31, 41, 55, 0.2);
+}
+
+.form-field input,
+.form-field select,
+.form-field textarea {
+  border-color: var(--glass-border);
+  border-radius: 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.56);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  outline: none;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.14);
+}
+
+:global(html[data-theme="dark"]) .search-input,
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip,
+:global(html[data-theme="dark"]) .ghost-mini,
+:global(html[data-theme="dark"]) .form-field input,
+:global(html[data-theme="dark"]) .form-field select,
+:global(html[data-theme="dark"]) .form-field textarea {
+  border-color: var(--glass-border);
+  color: var(--text);
+  background: rgba(17, 26, 39, 0.62);
+}
+
+:global(html[data-theme="dark"]) .products-table-wrap,
+:global(html[data-theme="dark"]) .modal-box {
+  border-color: var(--glass-border);
+  background: var(--glass-bg-strong);
+  box-shadow: var(--glass-shadow);
+}
+
+:global(html[data-theme="dark"]) .products-table th,
+:global(html[data-theme="dark"]) .products-table td {
+  border-bottom-color: var(--glass-border);
+  background: rgba(17, 26, 39, 0.54);
+}
+
+:global(html[data-theme="dark"]) .products-table tbody tr:hover td {
+  background: rgba(255, 138, 61, 0.1);
+}
+
+:global(html[data-theme="dark"]) .modal-overlay {
+  background: rgba(4, 8, 14, 0.58);
+}
+
+:global(html[data-theme="dark"]) .product-filter-row .filter-chip.active,
+:global(html[data-theme="dark"]) .template-primary-blue {
+  border-color: #ffad73;
+  color: #101722;
+  background: #ffad73;
 }
 </style>

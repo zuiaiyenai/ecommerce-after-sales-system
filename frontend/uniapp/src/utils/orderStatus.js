@@ -99,7 +99,7 @@ export function hasAfterSalesHistoryStatus(status) {
 
 export function getOrderStatusText(status, fallbackText = '') {
   const normalized = normalizeOrderStatus(status)
-  return fallbackText || ORDER_STATUS_TEXT_MAP[normalized] || normalized || ''
+  return ORDER_STATUS_TEXT_MAP[normalized] || fallbackText || normalized || ''
 }
 
 export function getOrderStatusClass(status) {
@@ -109,7 +109,9 @@ export function getOrderStatusClass(status) {
 export function getAfterSalesStatusText(status, fallbackText = '') {
   const raw = String(status || '').trim()
   const upper = raw.toUpperCase()
-  return fallbackText || AFTER_SALES_STATUS_TEXT_MAP[upper] || raw || '未发起售后'
+  const fallback = String(fallbackText || '').trim()
+  if (fallback && fallback.toUpperCase() !== upper) return fallback
+  return AFTER_SALES_STATUS_TEXT_MAP[upper] || fallback || raw || '未发起售后'
 }
 
 export function getAfterSalesStatusClass(status) {

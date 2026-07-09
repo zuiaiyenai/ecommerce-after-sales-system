@@ -24,10 +24,9 @@ const stats = computed(() => {
   const good = reviews.value.filter(item => Number(item.overallScore) >= 5).length;
   const low = reviews.value.filter(item => Number(item.overallScore) > 0 && Number(item.overallScore) <= 2).length;
   return [
-    { label: '评价总数', value: total, tone: 'blue' },
-    { label: '平均评分', value: avg, tone: 'orange' },
-    { label: '好评数量', value: good, tone: 'green' },
-    { label: '低分反馈', value: low, tone: 'red' }
+    { label: '平均评分', value: avg, tone: 'orange', filter: 'ALL' },
+    { label: '好评数量', value: good, tone: 'green', filter: 'GOOD' },
+    { label: '低分反馈', value: low, tone: 'red', filter: 'BAD' }
   ];
 });
 
@@ -96,8 +95,8 @@ onMounted(loadPage);
 
 <template>
   <section class="work-page reviews-page">
-    <article class="wide-panel reviews-panel">
-      <div class="review-head">
+    <article class="wide-panel reviews-panel order-query-panel">
+      <div class="review-head order-query-head">
         <div>
           <span class="eyebrow">用户评价</span>
           <h2>售后服务评价</h2>
@@ -108,29 +107,41 @@ onMounted(loadPage);
         </button>
       </div>
 
-      <div class="ticket-stat-grid">
-        <button v-for="item in stats" :key="item.label" type="button" :class="['ticket-stat-card', item.tone]">
+      <div class="review-search-row">
+        <input
+          v-model.trim="keyword"
+          class="review-search-input"
+          placeholder="订单、商品、用户或评价内容"
+        />
+        <span class="review-result-count">{{ loading ? '加载中' : `匹配 ${visibleReviews.length} 条` }}</span>
+      </div>
+
+      <div class="order-stat-grid review-stat-grid">
+        <button
+          v-for="item in stats"
+          :key="item.label"
+          type="button"
+          :class="['order-stat-card', item.tone, { active: activeScore === item.filter }]"
+          @click="activeScore = item.filter"
+        >
           <span>{{ item.label }}</span>
           <strong>{{ item.value }}</strong>
         </button>
       </div>
 
-      <div class="review-toolbar">
-        <div class="ticket-filter-row">
-          <button
-            v-for="item in scoreFilters"
-            :key="item.key"
-            type="button"
-            :class="['filter-chip', { active: activeScore === item.key }]"
-            @click="activeScore = item.key"
-          >
-            {{ item.label }}
-          </button>
-        </div>
-        <input v-model.trim="keyword" class="review-search" placeholder="搜索订单、商品、用户或评价内容" />
+      <div class="review-toolbar order-filter-row">
+        <button
+          v-for="item in scoreFilters"
+          :key="item.key"
+          type="button"
+          :class="['filter-chip', { active: activeScore === item.key }]"
+          @click="activeScore = item.key"
+        >
+          {{ item.label }}
+        </button>
       </div>
 
-      <div class="review-list">
+      <div class="review-list order-card-list">
         <button v-for="item in visibleReviews" :key="item.id" type="button" class="review-card" @click="openReview(item)">
           <span class="review-product">
             <img v-if="productImage(item)" :src="productImage(item)" alt="" />
@@ -203,67 +214,145 @@ onMounted(loadPage);
 
 <style scoped>
 .reviews-page {
-  min-height: 100%;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
 }
 
-.review-head,
-.review-toolbar,
-.review-card {
-  display: flex;
-  align-items: center;
+.reviews-panel {
+  gap: 14px;
+  min-height: 0;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  border-color: #edf0f4;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .review-head {
-  justify-content: space-between;
-  margin-bottom: 22px;
+  margin-bottom: 0;
 }
 
 .review-head h2 {
-  margin: 8px 0;
+  margin: 0;
   font-size: 26px;
 }
 
 .review-head p {
-  margin: 0;
-  color: #6b7280;
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.review-search-row {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-search-input {
+  width: 220px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.56);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+  font-size: 14px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.review-search-input::placeholder {
+  color: var(--muted);
+}
+
+.review-search-input:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  outline: none;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.14);
+}
+
+.review-result-count {
+  min-height: 36px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 0 14px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.52);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(31, 41, 55, 0.08);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.review-stat-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.review-stat-grid .order-stat-card.red {
+  border-color: #ffd4ca;
+  background: #fff7f5;
+}
+
+.review-stat-grid .order-stat-card.red:hover,
+.review-stat-grid .order-stat-card.red:focus-visible {
+  border-color: #ff9f8c;
+  background: #ffece6;
+  color: #8f2f0c;
+}
+
+.review-stat-grid .order-stat-card.red:hover span,
+.review-stat-grid .order-stat-card.red:focus-visible span {
+  color: #9d5548;
+}
+
+.review-stat-grid .order-stat-card.red:active {
+  border-color: #ef846f;
+  background: #ffddd5;
 }
 
 .review-toolbar {
-  justify-content: space-between;
-  gap: 16px;
-  margin: 18px 0;
-}
-
-.review-search {
-  width: 320px;
-  height: 40px;
-  padding: 0 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 14px;
+  margin: 0;
 }
 
 .review-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .review-card {
-  gap: 16px;
+  min-height: 92px;
   width: 100%;
-  padding: 18px;
+  display: grid;
+  grid-template-columns: 62px minmax(260px, 1fr) 150px 190px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
   border: 1px solid #edf0f4;
   border-radius: 8px;
   background: #ffffff;
+  color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .review-card:hover {
-  border-color: #f2c9b8;
-  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.06);
+  transform: translateY(-1px);
+  border-color: #dbeaff;
+  background: #f7fbff;
+  box-shadow: 0 10px 24px rgba(31, 38, 48, 0.08);
+}
+
+.review-card:focus-visible {
+  outline: 2px solid #ff9c4a;
+  outline-offset: 2px;
 }
 
 .review-product {
@@ -290,7 +379,6 @@ onMounted(loadPage);
 }
 
 .review-main {
-  flex: 1;
   min-width: 0;
 }
 
@@ -299,6 +387,16 @@ onMounted(loadPage);
 .review-meta strong {
   display: block;
   color: #111827;
+}
+
+.review-main strong,
+.review-main em,
+.review-meta strong,
+.review-meta em,
+.review-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-main em,
@@ -315,15 +413,19 @@ onMounted(loadPage);
 
 .review-main small {
   color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-score {
-  width: 150px;
+  min-width: 0;
   color: #c97b5a;
 }
 
 .review-score strong {
-  font-size: 28px;
+  font-size: 24px;
+  line-height: 1;
 }
 
 .review-score em {
@@ -332,12 +434,15 @@ onMounted(loadPage);
 }
 
 .review-meta {
-  width: 190px;
+  min-width: 0;
   text-align: right;
 }
 
 .review-empty {
+  min-height: 220px;
   padding: 60px 24px;
+  border: 1px dashed #dce2ea;
+  background: #fbfcfe;
 }
 
 .review-modal-mask {
@@ -473,5 +578,196 @@ onMounted(loadPage);
   margin: 0;
   color: #374151;
   line-height: 1.7;
+}
+
+/* Liquid glass refinements */
+.reviews-panel,
+.review-card,
+.review-modal,
+.modal-product,
+.score-detail-list,
+.score-detail-row,
+.review-content-box,
+.review-empty {
+  border-color: var(--glass-border);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+
+.reviews-panel,
+.review-modal {
+  border-radius: var(--radius-lg);
+}
+
+.review-card,
+.modal-product,
+.score-detail-list,
+.review-content-box,
+.review-empty {
+  border-radius: var(--radius-md);
+}
+
+.review-card {
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.review-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(255, 138, 61, 0.3);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: var(--glass-shadow-hover);
+}
+
+.review-stat-grid .order-stat-card.red {
+  --stat-accent: #c94232;
+  --stat-tint: rgba(201, 66, 50, 0.11);
+  --stat-ring: rgba(201, 66, 50, 0.32);
+  --stat-glow: rgba(201, 66, 50, 0.16);
+  border-color: rgba(201, 66, 50, 0.24);
+  background:
+    linear-gradient(135deg, rgba(201, 66, 50, 0.1), rgba(255, 255, 255, 0.14) 58%),
+    var(--glass-bg-strong);
+}
+
+.review-stat-grid .order-stat-card.red:hover,
+.review-stat-grid .order-stat-card.red:focus-visible,
+.review-stat-grid .order-stat-card.red.active {
+  color: var(--text);
+  border-color: var(--stat-ring);
+  background:
+    linear-gradient(135deg, var(--stat-tint), rgba(255, 255, 255, 0.34) 62%),
+    var(--glass-bg-strong);
+  box-shadow:
+    0 18px 44px var(--stat-glow),
+    var(--glass-shadow-hover);
+}
+
+.review-stat-grid .order-stat-card.red:hover span,
+.review-stat-grid .order-stat-card.red:focus-visible span,
+.review-stat-grid .order-stat-card.red.active span {
+  color: var(--muted);
+}
+
+.review-modal-mask {
+  background: rgba(15, 23, 42, 0.32);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.review-modal {
+  border: 1px solid var(--glass-border-strong);
+  background: var(--glass-bg-strong);
+  box-shadow: 0 28px 86px rgba(31, 41, 55, 0.2);
+}
+
+.modal-product,
+.score-detail-row,
+.review-content-box {
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.score-detail-list {
+  overflow: hidden;
+}
+
+.score-detail-row {
+  border-bottom-color: rgba(220, 228, 236, 0.68);
+  box-shadow: none;
+}
+
+.modal-close {
+  border-color: var(--glass-border);
+  background: rgba(255, 255, 255, 0.56);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  transition: transform 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.modal-close:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 138, 61, 0.4);
+  color: #c45009;
+  box-shadow: 0 12px 30px rgba(255, 107, 26, 0.14);
+}
+
+:global(html[data-theme="dark"]) .reviews-panel,
+:global(html[data-theme="dark"]) .review-card,
+:global(html[data-theme="dark"]) .review-modal,
+:global(html[data-theme="dark"]) .modal-product,
+:global(html[data-theme="dark"]) .score-detail-list,
+:global(html[data-theme="dark"]) .score-detail-row,
+:global(html[data-theme="dark"]) .review-content-box,
+:global(html[data-theme="dark"]) .review-empty {
+  border-color: var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+}
+
+:global(html[data-theme="dark"]) .review-modal-mask {
+  background: rgba(4, 8, 14, 0.58);
+}
+
+:global(html[data-theme="dark"]) .review-card:hover {
+  border-color: rgba(255, 138, 61, 0.34);
+  background: rgba(24, 36, 55, 0.76);
+}
+
+:global(html[data-theme="dark"]) .review-search-input,
+:global(html[data-theme="dark"]) .review-result-count {
+  border-color: var(--glass-border);
+  color: var(--text);
+  background: rgba(17, 26, 39, 0.62);
+}
+
+:global(html[data-theme="dark"]) .review-search-input::placeholder {
+  color: #7f8da0;
+}
+
+:global(html[data-theme="dark"]) .review-search-input:focus {
+  border-color: rgba(255, 138, 61, 0.54);
+  background: rgba(24, 36, 55, 0.78);
+  box-shadow: 0 0 0 4px rgba(255, 138, 61, 0.16);
+}
+
+:global(html[data-theme="dark"]) .review-stat-grid .order-stat-card.red {
+  color: #f7fafc;
+  border-color: rgba(201, 66, 50, 0.28);
+  background:
+    linear-gradient(135deg, var(--stat-tint), rgba(17, 26, 39, 0.38) 62%),
+    rgba(17, 26, 39, 0.66);
+}
+
+:global(html[data-theme="dark"]) .review-stat-grid .order-stat-card.red:hover,
+:global(html[data-theme="dark"]) .review-stat-grid .order-stat-card.red:focus-visible,
+:global(html[data-theme="dark"]) .review-stat-grid .order-stat-card.red.active {
+  border-color: var(--stat-ring);
+  background:
+    linear-gradient(135deg, var(--stat-tint), rgba(24, 36, 55, 0.72) 62%),
+    rgba(24, 36, 55, 0.78);
+  box-shadow:
+    0 18px 46px rgba(0, 0, 0, 0.36),
+    0 18px 42px var(--stat-glow);
+}
+
+:global(html[data-theme="dark"]) .review-stat-grid .order-stat-card.red span {
+  color: #c6d2e2;
+}
+
+:global(html[data-theme="dark"]) .modal-product,
+:global(html[data-theme="dark"]) .score-detail-row,
+:global(html[data-theme="dark"]) .review-content-box,
+:global(html[data-theme="dark"]) .modal-close {
+  border-color: var(--glass-border);
+  background: rgba(17, 26, 39, 0.62);
+}
+
+:global(html[data-theme="dark"]) .modal-product strong,
+:global(html[data-theme="dark"]) .score-detail-row span,
+:global(html[data-theme="dark"]) .score-detail-row strong,
+:global(html[data-theme="dark"]) .review-content-box span,
+:global(html[data-theme="dark"]) .review-content-box p {
+  color: var(--text);
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login, registerStaff, resetPassword, sendAuthCode } from '../api/merchantCs';
 import WelcomeAnimation from '../components/WelcomeAnimation.vue';
@@ -19,6 +19,9 @@ const loginStaffName = ref('');
 const mode = ref('login');
 const WELCOME_DURATION_MS = 5000;
 let welcomeFinished = false;
+let previousThemeMode = '';
+let dashboardEnterTimer = 0;
+let routeTransitionTimer = 0;
 
 const form = reactive({
   account: '',
@@ -65,13 +68,26 @@ const submitButtonText = computed(() => {
 });
 
 function clearScheduledDashboardEnter() {
+  window.clearTimeout(dashboardEnterTimer);
+  dashboardEnterTimer = 0;
+}
+
+function scheduleDashboardEnterFallback() {
+  clearScheduledDashboardEnter();
+  dashboardEnterTimer = window.setTimeout(() => {
+    enterDashboard();
+  }, WELCOME_DURATION_MS + 300);
 }
 
 function pushDashboard() {
   const root = document.documentElement;
   const supportsViewTransition = typeof document.startViewTransition === 'function';
   root.classList.add('welcome-route-transition');
-  const clearRouteTransition = () => root.classList.remove('welcome-route-transition');
+  const clearRouteTransition = () => {
+    window.clearTimeout(routeTransitionTimer);
+    root.classList.remove('welcome-route-transition');
+  };
+  routeTransitionTimer = window.setTimeout(clearRouteTransition, 1200);
   if (!supportsViewTransition) {
     router.push('/dashboard').finally(clearRouteTransition);
     return;
@@ -88,6 +104,7 @@ function enterDashboard() {
   if (welcomeFinished) return;
   welcomeFinished = true;
   clearScheduledDashboardEnter();
+  showWelcome.value = false;
   pushDashboard();
 }
 
@@ -146,6 +163,7 @@ async function handleLogin() {
     loginStaffName.value = result?.staff?.realName || form.account || '客服';
     welcomeFinished = false;
     showWelcome.value = true;
+    scheduleDashboardEnterFallback();
   } catch (error) {
     errorMessage.value = error.message || '登录失败，请检查账号和密码';
     showWelcome.value = false;
@@ -242,8 +260,21 @@ function handleAdminPortal() {
   router.push('/admin/login');
 }
 
+onMounted(() => {
+  const root = document.documentElement;
+  previousThemeMode = root.dataset.theme || '';
+  root.dataset.theme = 'light';
+});
+
 onBeforeUnmount(() => {
   clearScheduledDashboardEnter();
+  window.clearTimeout(routeTransitionTimer);
+  const root = document.documentElement;
+  if (previousThemeMode) {
+    root.dataset.theme = previousThemeMode;
+  } else {
+    root.removeAttribute('data-theme');
+  }
 });
 </script>
 

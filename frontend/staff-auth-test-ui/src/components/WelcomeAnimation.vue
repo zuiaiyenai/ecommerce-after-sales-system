@@ -5,6 +5,22 @@ const props = defineProps({
   durationMs: {
     type: Number,
     default: 5000
+  },
+  title: {
+    type: String,
+    default: 'Welcome'
+  },
+  subtitle: {
+    type: String,
+    default: ''
+  },
+  skipLabel: {
+    type: String,
+    default: '跳过动画'
+  },
+  showSkip: {
+    type: Boolean,
+    default: true
   }
 });
 
@@ -14,7 +30,6 @@ const canvasRef = ref(null);
 const welcomeStyle = computed(() => ({
   '--welcome-duration': `${props.durationMs}ms`
 }));
-const CANVAS_FREEZE_PROGRESS = 0.76;
 
 const blobs = [
   {
@@ -72,6 +87,7 @@ let canvasWidth = 0;
 let canvasHeight = 0;
 let reducedMotion = false;
 let finishEmitted = false;
+let completionTimer = 0;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -136,13 +152,12 @@ function drawFrame(now) {
 
   const elapsed = reducedMotion ? props.durationMs * 0.34 : now - startTime;
   const progress = clamp(elapsed / props.durationMs, 0, 1);
-  const drawProgress = Math.min(progress, CANVAS_FREEZE_PROGRESS);
   const elapsedSeconds = elapsed / 1000;
   context.clearRect(0, 0, canvasWidth, canvasHeight);
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvasWidth, canvasHeight);
   context.globalCompositeOperation = 'source-over';
-  blobs.forEach((blob) => drawBlob(blob, drawProgress, elapsedSeconds));
+  blobs.forEach((blob) => drawBlob(blob, progress, elapsedSeconds));
 
   const vignette = context.createRadialGradient(
     canvasWidth * 0.5,
@@ -157,7 +172,7 @@ function drawFrame(now) {
   context.fillStyle = vignette;
   context.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  if (!reducedMotion && progress < CANVAS_FREEZE_PROGRESS) {
+  if (!reducedMotion && progress < 1) {
     animationId = window.requestAnimationFrame(drawFrame);
   }
 }
@@ -168,6 +183,7 @@ function startAnimation() {
   startTime = performance.now();
   resizeCanvas();
   drawFrame(startTime);
+  scheduleFinishFallback();
 
   if (!reducedMotion) {
     animationId = window.requestAnimationFrame(drawFrame);
@@ -185,11 +201,19 @@ function emitFinishedAfterPaint() {
   }
 
   finishEmitted = true;
+  window.clearTimeout(completionTimer);
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       emit('finished');
     });
   });
+}
+
+function scheduleFinishFallback() {
+  window.clearTimeout(completionTimer);
+  completionTimer = window.setTimeout(() => {
+    emitFinishedAfterPaint();
+  }, Math.max(props.durationMs + 160, 300));
 }
 
 function handleVisualAnimationEnd(event) {
@@ -210,6 +234,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(animationId);
+  window.clearTimeout(completionTimer);
   window.removeEventListener('resize', startAnimation);
   mediaQuery?.removeEventListener('change', handleMotionPreferenceChange);
 });
@@ -222,10 +247,12 @@ onBeforeUnmount(() => {
       class="welcome-canvas"
       aria-hidden="true"
       @animationend="handleVisualAnimationEnd"
+      @animationcancel="handleVisualAnimationEnd"
     ></canvas>
-    <button type="button" class="welcome-skip" @click="emit('skip')">跳过动画</button>
+    <button v-if="showSkip" type="button" class="welcome-skip" @click="emit('skip')">{{ skipLabel }}</button>
     <div class="welcome-card">
-      <h2>Welcome</h2>
+      <h2>{{ title }}</h2>
+      <p v-if="subtitle">{{ subtitle }}</p>
     </div>
   </div>
 </template>
@@ -250,7 +277,7 @@ onBeforeUnmount(() => {
   inset: 0;
   width: 100%;
   height: 100%;
-  animation: welcomeVisualIn var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: welcomeVisualInOut var(--welcome-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
   backface-visibility: hidden;
   will-change: opacity;
 }
@@ -278,6 +305,16 @@ onBeforeUnmount(() => {
   letter-spacing: 0;
 }
 
+.welcome-card p {
+  margin: 16px 0 0;
+  max-width: min(82vw, 520px);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: clamp(15px, 2vw, 18px);
+  line-height: 1.6;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .welcome-skip {
   position: absolute;
   top: 34px;
@@ -302,7 +339,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.92);
 }
 
-@keyframes welcomeVisualIn {
+@keyframes welcomeVisualInOut {
   0% {
     opacity: 0;
   }
@@ -311,8 +348,12 @@ onBeforeUnmount(() => {
     opacity: 1;
   }
 
-  100% {
+  76% {
     opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
   }
 }
 
@@ -332,19 +373,9 @@ onBeforeUnmount(() => {
     transform: translate3d(0, 0, 0) scale(1);
   }
 
-  84% {
-    opacity: 0.72;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
-  92% {
-    opacity: 0.32;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-
   100% {
     opacity: 0;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, -6px, 0) scale(0.985);
   }
 }
 

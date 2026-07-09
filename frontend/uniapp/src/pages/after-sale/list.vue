@@ -1,14 +1,5 @@
 ﻿<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">我的售后</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- Tab 筛选 -->
     <view class="tabs">
       <view v-for="tab in tabs" :key="tab.key" class="tab-item" :class="{ active: activeTab === tab.key }" @tap="activeTab = tab.key">
@@ -113,10 +104,6 @@ onLoad(() => {
   loadAfterSales()
 })
 
-function goBack() {
-  uni.navigateBack()
-}
-
 function goDetail(ticketNo) {
   uni.navigateTo({ url: '/pages/after-sale/detail?ticketNo=' + ticketNo })
 }
@@ -132,42 +119,12 @@ function applyAfterSale() {
 
 <style scoped>
 .page {
+  height: 100vh;
   min-height: 100vh;
   background: #f0eeea;
   display: flex;
   flex-direction: column;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
+  overflow: hidden;
 }
 
 /* Tabs */
@@ -176,10 +133,13 @@ function applyAfterSale() {
   background: #ffffff;
   padding: 0 28rpx;
   border-bottom: 1rpx solid rgba(0,0,0,0.04);
+  box-sizing: border-box;
+  flex-shrink: 0;
 }
 
 .tab-item {
   flex: 1;
+  min-width: 0;
   position: relative;
   display: flex;
   align-items: center;
@@ -190,6 +150,7 @@ function applyAfterSale() {
 .tab-text {
   font-size: 26rpx;
   color: #666;
+  white-space: nowrap;
 }
 
 .tab-item.active .tab-text {
@@ -211,7 +172,11 @@ function applyAfterSale() {
 /* 列表 */
 .list-area {
   flex: 1;
+  min-height: 0;
+  width: 100%;
   padding: 20rpx 28rpx;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .empty {
@@ -233,28 +198,44 @@ function applyAfterSale() {
 
 /* 卡片 */
 .card {
+  width: 100%;
   margin-bottom: 20rpx;
   padding: 24rpx;
+  box-sizing: border-box;
   background: #ffffff;
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+  overflow: hidden;
 }
 
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16rpx;
+  min-width: 0;
 }
 
 .card-no {
+  flex: 1;
+  min-width: 0;
   font-size: 22rpx;
   color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-status {
+  max-width: 180rpx;
+  flex-shrink: 0;
   font-size: 24rpx;
   font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-status.processing {
@@ -282,11 +263,13 @@ function applyAfterSale() {
 .card-body {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .product-icon {
   width: 64rpx;
   height: 64rpx;
+  flex-shrink: 0;
   line-height: 64rpx;
   text-align: center;
   border-radius: 14rpx;
@@ -298,6 +281,7 @@ function applyAfterSale() {
 
 .product-info {
   flex: 1;
+  min-width: 0;
   margin-left: 16rpx;
 }
 
@@ -306,6 +290,9 @@ function applyAfterSale() {
   font-size: 28rpx;
   font-weight: 700;
   color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .product-reason {
@@ -313,6 +300,9 @@ function applyAfterSale() {
   margin-top: 6rpx;
   font-size: 22rpx;
   color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .merchant-name {
@@ -326,27 +316,43 @@ function applyAfterSale() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16rpx;
+  min-width: 0;
 }
 
 .card-time {
+  flex: 1;
+  min-width: 0;
   font-size: 22rpx;
   color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-actions {
   display: flex;
+  flex-shrink: 0;
   gap: 12rpx;
 }
 
 .action-btn {
+  min-width: 120rpx;
   height: 56rpx;
   line-height: 56rpx;
+  margin: 0;
   padding: 0 24rpx;
+  box-sizing: border-box;
   border-radius: 28rpx;
   background: #f5f3ef;
   color: #666;
   font-size: 22rpx;
   font-weight: 600;
+  border: none;
+  white-space: nowrap;
+}
+
+.action-btn::after {
   border: none;
 }
 
@@ -359,8 +365,10 @@ function applyAfterSale() {
 .bottom-bar {
   padding: 20rpx 28rpx;
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+  box-sizing: border-box;
   background: #ffffff;
   border-top: 1rpx solid rgba(0,0,0,0.06);
+  flex-shrink: 0;
 }
 
 .apply-btn {
@@ -376,6 +384,10 @@ function applyAfterSale() {
   font-weight: 700;
   border: none;
   box-shadow: 0 4rpx 16rpx rgba(244,90,11,0.3);
+}
+
+.apply-btn::after {
+  border: none;
 }
 
 .apply-icon {

@@ -49,6 +49,11 @@ const visibleTickets = computed(() => {
   return tickets.value.filter((ticket) => ticket.status === activeFilter.value);
 });
 
+function toFiniteNumber(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
 const stats = computed(() => [
   {
     label: '待审核',
@@ -77,7 +82,7 @@ async function loadPage() {
     shell.tickets.value = page.records;
   }
   if (shell?.ticketTotal && 'value' in shell.ticketTotal) {
-    shell.ticketTotal.value = page.total ?? page.records.length;
+    shell.ticketTotal.value = toFiniteNumber(page.total, page.records.length);
   }
 }
 
@@ -190,7 +195,7 @@ onMounted(loadPage);
           v-for="item in stats"
           :key="item.label"
           type="button"
-          :class="['ticket-stat-card', item.tone]"
+          :class="['ticket-stat-card', item.tone, { active: activeFilter === item.filter }]"
           @click="activeFilter = item.filter"
         >
           <span>{{ item.label }}</span>

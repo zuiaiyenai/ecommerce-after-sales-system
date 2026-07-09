@@ -2,7 +2,8 @@
 import { computed, inject, onMounted, reactive, ref } from 'vue';
 import EmptyState from '../components/EmptyState.vue';
 import {
-  createKnowledgeLibrary,
+  createKnowledgeFileImport,
+  createKnowledgeTextImport,
   deleteKnowledgeLibrary,
   getKnowledgeLibraries,
   syncKnowledgeLibrary,
@@ -14,24 +15,27 @@ const loading = ref(true);
 const libraries = ref([]);
 const selectedLibraryId = ref(null);
 const activeFilter = ref('ALL');
+const importMode = ref('TEXT');
+const showImportPanel = ref(false);
+const submitting = ref(false);
+const actionLoading = ref('');
+const fileInput = ref(null);
 
-const form = reactive({
-  code: '',
-  name: '',
-  type: 'faq',
+const importForm = reactive({
+  title: '',
+  knowledgeType: 'faq',
+  scope: 'MERCHANT',
+  merchantCode: 'MERCHANT_DEMO',
   status: 'ENABLED',
-  merchantCode: '',
-  productCategory: '',
-  scene: '',
-  intent: '',
-  policyVersion: 'v1.0',
-  tags: '',
-  description: ''
+  content: '',
+  file: null
 });
 
 const filterOptions = [
   { key: 'ALL', label: '全部' },
-  { key: 'ENABLED', label: '已启用' },
+  { key: 'PROCESSING', label: '处理中' },
+  { key: 'SUCCESS', label: '成功' },
+  { key: 'FAILED', label: '失败' },
   { key: 'DISABLED', label: '已停用' }
 ];
 
@@ -42,27 +46,6 @@ const knowledgeTypeOptions = [
   { value: 'guideline', label: '操作指南' }
 ];
 
-const sceneOptions = [
-  { value: '', label: '未指定' },
-  { value: 'damage', label: '破损问题' },
-  { value: 'quality_issue', label: '质量问题' },
-  { value: 'return', label: '退货场景' },
-  { value: 'exchange', label: '换货场景' },
-  { value: 'refund_request', label: '退款申请' },
-  { value: 'shipping_issue', label: '物流问题' },
-  { value: 'complaint', label: '投诉升级' }
-];
-
-const intentOptions = [
-  { value: '', label: '未指定' },
-  { value: 'refund', label: '退款' },
-  { value: 'exchange', label: '换货' },
-  { value: 'evidence_requirement', label: '补充凭证' },
-  { value: 'policy_inquiry', label: '政策咨询' },
-  { value: 'complaint_escalation', label: '投诉升级' },
-  { value: 'return_guidance', label: '退货指引' }
-];
-
 const selectedLibrary = computed(() => {
   return libraries.value.find((item) => item.id === selectedLibraryId.value) || null;
 });
@@ -71,14 +54,81 @@ const visibleLibraries = computed(() => {
   if (activeFilter.value === 'ALL') {
     return libraries.value;
   }
-  return libraries.value.filter((item) => item.status === activeFilter.value);
+  if (activeFilter.value === 'DISABLED') {
+    return libraries.value.filter((item) => item.status === 'DISABLED');
+  }
+  return libraries.value.filter((item) => item.ingestionStatus === activeFilter.value);
 });
 
-const editorTitle = computed(() => {
-  return selectedLibrary.value ? '编辑知识库目录' : '新建知识库目录';
+const enabledCount = computed(() => libraries.value.filter((item) => item.status === 'ENABLED').length);
+const disabledCount = computed(() => libraries.value.filter((item) => item.status === 'DISABLED').length);
+const processingCount = computed(() => libraries.value.filter((item) => item.ingestionStatus === 'PROCESSING').length);
+const failedCount = computed(() => libraries.value.filter((item) => item.ingestionStatus === 'FAILED').length);
+
+const canSubmitImport = computed(() => {
+  if (!importForm.title || !importForm.knowledgeType) {
+    return false;
+  }
+  if (importForm.scope === 'MERCHANT' && !importForm.merchantCode.trim()) {
+    return false;
+  }
+  if (importMode.value === 'TEXT') {
+    return Boolean(importForm.content.trim());
+  }
+  return Boolean(importForm.file);
 });
 
-function knowledgeTypeLabel(value) {
+const detailScopeLabel = computed(() => scopeLabel(selectedLibrary.value?.scope));
+
+async function loadPage() {
+  loading.value = true;
+  try {
+    const data = await getKnowledgeLibraries();
+    libraries.value = data.records || [];
+
+    if (!selectedLibraryId.value && libraries.value.length) {
+      selectedLibraryId.value = libraries.value[0].id;
+      return;
+    }
+
+    if (selectedLibraryId.value && !libraries.value.some((item) => item.id === selectedLibraryId.value)) {
+      selectedLibraryId.value = libraries.value[0]?.id || null;
+    }
+  } finally {
+    loading.value = false;
+  }
+}
+
+function openImportPanel(mode) {
+  importMode.value = mode;
+  showImportPanel.value = true;
+  importForm.title = '';
+  importForm.knowledgeType = 'faq';
+  importForm.scope = 'MERCHANT';
+  importForm.merchantCode = 'MERCHANT_DEMO';
+  importForm.status = 'ENABLED';
+  importForm.content = '';
+  importForm.file = null;
+  if (fileInput.value) {
+    fileInput.value.value = '';
+  }
+}
+
+function closeImportPanel() {
+  showImportPanel.value = false;
+  importForm.file = null;
+  importForm.content = '';
+}
+
+function handleFileChange(event) {
+  importForm.file = event.target.files?.[0] || null;
+}
+
+function selectLibrary(library) {
+  selectedLibraryId.value = library.id;
+}
+
+function typeLabel(value) {
   return knowledgeTypeOptions.find((item) => item.value === value)?.label || value || '未分类';
 }
 
@@ -86,7 +136,39 @@ function statusLabel(value) {
   return value === 'ENABLED' ? '已启用' : '已停用';
 }
 
-function shortText(value, limit = 22) {
+function ingestionStatusLabel(value) {
+  switch (value) {
+    case 'PROCESSING':
+      return '处理中';
+    case 'FAILED':
+      return '失败';
+    case 'SUCCESS':
+    default:
+      return '成功';
+  }
+}
+
+function ingestionStatusTone(value) {
+  switch (value) {
+    case 'PROCESSING':
+      return 'processing';
+    case 'FAILED':
+      return 'danger';
+    case 'SUCCESS':
+    default:
+      return 'completed';
+  }
+}
+
+function sourceLabel(value) {
+  return value === 'FILE' ? '文件导入' : '文本导入';
+}
+
+function scopeLabel(value) {
+  return value === 'GLOBAL' ? '全局知识' : '指定商户';
+}
+
+function shortText(value, limit = 26) {
   const text = String(value || '').trim();
   if (!text) {
     return '暂无说明';
@@ -94,93 +176,86 @@ function shortText(value, limit = 22) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-async function loadPage() {
-  loading.value = true;
+async function submitImport() {
+  if (!canSubmitImport.value || submitting.value) {
+    return;
+  }
+
+  submitting.value = true;
   try {
-    const data = await getKnowledgeLibraries();
-    libraries.value = data.records || [];
-    if (!selectedLibraryId.value && libraries.value.length) {
-      selectLibrary(libraries.value[0]);
-      return;
+    if (importMode.value === 'TEXT') {
+      await createKnowledgeTextImport({
+        title: importForm.title,
+        knowledgeType: importForm.knowledgeType,
+        scope: importForm.scope,
+        merchantCode: importForm.scope === 'MERCHANT' ? importForm.merchantCode : null,
+        status: importForm.status,
+        content: importForm.content
+      });
+    } else {
+      const formData = new FormData();
+      formData.append('title', importForm.title);
+      formData.append('knowledgeType', importForm.knowledgeType);
+      formData.append('scope', importForm.scope);
+      formData.append('merchantCode', importForm.scope === 'MERCHANT' ? importForm.merchantCode : '');
+      formData.append('status', importForm.status);
+      formData.append('file', importForm.file);
+      await createKnowledgeFileImport(formData);
     }
-    if (selectedLibraryId.value && !libraries.value.some((item) => item.id === selectedLibraryId.value)) {
-      if (libraries.value.length) {
-        selectLibrary(libraries.value[0]);
-      } else {
-        createLibraryDraft();
-      }
-    }
+
+    shell?.setAction?.('知识导入任务已提交，后台正在处理中');
+    closeImportPanel();
+    await loadPage();
   } finally {
-    loading.value = false;
+    submitting.value = false;
   }
 }
 
-function selectLibrary(library) {
-  selectedLibraryId.value = library.id;
-  Object.assign(form, {
-    code: library.code,
-    name: library.name,
-    type: library.type,
-    status: library.status,
-    merchantCode: library.merchantCode || '',
-    productCategory: library.productCategory || '',
-    scene: library.scene || '',
-    intent: library.intent || '',
-    policyVersion: library.policyVersion || 'v1.0',
-    tags: library.tags || '',
-    description: library.description || ''
-  });
-}
-
-function createLibraryDraft() {
-  selectedLibraryId.value = null;
-  Object.assign(form, {
-    code: '',
-    name: '',
-    type: 'faq',
-    status: 'ENABLED',
-    merchantCode: '',
-    productCategory: '',
-    scene: '',
-    intent: '',
-    policyVersion: 'v1.0',
-    tags: '',
-    description: ''
-  });
-}
-
-async function saveLibrary() {
-  if (!form.code || !form.name) {
-    shell?.setAction?.('请先填写知识库编码和名称');
-    return;
-  }
-
-  if (selectedLibraryId.value) {
-    await updateKnowledgeLibrary(selectedLibraryId.value, { ...form });
-    shell?.setAction?.('知识库目录已更新');
-  } else {
-    await createKnowledgeLibrary({ ...form });
-    shell?.setAction?.('知识库目录已创建');
-  }
-  await loadPage();
-}
-
-async function deleteLibrary() {
+async function toggleEnabled(nextStatus) {
   if (!selectedLibrary.value) {
     return;
   }
-  await deleteKnowledgeLibrary(selectedLibrary.value.id);
-  shell?.setAction?.('知识库目录已删除');
-  selectedLibraryId.value = null;
-  await loadPage();
+  actionLoading.value = `status-${nextStatus}`;
+  try {
+    await updateKnowledgeLibrary(selectedLibrary.value.id, {
+      title: selectedLibrary.value.name,
+      merchantCode: selectedLibrary.value.merchantCode,
+      status: nextStatus === 'ENABLED' ? 1 : 0
+    });
+    shell?.setAction?.(nextStatus === 'ENABLED' ? '知识记录已启用' : '知识记录已停用');
+    await loadPage();
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
-async function triggerSync() {
+async function retrySync() {
   if (!selectedLibrary.value) {
     return;
   }
-  const result = await syncKnowledgeLibrary(selectedLibrary.value.id);
-  shell?.setAction?.(result.message || '知识库同步任务已触发');
+  actionLoading.value = 'sync';
+  try {
+    await syncKnowledgeLibrary(selectedLibrary.value.id);
+    shell?.setAction?.('已触发重新处理任务');
+    await loadPage();
+  } finally {
+    actionLoading.value = '';
+  }
+}
+
+async function removeLibrary() {
+  if (!selectedLibrary.value) {
+    return;
+  }
+  actionLoading.value = 'delete';
+  try {
+    await deleteKnowledgeLibrary(selectedLibrary.value.id);
+    shell?.setAction?.('知识记录已删除');
+    selectedLibraryId.value = null;
+    await loadPage();
+  } finally {
+    actionLoading.value = '';
+  }
 }
 
 onMounted(loadPage);
@@ -190,11 +265,11 @@ onMounted(loadPage);
   <section class="admin-console-page">
     <aside class="admin-console-list">
       <div class="template-panel-head">
-        <h2>知识库列表</h2>
-        <button type="button" class="template-icon-button" aria-label="新建目录" @click="createLibraryDraft">+</button>
+        <h2>知识导入记录</h2>
+        <button type="button" class="template-icon-button" aria-label="新建知识导入" @click="openImportPanel('TEXT')">+</button>
       </div>
 
-      <div class="template-filter-tabs" aria-label="知识库筛选">
+      <div class="template-filter-tabs" aria-label="知识记录筛选">
         <button
           v-for="option in filterOptions"
           :key="option.key"
@@ -217,129 +292,217 @@ onMounted(loadPage);
           <span class="template-user-avatar">知</span>
           <span class="template-conversation-copy">
             <strong>{{ item.name }}</strong>
-            <em>{{ item.code }}</em>
-            <small>{{ shortText(knowledgeTypeLabel(item.type), 18) }}</small>
+            <em>{{ typeLabel(item.type) }} / {{ sourceLabel(item.ingestionSourceType) }}</em>
+            <small>{{ scopeLabel(item.scope) }} · {{ item.merchantCode || 'GLOBAL' }}</small>
+            <small v-if="item.errorMessage">{{ shortText(item.errorMessage, 24) }}</small>
           </span>
           <span class="template-conversation-side">
-            <time>{{ statusLabel(item.status) }}</time>
-            <i v-if="item.status === 'ENABLED'" aria-hidden="true"></i>
+            <time>{{ ingestionStatusLabel(item.ingestionStatus) }}</time>
+            <i v-if="item.ingestionStatus === 'SUCCESS'" aria-hidden="true"></i>
           </span>
         </button>
       </div>
       <div v-else class="template-list-empty">
-        {{ loading ? '正在加载知识库列表...' : '当前筛选下没有知识库目录' }}
+        {{ loading ? '正在加载知识导入记录...' : '当前筛选下没有知识记录' }}
       </div>
 
-      <div class="template-list-foot">共 {{ visibleLibraries.length }} 个目录</div>
+      <div class="template-list-foot">共 {{ visibleLibraries.length }} 条记录</div>
     </aside>
 
     <article class="admin-console-main">
-      <header class="template-chat-head admin-console-head">
-        <span class="template-user-avatar large">知</span>
-        <div>
-          <h2>{{ editorTitle }}</h2>
-          <p>
-            {{ selectedLibrary ? `当前正在编辑：${selectedLibrary.name} / ${selectedLibrary.code}` : '当前正在创建新的知识库目录' }}
-          </p>
-        </div>
-        <span v-if="selectedLibrary" class="session-status processing">{{ statusLabel(selectedLibrary.status) }}</span>
-      </header>
-
-      <div class="admin-console-body">
-        <section class="admin-console-hero">
+      <template v-if="showImportPanel">
+        <header class="template-chat-head admin-console-head">
+          <span class="template-user-avatar large">{{ importMode === 'TEXT' ? '文' : '档' }}</span>
           <div>
-            <span class="eyebrow">知识文档编辑</span>
-            <h3>右侧区域负责维护当前选中的知识库文档</h3>
-            <p>这里直接维护向量知识库主表字段，包括编码、类型、商户、场景、意图、标签和正文内容。</p>
+            <h2>{{ importMode === 'TEXT' ? '新建文本导入' : '新建文件导入' }}</h2>
+            <p>管理员只需要提供原始知识，后端会自动解析、切片并生成向量。</p>
           </div>
-          <div class="admin-editor-badges" v-if="selectedLibrary">
-            <span class="tag">{{ knowledgeTypeLabel(selectedLibrary.type) }}</span>
-            <span class="tag">{{ selectedLibrary.updatedAt }}</span>
+        </header>
+
+        <div class="admin-console-body">
+          <section class="admin-console-toolbar">
+            <button type="button" class="primary-action compact" @click="submitImport" :disabled="!canSubmitImport || submitting">
+              {{ submitting ? '提交中' : '提交导入' }}
+            </button>
+            <button type="button" class="ghost-mini" @click="openImportPanel('TEXT')">文本导入</button>
+            <button type="button" class="ghost-mini" @click="openImportPanel('FILE')">文件上传</button>
+            <button type="button" class="ghost-mini" @click="closeImportPanel">取消</button>
+          </section>
+
+          <section class="admin-console-form-card">
+            <div class="admin-form-grid">
+              <label class="admin-field">
+                <span>标题</span>
+                <input v-model.trim="importForm.title" placeholder="请输入知识标题" />
+              </label>
+              <label class="admin-field">
+                <span>知识分类</span>
+                <select v-model="importForm.knowledgeType">
+                  <option v-for="item in knowledgeTypeOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
+                </select>
+              </label>
+              <label class="admin-field">
+                <span>适用范围</span>
+                <select v-model="importForm.scope">
+                  <option value="MERCHANT">指定商户</option>
+                  <option value="GLOBAL">全局知识</option>
+                </select>
+              </label>
+              <label class="admin-field">
+                <span>状态</span>
+                <select v-model="importForm.status">
+                  <option value="ENABLED">启用</option>
+                  <option value="DISABLED">停用</option>
+                </select>
+              </label>
+              <label v-if="importForm.scope === 'MERCHANT'" class="admin-field admin-field-full">
+                <span>商户代码</span>
+                <input v-model.trim="importForm.merchantCode" placeholder="请输入商户代码" />
+              </label>
+              <label v-if="importMode === 'TEXT'" class="admin-field admin-field-full">
+                <span>原始文本</span>
+                <textarea
+                  v-model="importForm.content"
+                  rows="12"
+                  placeholder="在这里直接粘贴知识文本，系统会自动清洗、切片并生成向量。"
+                ></textarea>
+              </label>
+              <label v-else class="admin-field admin-field-full">
+                <span>上传文件</span>
+                <input ref="fileInput" type="file" accept=".txt,.md" @change="handleFileChange" />
+                <small class="muted">第一版仅支持 .txt 和 .md 文件。</small>
+                <strong v-if="importForm.file">{{ importForm.file.name }}</strong>
+              </label>
+            </div>
+          </section>
+        </div>
+      </template>
+
+      <template v-else-if="selectedLibrary">
+        <header class="template-chat-head admin-console-head">
+          <span class="template-user-avatar large">知</span>
+          <div>
+            <h2>{{ selectedLibrary.name }}</h2>
+            <p>{{ typeLabel(selectedLibrary.type) }} / {{ sourceLabel(selectedLibrary.ingestionSourceType) }} / {{ detailScopeLabel }}</p>
           </div>
-        </section>
+          <span :class="['session-status', ingestionStatusTone(selectedLibrary.ingestionStatus)]">
+            {{ ingestionStatusLabel(selectedLibrary.ingestionStatus) }}
+          </span>
+        </header>
 
-        <section class="admin-console-form-card">
-          <div class="admin-form-grid">
-            <label class="admin-field">
-              <span>编码</span>
-              <input v-model.trim="form.code" placeholder="例如：faq_refund_rules_001" />
-            </label>
-            <label class="admin-field">
-              <span>名称</span>
-              <input v-model.trim="form.name" placeholder="请输入知识库名称" />
-            </label>
-            <label class="admin-field">
-              <span>类型</span>
-              <select v-model="form.type">
-                <option v-for="item in knowledgeTypeOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-            <label class="admin-field">
-              <span>状态</span>
-              <select v-model="form.status">
-                <option value="ENABLED">启用</option>
-                <option value="DISABLED">停用</option>
-              </select>
-            </label>
-            <label class="admin-field">
-              <span>商户代码</span>
-              <input v-model.trim="form.merchantCode" placeholder="例如：MERCHANT_DEMO" />
-            </label>
-            <label class="admin-field">
-              <span>商品分类</span>
-              <input v-model.trim="form.productCategory" placeholder="例如：数码配件、服饰箱包" />
-            </label>
-            <label class="admin-field">
-              <span>场景</span>
-              <select v-model="form.scene">
-                <option v-for="item in sceneOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-            <label class="admin-field">
-              <span>意图</span>
-              <select v-model="form.intent">
-                <option v-for="item in intentOptions" :key="item.value" :value="item.value">
-                  {{ item.label }}
-                </option>
-              </select>
-            </label>
-            <label class="admin-field">
-              <span>政策版本</span>
-              <input v-model.trim="form.policyVersion" placeholder="例如：v1.0" />
-            </label>
-            <label class="admin-field">
-              <span>标签</span>
-              <input v-model.trim="form.tags" placeholder="用逗号分隔，例如：7天无理由、保修、退换货" />
-            </label>
-            <label class="admin-field admin-field-full">
-              <span>正文内容</span>
-              <textarea
-                v-model="form.description"
-                rows="6"
-                placeholder="请输入知识库正文内容，检索切片和向量会基于这段内容生成"
-              ></textarea>
-            </label>
-          </div>
-        </section>
+        <div class="admin-console-body">
+          <section class="admin-console-hero">
+            <div>
+              <span class="eyebrow">Import Detail</span>
+              <h3>查看导入结果与处理状态</h3>
+              <p>这里展示原始知识内容、切片结果、错误信息和管理动作，不再要求管理员手工维护底层知识对象字段。</p>
+            </div>
+            <div class="admin-editor-badges">
+              <span class="tag">{{ selectedLibrary.fileName || sourceLabel(selectedLibrary.ingestionSourceType) }}</span>
+              <span class="tag">{{ selectedLibrary.chunkCount || 0 }} chunks</span>
+              <span class="tag">{{ statusLabel(selectedLibrary.status) }}</span>
+            </div>
+          </section>
 
-        <section class="admin-console-actions">
-          <button type="button" class="primary-action compact" @click="saveLibrary">保存目录</button>
-          <button v-if="selectedLibrary" type="button" class="ghost-mini" @click="triggerSync">触发同步接口</button>
-          <button v-if="selectedLibrary" type="button" class="ghost-mini danger" @click="deleteLibrary">删除目录</button>
-        </section>
+          <section class="admin-console-metrics">
+            <article class="admin-metric-card accent-orange">
+              <span>Total Libraries</span>
+              <strong>{{ libraries.length }}</strong>
+            </article>
+            <article class="admin-metric-card accent-green">
+              <span>Enabled</span>
+              <strong>{{ enabledCount }}</strong>
+            </article>
+            <article class="admin-metric-card accent-blue">
+              <span>Processing</span>
+              <strong>{{ processingCount }}</strong>
+            </article>
+            <article class="admin-metric-card accent-slate">
+              <span>Failed</span>
+              <strong>{{ failedCount }}</strong>
+            </article>
+          </section>
 
-        <EmptyState
-          v-if="!libraries.length && !loading"
-          title="知识库目录还没有建立"
-          desc="先创建一个知识库目录，左侧列表就会开始承载后续的对象切换。"
-          action="创建首个目录"
-          @action="createLibraryDraft"
-        />
-      </div>
+          <section class="admin-console-toolbar">
+            <button type="button" class="primary-action compact" @click="openImportPanel('TEXT')">文本导入</button>
+            <button type="button" class="ghost-mini" @click="openImportPanel('FILE')">文件上传</button>
+            <button type="button" class="ghost-mini" @click="loadPage">刷新列表</button>
+            <button type="button" class="ghost-mini" @click="retrySync" :disabled="actionLoading === 'sync'">
+              {{ actionLoading === 'sync' ? '处理中' : '重新处理' }}
+            </button>
+          </section>
+
+          <section class="admin-console-form-card">
+            <div class="admin-form-grid">
+              <div class="admin-field">
+                <span>标题</span>
+                <input :value="selectedLibrary.name" readonly />
+              </div>
+              <div class="admin-field">
+                <span>分类</span>
+                <input :value="typeLabel(selectedLibrary.type)" readonly />
+              </div>
+              <div class="admin-field">
+                <span>来源类型</span>
+                <input :value="sourceLabel(selectedLibrary.ingestionSourceType)" readonly />
+              </div>
+              <div class="admin-field">
+                <span>适用范围</span>
+                <input :value="detailScopeLabel" readonly />
+              </div>
+              <div class="admin-field">
+                <span>商户代码</span>
+                <input :value="selectedLibrary.merchantCode" readonly />
+              </div>
+              <div class="admin-field">
+                <span>Chunk 数</span>
+                <input :value="selectedLibrary.chunkCount || 0" readonly />
+              </div>
+              <div class="admin-field admin-field-full">
+                <span>原始内容预览</span>
+                <textarea :value="selectedLibrary.description" rows="10" readonly></textarea>
+              </div>
+              <div v-if="selectedLibrary.errorMessage" class="admin-field admin-field-full">
+                <span>失败原因</span>
+                <textarea :value="selectedLibrary.errorMessage" rows="4" readonly></textarea>
+              </div>
+            </div>
+          </section>
+
+          <section class="admin-console-actions">
+            <button
+              v-if="selectedLibrary.status === 'ENABLED'"
+              type="button"
+              class="ghost-mini danger"
+              @click="toggleEnabled('DISABLED')"
+              :disabled="actionLoading === 'status-DISABLED'"
+            >
+              停用记录
+            </button>
+            <button
+              v-else
+              type="button"
+              class="ghost-mini"
+              @click="toggleEnabled('ENABLED')"
+              :disabled="actionLoading === 'status-ENABLED'"
+            >
+              启用记录
+            </button>
+            <button type="button" class="ghost-mini" @click="retrySync" :disabled="actionLoading === 'sync'">重新处理</button>
+            <button type="button" class="ghost-mini danger" @click="removeLibrary" :disabled="actionLoading === 'delete'">删除记录</button>
+          </section>
+        </div>
+      </template>
+
+      <EmptyState
+        v-else
+        title="还没有知识导入记录"
+        desc="从文本导入或文件上传开始创建第一条知识记录，后端会自动完成解析、切片和向量化。"
+        action="新建文本导入"
+        @action="openImportPanel('TEXT')"
+      />
     </article>
   </section>
 </template>

@@ -151,7 +151,7 @@ onUnmounted(() => {
           v-for="item in stats"
           :key="item.label"
           type="button"
-          :class="['session-stat-card', item.tone]"
+          :class="['session-stat-card', item.tone, { active: activeFilter === item.filter }]"
           @click="activeFilter = item.filter"
         >
           <span>{{ item.label }}</span>

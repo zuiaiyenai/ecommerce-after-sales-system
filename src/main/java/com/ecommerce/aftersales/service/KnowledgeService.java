@@ -1,276 +1,273 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
-/**
- * 知识库服务
- * 负责知识库的CRUD和向量化
- */
 @Service
 @Slf4j
 public class KnowledgeService {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final JdbcTemplate pgJdbcTemplate;
-    private final RestTemplate restTemplate;
+    private final KnowledgeIngestionAsyncService asyncService;
+    private final Path uploadRoot;
 
     public KnowledgeService(
             @Qualifier("pgJdbcTemplate") JdbcTemplate pgJdbcTemplate,
-            RestTemplate restTemplate) {
+            KnowledgeIngestionAsyncService asyncService,
+            @Value("${app.upload.dir:./uploads}") String uploadDir
+    ) throws IOException {
         this.pgJdbcTemplate = pgJdbcTemplate;
-        this.restTemplate = restTemplate;
+        this.asyncService = asyncService;
+        this.uploadRoot = Paths.get(uploadDir).toAbsolutePath().normalize();
+        Files.createDirectories(this.uploadRoot.resolve("knowledge"));
     }
 
-    @Value("${python.agent.url:http://localhost:8765}")
-    private String pythonAgentUrl;
+    @Transactional(transactionManager = "pgTransactionManager")
+    public Map<String, Object> createTextImport(KnowledgeUploadDto.TextImportRequest request) {
+        String merchantCode = normalizeMerchantCode(request.getScope(), request.getMerchantCode());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("scope", normalizeScope(request.getScope()));
+        metadata.put("ingestionStatus", "PROCESSING");
+        metadata.put("ingestionSourceType", "TEXT");
+        metadata.put("errorMessage", null);
 
-    /**
-     * 上传知识库
-     */
+        Long documentId = insertKnowledgeDocument(
+                request.getKnowledgeType(),
+                generateSourceCode(request.getKnowledgeType()),
+                merchantCode,
+                request.getTitle(),
+                request.getContent(),
+                statusToDbValue(request.getStatus()),
+                metadata
+        );
+
+        asyncService.processTextImport(documentId, request.getContent());
+        return Map.of(
+                "documentId", documentId,
+                "ingestionStatus", "PROCESSING",
+                "ingestionSourceType", "TEXT"
+        );
+    }
+
+    @Transactional(transactionManager = "pgTransactionManager")
+    public Map<String, Object> createFileImport(
+            String title,
+            String knowledgeType,
+            String scope,
+            String merchantCode,
+            String status,
+            MultipartFile file
+    ) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+
+        String normalizedMerchantCode = normalizeMerchantCode(scope, merchantCode);
+        StoredKnowledgeFile storedFile = storeKnowledgeFile(file);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("scope", normalizeScope(scope));
+        metadata.put("ingestionStatus", "PROCESSING");
+        metadata.put("ingestionSourceType", "FILE");
+        metadata.put("fileName", storedFile.fileName());
+        metadata.put("fileUrl", storedFile.fileUrl());
+        metadata.put("fileStoragePath", storedFile.storagePath().toString());
+        metadata.put("errorMessage", null);
+
+        Long documentId = insertKnowledgeDocument(
+                knowledgeType,
+                generateSourceCode(knowledgeType),
+                normalizedMerchantCode,
+                title,
+                "",
+                statusToDbValue(status),
+                metadata
+        );
+
+        asyncService.processFileImport(documentId, storedFile.storagePath().toString(), storedFile.fileName());
+        return Map.of(
+                "documentId", documentId,
+                "ingestionStatus", "PROCESSING",
+                "ingestionSourceType", "FILE",
+                "fileName", storedFile.fileName()
+        );
+    }
+
     @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> uploadKnowledge(KnowledgeUploadDto.UploadRequest request) {
-        // 1. 插入文档到knowledge_document
-        String insertDocSql = """
-            INSERT INTO knowledge_document (
-                source_type, source_code, merchant_code, title, content,
-                product_category, scene, intent, policy_version,
-                tags, metadata, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, 1, NOW(), NOW())
-            RETURNING id
-            """;
-
-        Long documentId = pgJdbcTemplate.queryForObject(
-            insertDocSql,
-            Long.class,
-            request.getSourceType(),
-            request.getSourceCode(),
-            request.getMerchantCode(),
-            request.getTitle(),
-            request.getContent(),
-            request.getProductCategory(),
-            request.getScene(),
-            request.getIntent(),
-            request.getPolicyVersion(),
-            toJsonString(request.getTags()),
-            toJsonString(request.getMetadata())
-        );
-
-        log.info("Created knowledge document id={}, title={}", documentId, request.getTitle());
-
-        // 2. 切片并生成向量
-        List<String> chunks = splitContent(request.getContent(), 700);
-        log.info("Split content into {} chunks", chunks.size());
-
-        // 3. 调用Python Agent生成embeddings
-        List<Map<String, Object>> chunkRecords = generateEmbeddings(documentId, request, chunks);
-
-        // 4. 批量插入chunks
-        String insertChunkSql = """
-            INSERT INTO knowledge_chunk (
-                document_id, document_type, chunk_index, chunk_text, embedding, metadata, create_time
-            ) VALUES (?, ?, ?, ?, ?::vector, ?::jsonb, NOW())
-            """;
-
-        for (Map<String, Object> record : chunkRecords) {
-            pgJdbcTemplate.update(
-                insertChunkSql,
-                documentId,
-                request.getSourceType(),
-                record.get("chunk_index"),
-                record.get("chunk_text"),
-                record.get("embedding"), // 格式: "[0.1,0.2,...]"
-                record.get("metadata")
-            );
-        }
-
-        log.info("Inserted {} chunks for document id={}", chunkRecords.size(), documentId);
-
-        return Map.of(
-            "documentId", documentId,
-            "title", request.getTitle(),
-            "chunkCount", chunks.size()
-        );
+        KnowledgeUploadDto.TextImportRequest importRequest = new KnowledgeUploadDto.TextImportRequest();
+        importRequest.setTitle(request.getTitle());
+        importRequest.setKnowledgeType(request.getSourceType());
+        importRequest.setScope("MERCHANT");
+        importRequest.setMerchantCode(request.getMerchantCode());
+        importRequest.setStatus(request.getStatus() != null && request.getStatus() == 0 ? "DISABLED" : "ENABLED");
+        importRequest.setContent(request.getContent());
+        return createTextImport(importRequest);
     }
 
-    /**
-     * 批量上传
-     */
     @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> batchUploadKnowledge(List<KnowledgeUploadDto.UploadRequest> requests) {
-        List<Long> documentIds = new ArrayList<>();
-        int totalChunks = 0;
-
+        List<Map<String, Object>> created = new ArrayList<>();
         for (KnowledgeUploadDto.UploadRequest request : requests) {
-            try {
-                Map<String, Object> result = uploadKnowledge(request);
-                documentIds.add((Long) result.get("documentId"));
-                totalChunks += (Integer) result.get("chunkCount");
-            } catch (Exception e) {
-                log.error("Failed to upload knowledge: {}", request.getTitle(), e);
-            }
+            created.add(uploadKnowledge(request));
         }
-
         return Map.of(
-            "successCount", documentIds.size(),
-            "totalDocuments", requests.size(),
-            "totalChunks", totalChunks,
-            "documentIds", documentIds
+                "successCount", created.size(),
+                "totalDocuments", requests.size(),
+                "records", created
         );
     }
 
-    /**
-     * 查询知识库列表
-     */
     public List<KnowledgeUploadDto.KnowledgeInfo> listKnowledge(String sourceType, String merchantCode, Integer page, Integer pageSize) {
         StringBuilder sql = new StringBuilder("""
             SELECT
                 d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
                 d.product_category, d.scene, d.intent, d.policy_version,
                 d.tags, d.metadata, d.status, d.created_at, d.updated_at,
-                COUNT(c.id) as chunk_count
+                COUNT(c.id) AS chunk_count
             FROM knowledge_document d
             LEFT JOIN knowledge_chunk c ON c.document_id = d.id
             WHERE COALESCE(d.metadata ->> 'deleted', 'false') <> 'true'
             """);
 
         List<Object> params = new ArrayList<>();
-
         if (sourceType != null && !sourceType.isBlank()) {
             sql.append(" AND d.source_type = ?");
             params.add(sourceType);
         }
-
         if (merchantCode != null && !merchantCode.isBlank()) {
             sql.append(" AND d.merchant_code = ?");
             params.add(merchantCode);
         }
 
-        sql.append(" GROUP BY d.id ORDER BY d.created_at DESC");
-        sql.append(" LIMIT ? OFFSET ?");
+        sql.append(" GROUP BY d.id ORDER BY d.created_at DESC LIMIT ? OFFSET ?");
         params.add(pageSize);
         params.add((page - 1) * pageSize);
 
-        return pgJdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
-            KnowledgeUploadDto.KnowledgeInfo info = new KnowledgeUploadDto.KnowledgeInfo();
-            info.setId(rs.getLong("id"));
-            info.setSourceType(rs.getString("source_type"));
-            info.setSourceCode(rs.getString("source_code"));
-            info.setMerchantCode(rs.getString("merchant_code"));
-            info.setTitle(rs.getString("title"));
-            info.setContent(rs.getString("content"));
-            info.setProductCategory(rs.getString("product_category"));
-            info.setScene(rs.getString("scene"));
-            info.setIntent(rs.getString("intent"));
-            info.setPolicyVersion(rs.getString("policy_version"));
-            info.setTags(parseJsonToStringList(rs.getString("tags")));
-            info.setMetadata(parseJsonToMap(rs.getString("metadata")));
-            info.setStatus(rs.getInt("status"));
-            info.setCreatedAt(rs.getTimestamp("created_at").toLocalDateTime());
-            info.setUpdatedAt(rs.getTimestamp("updated_at").toLocalDateTime());
-            info.setChunkCount(rs.getInt("chunk_count"));
-            return info;
-        });
+        return pgJdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> mapKnowledgeInfo(
+                rs.getLong("id"),
+                rs.getString("source_type"),
+                rs.getString("source_code"),
+                rs.getString("merchant_code"),
+                rs.getString("title"),
+                rs.getString("content"),
+                rs.getString("product_category"),
+                rs.getString("scene"),
+                rs.getString("intent"),
+                rs.getString("policy_version"),
+                rs.getString("tags"),
+                rs.getString("metadata"),
+                rs.getInt("status"),
+                rs.getTimestamp("created_at"),
+                rs.getTimestamp("updated_at"),
+                rs.getInt("chunk_count")
+        ));
     }
 
     public KnowledgeUploadDto.KnowledgeInfo getKnowledgeById(Long id) {
-        String sql = """
-            SELECT
-                d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
-                d.product_category, d.scene, d.intent, d.policy_version,
-                d.tags, d.metadata, d.status, d.created_at, d.updated_at,
-                COUNT(c.id) as chunk_count
-            FROM knowledge_document d
-            LEFT JOIN knowledge_chunk c ON c.document_id = d.id
-            WHERE d.id = ? AND COALESCE(d.metadata ->> 'deleted', 'false') <> 'true'
-            GROUP BY d.id
-            LIMIT 1
-            """;
-        List<KnowledgeUploadDto.KnowledgeInfo> result = pgJdbcTemplate.query(sql, new Object[]{id}, (rs, rowNum) -> {
-            KnowledgeUploadDto.KnowledgeInfo info = new KnowledgeUploadDto.KnowledgeInfo();
-            info.setId(rs.getLong("id"));
-            info.setSourceType(rs.getString("source_type"));
-            info.setSourceCode(rs.getString("source_code"));
-            info.setMerchantCode(rs.getString("merchant_code"));
-            info.setTitle(rs.getString("title"));
-            info.setContent(rs.getString("content"));
-            info.setProductCategory(rs.getString("product_category"));
-            info.setScene(rs.getString("scene"));
-            info.setIntent(rs.getString("intent"));
-            info.setPolicyVersion(rs.getString("policy_version"));
-            info.setTags(parseJsonToStringList(rs.getString("tags")));
-            info.setMetadata(parseJsonToMap(rs.getString("metadata")));
-            info.setStatus(rs.getInt("status"));
-            info.setCreatedAt(rs.getTimestamp("created_at").toLocalDateTime());
-            info.setUpdatedAt(rs.getTimestamp("updated_at").toLocalDateTime());
-            info.setChunkCount(rs.getInt("chunk_count"));
-            return info;
-        });
+        List<KnowledgeUploadDto.KnowledgeInfo> result = pgJdbcTemplate.query(
+                """
+                SELECT
+                    d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
+                    d.product_category, d.scene, d.intent, d.policy_version,
+                    d.tags, d.metadata, d.status, d.created_at, d.updated_at,
+                    COUNT(c.id) AS chunk_count
+                FROM knowledge_document d
+                LEFT JOIN knowledge_chunk c ON c.document_id = d.id
+                WHERE d.id = ? AND COALESCE(d.metadata ->> 'deleted', 'false') <> 'true'
+                GROUP BY d.id
+                LIMIT 1
+                """,
+                new Object[]{id},
+                (rs, rowNum) -> mapKnowledgeInfo(
+                        rs.getLong("id"),
+                        rs.getString("source_type"),
+                        rs.getString("source_code"),
+                        rs.getString("merchant_code"),
+                        rs.getString("title"),
+                        rs.getString("content"),
+                        rs.getString("product_category"),
+                        rs.getString("scene"),
+                        rs.getString("intent"),
+                        rs.getString("policy_version"),
+                        rs.getString("tags"),
+                        rs.getString("metadata"),
+                        rs.getInt("status"),
+                        rs.getTimestamp("created_at"),
+                        rs.getTimestamp("updated_at"),
+                        rs.getInt("chunk_count")
+                )
+        );
         return result.isEmpty() ? null : result.get(0);
     }
 
-    /**
-     * 更新知识库
-     */
     @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> updateKnowledge(Long id, KnowledgeUploadDto.UpdateRequest request) {
-        // 1. 更新文档
-        String updateSql = """
-            UPDATE knowledge_document
-            SET title = COALESCE(?, title),
-                content = COALESCE(?, content),
-                product_category = COALESCE(?, product_category),
-                scene = COALESCE(?, scene),
-                intent = COALESCE(?, intent),
-                policy_version = COALESCE(?, policy_version),
-                tags = COALESCE(?::jsonb, tags),
-                metadata = COALESCE(?::jsonb, metadata),
-                status = COALESCE(?, status),
-                updated_at = NOW()
-            WHERE id = ?
-            """;
+        KnowledgeUploadDto.KnowledgeInfo current = getKnowledgeById(id);
+        if (current == null) {
+            throw new IllegalArgumentException("Knowledge document not found: " + id);
+        }
 
+        Map<String, Object> metadata = new LinkedHashMap<>(current.getMetadata() == null ? Map.of() : current.getMetadata());
         pgJdbcTemplate.update(
-            updateSql,
-            request.getTitle(),
-            request.getContent(),
-            request.getProductCategory(),
-            request.getScene(),
-            request.getIntent(),
-            request.getPolicyVersion(),
-            toJsonString(request.getTags()),
-            toJsonString(request.getMetadata()),
-            request.getStatus(),
-            id
+                """
+                UPDATE knowledge_document
+                SET title = COALESCE(?, title),
+                    merchant_code = COALESCE(?, merchant_code),
+                    status = COALESCE(?, status),
+                    metadata = ?::jsonb,
+                    updated_at = NOW()
+                WHERE id = ?
+                """,
+                request.getTitle(),
+                request.getMerchantCode(),
+                request.getStatus(),
+                toJson(metadata),
+                id
         );
 
-        // 2. 如果content更新了，需要重新生成向量
         if (request.getContent() != null) {
-            // 删除旧的chunks
-            pgJdbcTemplate.update("DELETE FROM knowledge_chunk WHERE document_id = ?", id);
-
-            // 重新生成（TODO: 实现）
-            log.info("Content updated for document id={}, need to regenerate embeddings", id);
+            metadata.put("ingestionStatus", "PROCESSING");
+            metadata.put("ingestionSourceType", "TEXT");
+            metadata.put("errorMessage", null);
+            pgJdbcTemplate.update(
+                    "UPDATE knowledge_document SET content = ?, metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
+                    request.getContent(),
+                    toJson(metadata),
+                    id
+            );
+            asyncService.processTextImport(id, request.getContent());
         }
 
         return Map.of("documentId", id, "updated", true);
     }
 
-    /**
-     * 删除知识库
-     */
     @Transactional(transactionManager = "pgTransactionManager")
     public void deleteKnowledge(Long id) {
-        // 软删除：删除态单独进入 metadata.deleted，避免和“停用(status=0)”混淆。
         pgJdbcTemplate.update(
                 """
                 UPDATE knowledge_document
@@ -280,16 +277,19 @@ public class KnowledgeService {
                 """,
                 id
         );
-        log.info("Soft deleted knowledge document id={}", id);
     }
 
-    /**
-     * 重建所有向量索引
-     */
     public Map<String, Object> reindexAll() {
-        // TODO: 调用Python Agent的reindex接口
-        log.info("Reindex all knowledge documents");
-        return Map.of("message", "Reindex started");
+        List<Long> ids = pgJdbcTemplate.queryForList(
+                """
+                SELECT id
+                FROM knowledge_document
+                WHERE COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                """,
+                Long.class
+        );
+        ids.forEach(asyncService::reprocessDocument);
+        return Map.of("count", ids.size(), "message", "Reindex started");
     }
 
     public Map<String, Object> syncKnowledge(Long id) {
@@ -297,144 +297,182 @@ public class KnowledgeService {
         if (info == null) {
             throw new IllegalArgumentException("Knowledge document not found: " + id);
         }
-        log.info("Sync knowledge document id={}, code={}", id, info.getSourceCode());
-        return Map.of(
-                "documentId", id,
-                "message", "Knowledge sync started",
-                "sourceCode", info.getSourceCode()
+
+        Map<String, Object> metadata = new LinkedHashMap<>(info.getMetadata() == null ? Map.of() : info.getMetadata());
+        metadata.put("ingestionStatus", "PROCESSING");
+        metadata.put("errorMessage", null);
+        pgJdbcTemplate.update(
+                "UPDATE knowledge_document SET metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
+                toJson(metadata),
+                id
         );
+        asyncService.reprocessDocument(id);
+        return Map.of("documentId", id, "message", "Knowledge sync started");
     }
 
-    /**
-     * 测试知识库检索
-     */
     public List<Map<String, Object>> testRetrieval(String query, String merchantCode, Integer topK) {
-        // TODO: 调用Python Agent的检索接口
         log.info("Test retrieval: query={}, merchantCode={}, topK={}", query, merchantCode, topK);
         return List.of();
     }
 
-    /**
-     * 切分文本为chunks
-     */
-    private List<String> splitContent(String content, int maxChunkSize) {
-        if (content == null || content.isBlank()) {
-            return List.of();
-        }
-
-        String normalized = Arrays.stream(content.split("\n"))
-            .map(String::strip)
-            .filter(line -> !line.isEmpty())
-            .collect(Collectors.joining("\n"));
-
-        if (normalized.length() <= maxChunkSize) {
-            return List.of(normalized);
-        }
-
-        List<String> chunks = new ArrayList<>();
-        int start = 0;
-        int overlapSize = (int) (maxChunkSize * 0.2); // 20%重叠
-
-        while (start < normalized.length()) {
-            int end = Math.min(start + maxChunkSize, normalized.length());
-            chunks.add(normalized.substring(start, end));
-            start += maxChunkSize - overlapSize;
-        }
-
-        return chunks;
-    }
-
-    /**
-     * 调用Python Agent生成embeddings
-     */
-    private List<Map<String, Object>> generateEmbeddings(
-        Long documentId,
-        KnowledgeUploadDto.UploadRequest request,
-        List<String> chunks
+    private Long insertKnowledgeDocument(
+            String sourceType,
+            String sourceCode,
+            String merchantCode,
+            String title,
+            String content,
+            Integer status,
+            Map<String, Object> metadata
     ) {
-        try {
-            // 调用Python Agent的embedding接口
-            Map<String, Object> requestBody = Map.of(
-                "chunks", chunks,
-                "document_id", documentId,
-                "document_type", request.getSourceType()
-            );
-
-            String url = pythonAgentUrl + "/api/embeddings";
-            Map<String, Object> response = restTemplate.postForObject(url, requestBody, Map.class);
-
-            if (response != null && response.containsKey("embeddings")) {
-                List<List<Double>> embeddings = (List<List<Double>>) response.get("embeddings");
-
-                List<Map<String, Object>> records = new ArrayList<>();
-                for (int i = 0; i < chunks.size(); i++) {
-                    Map<String, Object> metadata = new HashMap<>();
-                    metadata.put("title", request.getTitle());
-                    metadata.put("source_type", request.getSourceType());
-                    metadata.put("merchant_code", request.getMerchantCode());
-                    metadata.put("product_category", request.getProductCategory());
-                    metadata.put("scene", request.getScene());
-                    metadata.put("intent", request.getIntent());
-
-                    String embeddingVector = embeddings.get(i).stream()
-                        .map(String::valueOf)
-                        .collect(Collectors.joining(",", "[", "]"));
-
-                    records.add(Map.of(
-                        "chunk_index", i,
-                        "chunk_text", chunks.get(i),
-                        "embedding", embeddingVector,
-                        "metadata", toJsonString(metadata)
-                    ));
-                }
-
-                return records;
-            }
-        } catch (Exception e) {
-            log.error("Failed to generate embeddings via Python Agent", e);
-        }
-
-        // 降级：不生成向量，只返回待处理记录。调用方应避免写入空向量。
-        List<Map<String, Object>> fallbackRecords = new ArrayList<>();
-        for (int i = 0; i < chunks.size(); i++) {
-            Map<String, Object> record = new HashMap<>();
-            record.put("chunk_index", i);
-            record.put("chunk_text", chunks.get(i));
-            record.put("embedding", "[]");
-            record.put("metadata", "{}");
-            fallbackRecords.add(record);
-        }
-        return fallbackRecords;
+        return pgJdbcTemplate.queryForObject(
+                """
+                INSERT INTO knowledge_document (
+                    source_type, source_code, merchant_code, title, content,
+                    metadata, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, NOW(), NOW())
+                RETURNING id
+                """,
+                Long.class,
+                normalizeKnowledgeType(sourceType),
+                sourceCode,
+                merchantCode,
+                title,
+                content == null ? "" : content,
+                toJson(metadata),
+                status
+        );
     }
 
-    private String toJsonString(Object obj) {
-        if (obj == null) return null;
+    private KnowledgeUploadDto.KnowledgeInfo mapKnowledgeInfo(
+            Long id,
+            String sourceType,
+            String sourceCode,
+            String merchantCode,
+            String title,
+            String content,
+            String productCategory,
+            String scene,
+            String intent,
+            String policyVersion,
+            String tagsJson,
+            String metadataJson,
+            Integer status,
+            Timestamp createdAt,
+            Timestamp updatedAt,
+            Integer chunkCount
+    ) {
+        Map<String, Object> metadata = parseJsonToMap(metadataJson);
+        KnowledgeUploadDto.KnowledgeInfo info = new KnowledgeUploadDto.KnowledgeInfo();
+        info.setId(id);
+        info.setSourceType(sourceType);
+        info.setSourceCode(sourceCode);
+        info.setMerchantCode(merchantCode);
+        info.setTitle(title);
+        info.setContent(content);
+        info.setProductCategory(productCategory);
+        info.setScene(scene);
+        info.setIntent(intent);
+        info.setPolicyVersion(policyVersion);
+        info.setTags(parseJsonToStringList(tagsJson));
+        info.setMetadata(metadata);
+        info.setStatus(status);
+        info.setCreatedAt(createdAt == null ? null : createdAt.toLocalDateTime());
+        info.setUpdatedAt(updatedAt == null ? null : updatedAt.toLocalDateTime());
+        info.setChunkCount(chunkCount);
+        info.setIngestionStatus(stringMetadata(metadata, "ingestionStatus", "SUCCESS"));
+        info.setIngestionSourceType(stringMetadata(metadata, "ingestionSourceType", "TEXT"));
+        info.setFileName(stringMetadata(metadata, "fileName", null));
+        info.setFileUrl(stringMetadata(metadata, "fileUrl", null));
+        info.setErrorMessage(stringMetadata(metadata, "errorMessage", null));
+        info.setScope(stringMetadata(metadata, "scope", "MERCHANT"));
+        return info;
+    }
+
+    private StoredKnowledgeFile storeKnowledgeFile(MultipartFile file) {
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(obj);
-        } catch (Exception e) {
+            String dateDir = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy/MM/dd"));
+            Path targetDir = uploadRoot.resolve("knowledge").resolve(dateDir);
+            Files.createDirectories(targetDir);
+
+            String originalFilename = file.getOriginalFilename() == null ? "knowledge.txt" : file.getOriginalFilename();
+            String extension = "";
+            int dotIndex = originalFilename.lastIndexOf('.');
+            if (dotIndex >= 0) {
+                extension = originalFilename.substring(dotIndex);
+            }
+            String storedFilename = UUID.randomUUID() + extension;
+            Path targetPath = targetDir.resolve(storedFilename);
+            file.transferTo(targetPath.toFile());
+
+            String fileUrl = "/uploads/knowledge/" + dateDir + "/" + storedFilename;
+            return new StoredKnowledgeFile(originalFilename, fileUrl, targetPath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to store upload file", e);
+        }
+    }
+
+    private String normalizeKnowledgeType(String knowledgeType) {
+        return (knowledgeType == null || knowledgeType.isBlank()) ? "faq" : knowledgeType;
+    }
+
+    private String generateSourceCode(String knowledgeType) {
+        return normalizeKnowledgeType(knowledgeType) + "_" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private String normalizeScope(String scope) {
+        return (scope == null || scope.isBlank()) ? "MERCHANT" : scope.toUpperCase();
+    }
+
+    private String normalizeMerchantCode(String scope, String merchantCode) {
+        if ("GLOBAL".equalsIgnoreCase(scope)) {
+            return "GLOBAL";
+        }
+        return (merchantCode == null || merchantCode.isBlank()) ? "MERCHANT_DEMO" : merchantCode;
+    }
+
+    private Integer statusToDbValue(String status) {
+        return "DISABLED".equalsIgnoreCase(status) ? 0 : 1;
+    }
+
+    private String toJson(Object obj) {
+        if (obj == null) {
             return "{}";
         }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(obj);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to serialize json", e);
+        }
     }
 
-    @SuppressWarnings("unchecked")
     private List<String> parseJsonToStringList(String json) {
-        if (json == null || json.isBlank()) return null;
+        if (json == null || json.isBlank()) {
+            return null;
+        }
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, List.class);
+            return OBJECT_MAPPER.readValue(json, new TypeReference<>() {});
         } catch (Exception e) {
             log.warn("Failed to parse tags json: {}", json, e);
             return null;
         }
     }
 
-    @SuppressWarnings("unchecked")
     private Map<String, Object> parseJsonToMap(String json) {
-        if (json == null || json.isBlank()) return null;
+        if (json == null || json.isBlank()) {
+            return new LinkedHashMap<>();
+        }
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, Map.class);
+            return OBJECT_MAPPER.readValue(json, new TypeReference<>() {});
         } catch (Exception e) {
             log.warn("Failed to parse metadata json: {}", json, e);
-            return null;
+            return new LinkedHashMap<>();
         }
     }
+
+    private String stringMetadata(Map<String, Object> metadata, String key, String defaultValue) {
+        Object value = metadata.get(key);
+        return value == null ? defaultValue : String.valueOf(value);
+    }
+
+    private record StoredKnowledgeFile(String fileName, String fileUrl, Path storagePath) {}
 }

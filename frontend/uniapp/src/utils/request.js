@@ -46,6 +46,50 @@ export function request(options) {
   })
 }
 
+export function uploadFile(options) {
+  const token = getToken()
+  return new Promise((resolve, reject) => {
+    uni.uploadFile({
+      url: `${BASE_URL}${options.url}`,
+      filePath: options.filePath,
+      name: options.name || 'file',
+      formData: options.formData || {},
+      header: {
+        ...(token ? { 'Authorization': 'Bearer ' + token } : {}),
+        ...(options.header || {})
+      },
+      success: (res) => {
+        let body = res.data || {}
+        if (typeof body === 'string') {
+          try {
+            body = JSON.parse(body)
+          } catch (e) {
+            reject(new Error('上传响应格式异常'))
+            return
+          }
+        }
+        if (body.code === 401 || res.statusCode === 401) {
+          uni.removeStorageSync('token')
+          uni.removeStorageSync('userInfo')
+          uni.reLaunch({ url: '/pages/auth/auth' })
+          reject(new Error('登录已过期，请重新登录'))
+          return
+        }
+        if (body.code !== 200) {
+          console.error('文件上传失败', options.url, body)
+          reject(new Error(normalizeErrorMessage(body)))
+          return
+        }
+        resolve(body.data)
+      },
+      fail: (err) => {
+        console.error('文件上传请求失败', options.url, err)
+        reject(new Error('后端服务未连接'))
+      }
+    })
+  })
+}
+
 function normalizeErrorMessage(body) {
   const message = body.message || ''
   if (body.code === 500 || message.includes('###') || message.length > 40) {

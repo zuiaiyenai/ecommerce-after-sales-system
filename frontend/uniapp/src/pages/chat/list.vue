@@ -1,13 +1,5 @@
 <template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">咨询会话</text>
-      <view class="nav-right"></view>
-    </view>
-
     <view class="list-head">
       <text class="head-title">最近咨询</text>
       <button class="new-btn" @tap="startNewChat">新咨询</button>
@@ -57,10 +49,6 @@ async function loadSessions() {
   } finally {
     loading.value = false
   }
-}
-
-function goBack() {
-  uni.navigateBack()
 }
 
 function startNewChat() {
@@ -119,39 +107,6 @@ onShow(loadSessions)
   min-height: 100vh;
   padding-bottom: 40rpx;
   background: #f0eeea;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-  border-bottom: 1rpx solid rgba(0, 0, 0, 0.06);
-}
-
-.back-btn,
-.nav-right {
-  width: 64rpx;
-  height: 64rpx;
-}
-
-.back-btn {
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
 }
 
 .list-head {

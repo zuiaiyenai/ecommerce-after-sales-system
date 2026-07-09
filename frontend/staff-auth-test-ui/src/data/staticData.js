@@ -141,8 +141,3 @@ export const orderRecords = [
   }
 ];
 
-export const noticeRules = [
-  { id: 1, level: '高', title: '退款申请即将超时', desc: 'TK20260625018 距离 SLA 截止还有 15 分钟', target: '/tickets/201' },
-  { id: 2, level: '中', title: '会话情绪升级', desc: 'CS20260625007 出现连续负向表达', target: '/sessions/101' },
-  { id: 3, level: '低', title: '评价复核待处理', desc: '差评申诉 RV20260625003 需要客服确认', target: '/notices' }
-];

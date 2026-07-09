@@ -1,20 +1,12 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">编辑资料</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 头像 -->
     <view class="card">
       <view class="avatar-section" @tap="changeAvatar">
         <text class="avatar-label">头像</text>
         <view class="avatar-wrapper">
-          <view class="avatar">{{ initial }}</view>
+          <image v-if="avatarDisplayUrl" class="avatar avatar-image" :src="avatarDisplayUrl" mode="aspectFill" />
+          <view v-else class="avatar">{{ initial }}</view>
           <text class="arrow">›</text>
         </view>
       </view>
@@ -44,7 +36,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { reactive, computed } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request, uploadFile } from '../../utils/request'
 
 const form = reactive({
   nickname: '',
@@ -53,21 +47,43 @@ const form = reactive({
   avatarUrl: ''
 })
 
+const avatarDisplayUrl = computed(() => normalizeImageUrl(form.avatarUrl))
+
 const initial = computed(() => {
   const name = form.nickname || '用户'
   return name.slice(0, 1)
 })
 
-onMounted(() => {
-  const userInfo = uni.getStorageSync('userInfo') || {}
+onLoad(() => {
+  loadProfile()
+})
+
+async function loadProfile() {
+  const cached = uni.getStorageSync('userInfo') || {}
+  fillForm(cached)
+  try {
+    const profile = await request({ url: '/miniapp/user/profile' })
+    persistUserInfo(profile)
+    fillForm(profile)
+  } catch (e) {
+    console.error('加载用户资料失败', e)
+  }
+}
+
+function fillForm(userInfo) {
   form.nickname = userInfo.nickname || ''
   form.phone = userInfo.phone || ''
   form.userAccount = userInfo.userAccount || ''
   form.avatarUrl = userInfo.avatarUrl || ''
-})
+}
 
-function goBack() {
-  uni.navigateBack()
+function persistUserInfo(profile) {
+  const userInfo = {
+    ...(uni.getStorageSync('userInfo') || {}),
+    ...(profile || {})
+  }
+  uni.setStorageSync('userInfo', userInfo)
+  return userInfo
 }
 
 function maskPhone(phone) {
@@ -80,28 +96,57 @@ function changeAvatar() {
     count: 1,
     sizeType: ['compressed'],
     sourceType: ['album', 'camera'],
-    success: (res) => {
-      form.avatarUrl = res.tempFilePaths[0]
-      uni.showToast({ title: '头像已更新', icon: 'success' })
+    success: async (res) => {
+      const filePath = res.tempFilePaths[0]
+      const previousAvatarUrl = form.avatarUrl
+      form.avatarUrl = filePath
+      uni.showLoading({ title: '上传中' })
+      try {
+        const result = await uploadFile({
+          url: '/miniapp/user/avatar',
+          filePath,
+          name: 'file'
+        })
+        if (!result || !result.url) {
+          throw new Error('头像上传失败')
+        }
+        form.avatarUrl = result.url
+        persistUserInfo({ avatarUrl: result.url })
+        uni.hideLoading()
+        uni.showToast({ title: '头像已更新', icon: 'success' })
+      } catch (e) {
+        form.avatarUrl = previousAvatarUrl
+        uni.hideLoading()
+        uni.showToast({ title: e.message || '头像上传失败', icon: 'none' })
+      }
     }
   })
 }
 
-function saveProfile() {
+async function saveProfile() {
   if (!form.nickname.trim()) {
     uni.showToast({ title: '请输入昵称', icon: 'none' })
     return
   }
 
-  const userInfo = uni.getStorageSync('userInfo') || {}
-  userInfo.nickname = form.nickname
-  userInfo.avatarUrl = form.avatarUrl
-  uni.setStorageSync('userInfo', userInfo)
-
-  uni.showToast({ title: '保存成功', icon: 'success' })
-  setTimeout(() => {
-    uni.navigateBack()
-  }, 1500)
+  try {
+    const profile = await request({
+      url: '/miniapp/user/profile',
+      method: 'PUT',
+      data: {
+        nickname: form.nickname.trim(),
+        avatarUrl: form.avatarUrl
+      }
+    })
+    persistUserInfo(profile)
+    fillForm(profile)
+    uni.showToast({ title: '保存成功', icon: 'success' })
+    setTimeout(() => {
+      uni.navigateBack()
+    }, 800)
+  } catch (e) {
+    uni.showToast({ title: e.message || '保存失败', icon: 'none' })
+  }
 }
 </script>
 
@@ -110,38 +155,6 @@ function saveProfile() {
   min-height: 100vh;
   padding: 24rpx 28rpx;
   background: #f0eeea;
-}
-
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
 }
 
 /* 卡片 */
@@ -183,6 +196,12 @@ function saveProfile() {
   color: #ffffff;
   font-weight: 900;
   font-size: 32rpx;
+}
+
+.avatar-image {
+  display: block;
+  line-height: 1;
+  background: #f5f3ef;
 }
 
 .arrow {
