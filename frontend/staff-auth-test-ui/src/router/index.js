@@ -13,7 +13,6 @@ import TicketsView from '../views/TicketsView.vue';
 import TicketDetailView from '../views/TicketDetailView.vue';
 import OrdersView from '../views/OrdersView.vue';
 import OrderDetailView from '../views/OrderDetailView.vue';
-import NoticesView from '../views/NoticesView.vue';
 import ProfileView from '../views/ProfileView.vue';
 import ProductsView from '../views/ProductsView.vue';
 import ReviewsView from '../views/ReviewsView.vue';
@@ -56,7 +55,6 @@ const routes = [
       { path: 'orders/:orderId', name: 'orderDetail', component: OrderDetailView, meta: { title: '订单详情' } },
       { path: 'products', name: 'products', component: ProductsView, meta: { title: '商品管理' } },
       { path: 'reviews', name: 'reviews', component: ReviewsView, meta: { title: '用户评价' } },
-      { path: 'notices', name: 'notices', component: NoticesView, meta: { title: '消息通知' } },
       { path: 'profile', name: 'profile', component: ProfileView, meta: { title: '个人中心' } }
     ]
   }

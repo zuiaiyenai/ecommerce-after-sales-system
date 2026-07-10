@@ -104,7 +104,7 @@ onMounted(loadPage);
             v-for="item in todos"
             :key="item.id"
             class="todo-line"
-            :to="item.target || '/notices'"
+            :to="item.target || '/tickets'"
           >
             <span class="todo-dot" aria-hidden="true"></span>
             <span :class="['priority-tag', item.priorityTone || 'normal']">{{ item.priority || '普通' }}</span>

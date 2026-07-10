@@ -53,6 +53,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     private static final int STATUS_PENDING_APPROVAL = 2;
     private static final Duration EVALUATION_TIMEOUT = Duration.ofMinutes(30);
     private static final Duration PERFORMANCE_TARGET_HANDLE_TIME = Duration.ofMinutes(8);
+    private static final Duration PERFORMANCE_TARGET_RESPONSE_TIME = Duration.ofMinutes(5);
     private static final int PERFORMANCE_WINDOW_DAYS = 7;
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String EVALUATION_INVITE_MESSAGE = "售后处理已完成，请对本次客服服务进行评价。";
@@ -275,23 +276,23 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                         .orElse(false))
                 .toList();
 
-        // 平均处理时长：仍来自 chat_session（服务过程指标）
-        MetricSnapshot handleTimeMetric = buildHandleTimeMetric(recentSessions);
+        // 平均响应时长：基于 chat_message 中 USER→SERVICE 的时间差
+        MetricSnapshot avgResponseTimeMetric = buildAvgResponseTimeMetric(recentSessions);
         // 满意度/好评率：切换到 review_info（真实评价表）
         MetricSnapshot satisfactionMetric = withFallback(buildReviewSatisfactionMetric(), buildSatisfactionMetric(recentSessions));
         MetricSnapshot goodRateMetric = withFallback(buildReviewGoodRateMetric(), buildGoodRateMetric(recentSessions));
-        // 综合分：满意度 40% + 好评率 40% + 处理时长 20%
-        int serviceScore = calculateWeightedServiceScore(handleTimeMetric, satisfactionMetric, goodRateMetric);
+        // 综合分：满意度 40% + 好评率 40% + 响应时长 20%
+        int serviceScore = calculateWeightedServiceScore(avgResponseTimeMetric, satisfactionMetric, goodRateMetric);
 
         DashboardPerformance performance = new DashboardPerformance();
         performance.setServiceScore(serviceScore);
         performance.setScoreStatus(resolveScoreStatus(serviceScore));
         performance.setTrend(buildReviewBasedTrend(startDate, today));
         performance.setTrendSummary(buildTrendSummary(performance.getTrend()));
-        performance.setTags(buildPerformanceTags(serviceScore, handleTimeMetric, satisfactionMetric, goodRateMetric));
+        performance.setTags(buildPerformanceTags(serviceScore, avgResponseTimeMetric, satisfactionMetric, goodRateMetric));
         performance.setMetrics(List.of(
-                performanceMetric("平均处理时长", handleTimeMetric.value(), "目标 ≤ 8分钟",
-                        handleTimeMetric.currentPercent(), 100, handleTimeMetric.sampleSize(), true),
+                performanceMetric("平均响应时长", avgResponseTimeMetric.value(), "目标 ≤ 5分钟",
+                        avgResponseTimeMetric.currentPercent(), 100, avgResponseTimeMetric.sampleSize(), true),
                 performanceMetric("用户满意度", satisfactionMetric.value(), "目标 ≥ 4.5 / 5（基于真实评价）",
                         satisfactionMetric.currentPercent(), 90, satisfactionMetric.sampleSize(), false),
                 performanceMetric("好评率", goodRateMetric.value(), "目标 ≥ 90%（基于真实评价）",
@@ -1502,18 +1503,49 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return metric;
     }
 
-    private MetricSnapshot buildHandleTimeMetric(List<ChatSession> sessions) {
-        List<Long> durations = sessions.stream()
-                .map(this::resolvedDurationSeconds)
-                .flatMap(Optional::stream)
-                .toList();
-        if (durations.isEmpty()) {
+    /**
+     * 平均响应时长：基于 chat_message 中 USER 消息到紧接其后第一条 SERVICE/SYSTEM 回复的时间差。
+     */
+    private MetricSnapshot buildAvgResponseTimeMetric(List<ChatSession> sessions) {
+        List<Long> responseSeconds = new ArrayList<>();
+        for (ChatSession session : sessions) {
+            responseSeconds.addAll(sessionResponseDurations(session));
+        }
+        if (responseSeconds.isEmpty()) {
             return new MetricSnapshot("--", 0, 0, true);
         }
-        long averageSeconds = Math.round(durations.stream().mapToLong(Long::longValue).average().orElse(0));
-        long targetSeconds = PERFORMANCE_TARGET_HANDLE_TIME.toSeconds();
+        long averageSeconds = Math.round(responseSeconds.stream().mapToLong(Long::longValue).average().orElse(0));
+        long targetSeconds = PERFORMANCE_TARGET_RESPONSE_TIME.toSeconds();
         int currentPercent = clampPercent((int) Math.round(targetSeconds * 100D / Math.max(averageSeconds, 1L)));
-        return new MetricSnapshot(formatDurationCn(averageSeconds), currentPercent, durations.size(), true);
+        return new MetricSnapshot(formatDurationCn(averageSeconds), currentPercent, responseSeconds.size(), true);
+    }
+
+    /**
+     * 计算单个会话中 USER→SERVICE 的响应时长列表（秒）。
+     */
+    private List<Long> sessionResponseDurations(ChatSession session) {
+        List<ChatMessage> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, session.getId())
+                .orderByAsc(ChatMessage::getCreateTime));
+        List<Long> durations = new ArrayList<>();
+        for (int i = 0; i < messages.size(); i++) {
+            ChatMessage current = messages.get(i);
+            if (!"USER".equalsIgnoreCase(current.getRole())) {
+                continue;
+            }
+            // 从当前 USER 消息往后找第一条非 USER 消息
+            for (int j = i + 1; j < messages.size(); j++) {
+                ChatMessage next = messages.get(j);
+                if (!"USER".equalsIgnoreCase(next.getRole()) && next.getCreateTime() != null) {
+                    long diffSeconds = Duration.between(current.getCreateTime(), next.getCreateTime()).getSeconds();
+                    if (diffSeconds >= 0) {
+                        durations.add(diffSeconds);
+                    }
+                    break;
+                }
+            }
+        }
+        return durations;
     }
 
     private MetricSnapshot buildSatisfactionMetric(List<ChatSession> sessions) {
@@ -1672,7 +1704,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                 dayReviews = synthesizeReviewInfos(daySessions);
             }
 
-            MetricSnapshot handleTime = buildHandleTimeMetric(daySessions);
+            MetricSnapshot handleTime = buildAvgResponseTimeMetric(daySessions);
             int dayScore;
 
             if (dayReviews.isEmpty()) {
@@ -1775,7 +1807,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         reviewInfoMapper.insert(review);
     }
 
-    private List<String> buildPerformanceTags(int serviceScore, MetricSnapshot handleTimeMetric,
+    private List<String> buildPerformanceTags(int serviceScore, MetricSnapshot avgResponseTimeMetric,
                                               MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
         List<String> tags = new ArrayList<>();
         if (serviceScore >= 90) {
@@ -1785,7 +1817,7 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         } else {
             tags.add("需关注");
         }
-        if (handleTimeMetric.hasData() && handleTimeMetric.currentPercent() >= 100
+        if (avgResponseTimeMetric.hasData() && avgResponseTimeMetric.currentPercent() >= 100
                 && satisfactionMetric.hasData() && satisfactionMetric.currentPercent() >= 90
                 && goodRateMetric.hasData() && goodRateMetric.currentPercent() >= 90) {
             tags.add("达成目标");
@@ -1811,9 +1843,9 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     }
 
     /**
-     * 新口径的综合分：满意度 40% + 好评率 40% + 处理时长 20%
+     * 新口径的综合分：满意度 40% + 好评率 40% + 响应时长 20%
      */
-    private int calculateWeightedServiceScore(MetricSnapshot handleTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
+    private int calculateWeightedServiceScore(MetricSnapshot avgResponseTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
         double weightedSum = 0;
         int totalWeight = 0;
 
@@ -1825,8 +1857,8 @@ public class MerchantCsServiceImpl implements MerchantCsService {
             weightedSum += goodRateMetric.currentPercent() * 0.4;
             totalWeight += 4;
         }
-        if (handleTimeMetric.hasData()) {
-            weightedSum += handleTimeMetric.currentPercent() * 0.2;
+        if (avgResponseTimeMetric.hasData()) {
+            weightedSum += avgResponseTimeMetric.currentPercent() * 0.2;
             totalWeight += 2;
         }
 
@@ -1839,10 +1871,10 @@ public class MerchantCsServiceImpl implements MerchantCsService {
     /**
      * 旧口径（保留以防其他地方引用）：简单平均。
      */
-    private int calculateServiceScore(MetricSnapshot handleTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
+    private int calculateServiceScore(MetricSnapshot avgResponseTimeMetric, MetricSnapshot satisfactionMetric, MetricSnapshot goodRateMetric) {
         List<Integer> scores = new ArrayList<>();
-        if (handleTimeMetric.hasData()) {
-            scores.add(handleTimeMetric.currentPercent());
+        if (avgResponseTimeMetric.hasData()) {
+            scores.add(avgResponseTimeMetric.currentPercent());
         }
         if (satisfactionMetric.hasData()) {
             scores.add(satisfactionMetric.currentPercent());
@@ -1869,18 +1901,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
         return "暂无服务表现数据";
     }
 
-    private Optional<Long> resolvedDurationSeconds(ChatSession session) {
-        if (session == null || session.getCreateTime() == null) {
-            return Optional.empty();
-        }
-        LocalDateTime endTime = Optional.ofNullable(session.getCloseTime())
-                .orElseGet(() -> isSessionCompleted(session) ? session.getUpdateTime() : null);
-        if (endTime == null || endTime.isBefore(session.getCreateTime())) {
-            return Optional.empty();
-        }
-        return Optional.of(Duration.between(session.getCreateTime(), endTime).getSeconds());
-    }
-
     private Optional<LocalDate> sessionActivityDate(ChatSession session) {
         if (session == null) {
             return Optional.empty();
@@ -1889,15 +1909,6 @@ public class MerchantCsServiceImpl implements MerchantCsService {
                 .or(() -> Optional.ofNullable(session.getUpdateTime()))
                 .or(() -> Optional.ofNullable(session.getCreateTime()))
                 .map(LocalDateTime::toLocalDate);
-    }
-
-    private boolean isSessionCompleted(ChatSession session) {
-        if (session == null) {
-            return false;
-        }
-        return List.of("CLOSED", "READY_TO_CLOSE", "AWAITING_EVALUATION").contains(session.getStatus())
-                || Integer.valueOf(1).equals(session.getResolved())
-                || session.getSatisfaction() != null;
     }
 
     private String weekdayLabel(LocalDate date) {

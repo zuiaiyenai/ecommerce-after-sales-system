@@ -20,15 +20,15 @@ const fallbackTrendData = [
 
 const metricConfigs = [
   {
-    key: 'handleTime',
-    label: '平均处理时长',
-    aliases: ['平均处理时长'],
-    value: '6分30秒',
-    targetText: '目标 ≤ 8分钟',
+    key: 'avgResponseTime',
+    label: '平均响应时长',
+    aliases: ['平均响应时长'],
+    value: '--',
+    targetText: '目标 ≤ 5分钟',
     goalText: '响应更快，体验更稳',
     currentPercent: 100,
     targetPercent: 100,
-    sampleSize: 3,
+    sampleSize: 0,
     lowerIsBetter: true
   },
   {
@@ -234,7 +234,7 @@ function hasMetricValue(item) {
 }
 
 function normalizeMetricValue(config, value) {
-  if (config.key === 'handleTime') {
+  if (config.key === 'avgResponseTime') {
     return normalizeDurationText(value);
   }
   if (config.key === 'satisfaction') {
@@ -318,8 +318,8 @@ function normalizeRateText(value) {
 }
 
 function targetTextFor(config) {
-  if (config.key === 'handleTime') {
-    return '目标 ≤ 8分钟';
+  if (config.key === 'avgResponseTime') {
+    return '目标 ≤ 5分钟';
   }
   return config.targetText;
 }
@@ -945,12 +945,12 @@ function clampPercent(value) {
   overflow-wrap: anywhere;
 }
 
-.target-card-handleTime .target-card-head {
+.target-card-avgResponseTime .target-card-head {
   grid-template-columns: minmax(0, 1fr);
   gap: 7px;
 }
 
-.target-card-handleTime .target-value {
+.target-card-avgResponseTime .target-value {
   justify-self: start;
   font-size: 21px;
 }

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import re
-from typing import Any, Literal, TypedDict
+from typing import Any, ClassVar, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -313,6 +313,8 @@ class LangGraphAfterSalesAgent:
 
     def final_reply(self, state: AgentGraphState) -> AgentGraphState:
         reply = state.get("assistant_reply") or self._ticket_reply(state) or "已收到您的售后问题，我会继续为您处理。"
+        # 最终防线：确保 reply 不是泄漏的 JSON 数据
+        reply = self._sanitize_reply(reply)
         logger.info("💬 [final_reply] 最终回复: %s", reply[:200])
         logger.info("   session_mode=%s need_human=%s steps=%d",
                     state.get("session_mode"), state.get("need_human"), state.get("steps"))
@@ -379,9 +381,60 @@ class LangGraphAfterSalesAgent:
             },
             "recent_history": state.get("recent_history") or [],
             "available_tools": self.tools.tool_specs(),
-            "tool_results": state.get("tool_results") or [],
-            "current_ticket": state.get("ticket"),
+            "tool_results": self._summarize_tool_results(state),
+            "current_ticket": self._summarize_ticket_for_llm(state.get("ticket")),
             "evidence_needed": state.get("evidence_needed") or [],
+        }
+
+    @staticmethod
+    def _summarize_tool_results(state: AgentGraphState) -> list[dict[str, Any]]:
+        """压缩 tool_results，避免 LLM 看到内部 JSON 后复述给用户。"""
+        summary: list[dict[str, Any]] = []
+        for item in state.get("tool_results") or []:
+            tool = item.get("tool")
+            ok = item.get("ok")
+            data = item.get("data")
+            error = str(item.get("error") or "")[:120]
+            entry: dict[str, Any] = {"tool": tool, "ok": ok, "error": error}
+            if tool == "search_user_orders" and isinstance(data, list):
+                entry["orders_found"] = len(data)
+                entry["order_ids"] = [
+                    str(o.get("orderNo") or o.get("order_no") or o.get("id") or "")
+                    for o in data if isinstance(o, dict)
+                ][:5]
+            elif tool == "review_images" and isinstance(data, dict):
+                entry["summary"] = {
+                    "all_clear": data.get("all_clear"),
+                    "has_damage_area": data.get("has_damage_area"),
+                    "has_outer_package": data.get("has_outer_package"),
+                    "has_logistics_label": data.get("has_logistics_label"),
+                    "missing_visual_evidence": data.get("missing_visual_evidence"),
+                }
+            elif tool == "retrieve_knowledge" and isinstance(data, dict):
+                entry["hits_count"] = len(data.get("hits") or [])
+                entry["top_titles"] = [
+                    (h.get("title") or "") + (" ✓" if h.get("source_code", "").endswith("_001") else "")
+                    for h in (data.get("hits") or [])[:5] if isinstance(h, dict)
+                ]
+            elif tool == "create_after_sales_ticket" and isinstance(data, dict):
+                entry["ticket_id"] = data.get("ticketNo") or data.get("ticket_no") or data.get("ticket_id")
+                entry["status"] = data.get("status")
+            elif tool == "handoff_to_human":
+                entry["note"] = "已发起人工转接" if ok else "转接失败"
+            elif tool == "append_chat_message":
+                entry["note"] = "消息已保存" if ok else "保存失败"
+            summary.append(entry)
+        return summary
+
+    @staticmethod
+    def _summarize_ticket_for_llm(ticket: Any) -> dict[str, Any] | None:
+        """压缩 current_ticket，避免 LLM 看到完整的建单 JSON 后复述。"""
+        if not isinstance(ticket, dict):
+            return None
+        return {
+            "ticket_id": ticket.get("ticketNo") or ticket.get("ticket_no") or ticket.get("ticket_id"),
+            "status": ticket.get("status"),
+            "existing": bool(ticket.get("existing")),
         }
 
     @staticmethod
@@ -394,10 +447,12 @@ class LangGraphAfterSalesAgent:
             "4. 证据不足 → 用 final_reply 引导用户补充具体凭证，参考 retrieve_knowledge 返回的证据模板\n"
             "5. 凭证齐全后 → create_after_sales_ticket；视觉审核不确定或政策不匹配 → human_handoff\n"
             "6. 不要声称已建单除非工具成功；不要信任前端传来的订单详情\n"
+            "⚠️ assistant_reply 必须是给用户看的自然中文文本，绝对禁止包含 JSON、工具调用参数、\n"
+            "   base64、长数字ID序列或任何机器可读数据。回复应像真人客服一样亲切、简洁、信息明确。\n"
             "只输出 JSON："
             "{\"action\":\"tool_call|final_reply|human_handoff\","
             "\"tool_name\":\"工具名或null\",\"tool_arguments\":{},"
-            "\"assistant_reply\":\"给用户看的中文回复\","
+            "\"assistant_reply\":\"给用户看的中文自然语言回复（禁止JSON/数据）\","
             "\"need_human\":false,\"evidence_needed\":[]}"
         )
 
@@ -405,7 +460,10 @@ class LangGraphAfterSalesAgent:
     def _decider_system_prompt() -> str:
         return (
             "你是售后 Agent 的观察/决策节点。根据 tool_results 决定继续调用工具、转人工或最终回复。\n"
-            "售后申请必须以 create_after_sales_ticket 的结果为准；不要编造工具未返回的订单、售后单、政策或退款结果。只输出 JSON，字段同规划节点。"
+            "售后申请必须以 create_after_sales_ticket 的结果为准；不要编造工具未返回的订单、售后单、政策或退款结果。\n"
+            "⚠️ assistant_reply 必须是给用户看的自然中文文本，绝对禁止包含 JSON、工具调用参数、\n"
+            "   base64、长数字ID序列或任何机器可读数据。回复应像真人客服一样亲切、简洁、信息明确。\n"
+            "只输出 JSON，字段同规划节点。"
         )
 
     def _guarded_after_sales_action(self, state: AgentGraphState) -> dict[str, Any] | None:
@@ -823,8 +881,8 @@ class LangGraphAfterSalesAgent:
             "evidence_needed": [],
         }
 
-    @staticmethod
-    def _apply_action(state: AgentGraphState, raw: dict[str, Any]) -> None:
+    @classmethod
+    def _apply_action(cls, state: AgentGraphState, raw: dict[str, Any]) -> None:
         action = str(raw.get("action") or "final_reply")
         state["next_action"] = action
         state["tool_name"] = raw.get("tool_name")
@@ -836,7 +894,12 @@ class LangGraphAfterSalesAgent:
             arguments.setdefault("order_id", state.get("order_id_hint"))
         state["tool_arguments"] = arguments
         if raw.get("assistant_reply"):
-            state["assistant_reply"] = str(raw.get("assistant_reply"))
+            sanitized = cls._sanitize_reply(raw.get("assistant_reply"))
+            if sanitized:
+                state["assistant_reply"] = sanitized
+            # 如果被 sanitize 掉了（variant="silent" 返回空），保留原有 reply 不改
+            else:
+                pass
         if isinstance(raw.get("evidence_needed"), list):
             state["evidence_needed"] = [str(item) for item in raw["evidence_needed"]]
         state["need_human"] = bool(raw.get("need_human") or action == "human_handoff")
@@ -1121,6 +1184,56 @@ class LangGraphAfterSalesAgent:
         if evidence_needed:
             return f"已为您提交售后申请 {ticket_no}，当前进入待审核。为便于继续审核，请补充：{'、'.join(evidence_needed)}。"
         return f"已为您提交售后申请 {ticket_no}，当前进入待审核，客服会继续处理。"
+
+    _JSON_LEAKAGE_PATTERNS: ClassVar[tuple[str, ...]] = (
+        r'"tool"\s*:\s*"create_after_sales_ticket"',
+        r'"arguments"\s*:\s*\{',
+        r'"user_id"\s*:\s*"\d{15,}"',
+        r'"session_id"\s*:\s*\d{15,}',
+        r'"after_sales_type"\s*:\s*"',
+        r'"refund_amount"\s*:\s*[\d.]+',
+        r'"ai_confidence"\s*:\s*[\d.]+',
+        r'"ai_recommend_type"\s*:\s*"',
+        r'"evidence_urls"\s*:\s*\[',
+        r'"auto_approved"\s*:',
+        r'"ai_classify_result"\s*:\s*\{',
+        r'data:image/[a-z]+;base64,',
+    )
+
+    @classmethod
+    def _looks_like_json_leakage(cls, text: Any) -> bool:
+        """检测 assistant_reply 是否像泄漏的 JSON/机器数据而非自然语言回复。"""
+        if not isinstance(text, str) or not text.strip():
+            return False
+        stripped = text.strip()
+        # 纯 JSON 开头
+        if stripped.startswith("{") or stripped.startswith("["):
+            return True
+        # 包含工具调用的完整 JSON
+        if "create_after_sales_ticket" in stripped and '"tool"' in stripped:
+            return True
+        # 包含长数字 ID + JSON 键名
+        for pattern in cls._JSON_LEAKAGE_PATTERNS:
+            if re.search(pattern, text):
+                return True
+        return False
+
+    _FALLBACK_REPLY: ClassVar[str] = (
+        "已收到您的售后问题，我已为您提交了售后申请。"
+        "如需查看进度或补充材料，请随时告诉我。"
+    )
+
+    @classmethod
+    def _sanitize_reply(cls, reply: Any, variant: str = "default") -> str:
+        """确保 reply 是自然语言而非泄漏的 JSON。"""
+        text = str(reply or "").strip()
+        if not text:
+            return "" if variant == "silent" else cls._FALLBACK_REPLY
+        if cls._looks_like_json_leakage(text):
+            if variant == "silent":
+                return ""
+            return cls._FALLBACK_REPLY
+        return text
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:

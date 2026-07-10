@@ -987,8 +987,7 @@ html.theme-changing textarea {
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
 }
 
-.order-row,
-.notice-row {
+.order-row {
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
 }
 
@@ -1022,8 +1021,7 @@ html.theme-changing textarea {
 }
 
 .ticket-mark,
-.todo-dot,
-.notice-level {
+.todo-dot {
   width: 38px;
   height: 38px;
   border: 0;
@@ -1043,57 +1041,6 @@ html.theme-changing textarea {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-}
-
-.notice-level {
-  background: var(--danger);
-}
-
-.notice-row {
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
-}
-
-.notice-row .notice-level,
-.notice-row .todo-dot,
-.notice-row .muted {
-  transition: transform 160ms ease, color 160ms ease, background 160ms ease;
-}
-
-.notice-row:hover,
-.notice-row:focus-visible {
-  transform: translateY(-1px);
-  border-color: #dbeaff;
-  background: #f7fbff;
-  box-shadow: 0 10px 24px rgba(31, 38, 48, 0.08);
-}
-
-.notice-row:hover .row-copy strong,
-.notice-row:focus-visible .row-copy strong {
-  color: #c45009;
-}
-
-.notice-row:hover .notice-level,
-.notice-row:focus-visible .notice-level,
-.notice-row:hover .todo-dot,
-.notice-row:focus-visible .todo-dot {
-  transform: scale(1.08);
-}
-
-.notice-row:hover .muted,
-.notice-row:focus-visible .muted {
-  color: #c45009;
-}
-
-.notice-row:active {
-  transform: translateY(0);
-  border-color: #c6ddff;
-  background: #edf6ff;
-}
-
-.notice-row:focus-visible {
-  outline: 2px solid #ff9c4a;
-  outline-offset: 2px;
 }
 
 .info-grid {
@@ -1428,25 +1375,6 @@ html.theme-changing textarea {
 .empty-state p {
   margin: 0;
   line-height: 1.7;
-}
-
-.notice-workbench {
-  height: 100%;
-  min-height: calc(100vh - 128px);
-  grid-template-rows: minmax(0, 1fr);
-  align-items: stretch;
-}
-
-.notice-list-panel {
-  min-height: 0;
-  height: 100%;
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.notice-performance-panel {
-  min-height: 0;
-  height: 100%;
-  align-self: stretch;
 }
 
 .log-line,
@@ -4013,25 +3941,6 @@ html[data-theme="dark"] .ticket-card:hover .ticket-main-copy strong {
   color: #ffad73;
 }
 
-html[data-theme="dark"] .notice-row:hover,
-html[data-theme="dark"] .notice-row:focus-visible {
-  border-color: #3e5875;
-  background: #162233;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
-}
-
-html[data-theme="dark"] .notice-row:hover .row-copy strong,
-html[data-theme="dark"] .notice-row:focus-visible .row-copy strong,
-html[data-theme="dark"] .notice-row:hover .muted,
-html[data-theme="dark"] .notice-row:focus-visible .muted {
-  color: #ffad73;
-}
-
-html[data-theme="dark"] .notice-row:active {
-  border-color: #456283;
-  background: #1b2a40;
-}
-
 html[data-theme="dark"] .session-list-template .wide-panel,
 html[data-theme="dark"] .order-workbench .wide-panel,
 html[data-theme="dark"] .reviews-panel {
@@ -4894,8 +4803,7 @@ html[data-theme="dark"] .app-shell {
   background: rgba(232, 247, 239, 0.74);
 }
 
-.ticket-mark,
-.notice-level {
+.ticket-mark {
   border-radius: 14px;
   background: linear-gradient(135deg, var(--brand-orange), var(--brand-orange-deep));
   box-shadow: 0 12px 24px rgba(255, 107, 26, 0.2);

@@ -39,7 +39,7 @@ let routeTransitionTimer = 0;
 
 const isOnline = computed(() => staff.value?.onlineStatus === 'ONLINE');
 const isDarkTheme = computed(() => themeMode.value === 'dark');
-const fullHeightRoutes = ['dashboard', 'tickets', 'sessions', 'orders', 'reviews', 'notices'];
+const fullHeightRoutes = ['dashboard', 'tickets', 'sessions', 'orders', 'reviews'];
 const isFullHeightPage = computed(() => fullHeightRoutes.includes(route.name));
 const showLogout = computed(() => true);
 
@@ -201,7 +201,6 @@ onBeforeUnmount(() => {
       :tickets="tickets"
       :ticket-total="safeTicketTotal"
       :pending-shipment-count="safePendingShipmentCount"
-      :todos="todos"
       :show-logout="showLogout"
       @toggle-status="handleToggleStatus"
       @logout="handleLogout"

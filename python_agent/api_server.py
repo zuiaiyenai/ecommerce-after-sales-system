@@ -322,6 +322,7 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             with trace.step("langgraph_agent"):
                 result = LANGGRAPH_AGENT.handle(build_langgraph_entry_payload(data, emotion_context))
         except Exception as exc:
+            logging.getLogger("api_server").exception("❌ langgraph agent 执行异常: %s", exc)
             trace.set_meta(
                 error=exc.__class__.__name__,
                 error_message=str(exc),

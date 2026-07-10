@@ -189,12 +189,12 @@ const performance = {
   ],
   metrics: [
     {
-      label: '平均处理时长',
-      value: '6分30秒',
-      desc: '目标 ≤ 08:00',
+      label: '平均响应时长',
+      value: '2分18秒',
+      desc: '目标 ≤ 5分钟',
       currentPercent: 100,
       targetPercent: 100,
-      sampleSize: 3,
+      sampleSize: 12,
       lowerIsBetter: true
     },
     {
@@ -739,27 +739,6 @@ export async function shipOrder(orderId) {
     return delay({});
   }
   return request(`/api/merchant-cs/orders/${orderId}/ship`, { method: 'POST' });
-}
-
-// ==================== Notices ====================
-
-export async function getNotices(params = {}) {
-  if (!USE_REAL_API) {
-    return delay({ records: [], total: 0 });
-  }
-  const query = new URLSearchParams();
-  if (params.readStatus) query.set('readStatus', params.readStatus);
-  if (params.level) query.set('level', params.level);
-  query.set('page', params.page || 1);
-  query.set('size', params.size || 20);
-  return request(`/api/merchant-cs/notices?${query.toString()}`);
-}
-
-export async function markNoticeRead(noticeId) {
-  if (!USE_REAL_API) {
-    return delay({ id: noticeId, readStatus: 'READ' });
-  }
-  return request(`/api/merchant-cs/notices/${noticeId}/read`, { method: 'PUT' });
 }
 
 // ==================== Reviews ====================
