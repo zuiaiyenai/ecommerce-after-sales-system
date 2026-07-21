@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS knowledge_document
     created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT ck_knowledge_document_valid_window
-        CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to > valid_from),
+        CHECK (valid_to IS NULL OR (valid_from IS NOT NULL AND valid_to > valid_from)),
     UNIQUE (source_type, source_code, merchant_code)
 );
 
@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk_draft
     revision                  BIGINT NOT NULL,
     UNIQUE (document_id, chunk_index)
 );
+
+CREATE OR REPLACE VIEW published_knowledge_chunk AS
+SELECT kc.*
+FROM knowledge_chunk kc
+JOIN knowledge_document kd ON kd.id = kc.document_id
+WHERE kd.published_revision IS NOT NULL
+  AND kc.revision = kd.published_revision
+  AND kd.status = 1
+  AND COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true';
 
 CREATE INDEX IF NOT EXISTS idx_kd_source_type ON knowledge_document (source_type);
 CREATE INDEX IF NOT EXISTS idx_kd_merchant_code ON knowledge_document (merchant_code);

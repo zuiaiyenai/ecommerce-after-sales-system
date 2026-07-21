@@ -15,7 +15,7 @@ ALTER TABLE knowledge_document
 
 ALTER TABLE knowledge_document
     ADD CONSTRAINT ck_knowledge_document_valid_window
-        CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to > valid_from);
+        CHECK (valid_to IS NULL OR (valid_from IS NOT NULL AND valid_to > valid_from));
 
 ALTER TABLE knowledge_chunk
     ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1,
@@ -102,5 +102,14 @@ CREATE INDEX IF NOT EXISTS idx_kc_search_text_trgm ON knowledge_chunk USING GIN(
 CREATE UNIQUE INDEX IF NOT EXISTS uk_kd_active_content_hash
     ON knowledge_document(merchant_code, source_type, content_hash)
     WHERE content_hash IS NOT NULL AND COALESCE(metadata ->> 'deleted', 'false') <> 'true';
+
+CREATE OR REPLACE VIEW published_knowledge_chunk AS
+SELECT kc.*
+FROM knowledge_chunk kc
+JOIN knowledge_document kd ON kd.id = kc.document_id
+WHERE kd.published_revision IS NOT NULL
+  AND kc.revision = kd.published_revision
+  AND kd.status = 1
+  AND COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true';
 
 COMMIT;

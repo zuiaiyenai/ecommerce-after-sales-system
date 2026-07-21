@@ -36,15 +36,40 @@ class LayeredRagSchemaIntegrationTest extends PostgresRagIntegrationSupport {
                     revision, product_categories, scenes, intents, search_text
                 ) VALUES (9001, 'faq', 0, 'new-version', ?::vector, 2, '{}', '{}', '{}', 'new-version')
                 """, zeroVector());
+        jdbc.update("""
+                INSERT INTO knowledge_document(
+                    id, source_type, source_code, merchant_code, title, content,
+                    review_status, revision, published_revision, status
+                ) VALUES (9002, 'faq', 'T-2', 'MERCHANT_DEMO', 'disabled', 'body', 'PUBLISHED', 1, 1, 0)
+                """);
+        jdbc.update("""
+                INSERT INTO knowledge_chunk(
+                    document_id, document_type, chunk_index, chunk_text, embedding,
+                    revision, product_categories, scenes, intents, search_text
+                ) VALUES (9002, 'faq', 0, 'disabled-version', ?::vector, 1, '{}', '{}', '{}', 'disabled-version')
+                """, zeroVector());
+        jdbc.update("""
+                INSERT INTO knowledge_document(
+                    id, source_type, source_code, merchant_code, title, content,
+                    review_status, revision, published_revision, metadata
+                ) VALUES (9003, 'faq', 'T-3', 'MERCHANT_DEMO', 'deleted', 'body', 'PUBLISHED', 1, 1, '{"deleted":"true"}')
+                """);
+        jdbc.update("""
+                INSERT INTO knowledge_chunk(
+                    document_id, document_type, chunk_index, chunk_text, embedding,
+                    revision, product_categories, scenes, intents, search_text
+                ) VALUES (9003, 'faq', 0, 'deleted-version', ?::vector, 1, '{}', '{}', '{}', 'deleted-version')
+                """, zeroVector());
 
         List<String> visible = jdbc.queryForList("""
-                SELECT kc.chunk_text
-                FROM knowledge_chunk kc
-                JOIN knowledge_document kd ON kd.id = kc.document_id
-                WHERE kc.revision = kd.published_revision
+                SELECT chunk_text
+                FROM published_knowledge_chunk
+                WHERE document_id = 9001
                 """, String.class);
 
         assertThat(visible).contains("old-version").doesNotContain("new-version");
+        assertThat(jdbc.queryForList("SELECT chunk_text FROM published_knowledge_chunk", String.class))
+                .doesNotContain("disabled-version", "deleted-version");
         assertThat(columns("knowledge_chunk_draft")).doesNotContain("embedding");
     }
 
@@ -83,6 +108,13 @@ class LayeredRagSchemaIntegrationTest extends PostgresRagIntegrationSupport {
                     TIMESTAMP '2026-07-22 00:00:00', TIMESTAMP '2026-07-21 00:00:00')
                 """))
                 .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO knowledge_document(
+                    id, source_type, source_code, merchant_code, title, content, valid_from, valid_to
+                ) VALUES (8003, 'faq', 'missing-start', 'MERCHANT_DEMO', 'missing start', 'body',
+                    NULL, TIMESTAMP '2026-07-21 00:00:00')
+                """))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -113,6 +145,7 @@ class LayeredRagSchemaIntegrationTest extends PostgresRagIntegrationSupport {
     }
 
     private void createLegacyTables() {
+        jdbc.execute("DROP VIEW IF EXISTS published_knowledge_chunk");
         jdbc.execute("DROP TABLE IF EXISTS knowledge_chunk_draft");
         jdbc.execute("DROP TABLE IF EXISTS knowledge_chunk");
         jdbc.execute("DROP TABLE IF EXISTS knowledge_document");
