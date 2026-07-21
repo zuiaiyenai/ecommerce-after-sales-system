@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Protocol
+import unicodedata
 
 
 class KnowledgeParseError(ValueError):
@@ -255,14 +256,16 @@ class KnowledgeIngestionService:
 
     @staticmethod
     def _contains_term(text: str, value: str) -> bool:
-        normalized_value = value.strip().casefold()
-        normalized_text = text.casefold()
+        normalized_value = unicodedata.normalize("NFKC", value).strip().casefold()
+        normalized_text = unicodedata.normalize("NFKC", text).casefold()
         if not normalized_value:
             return False
         if any("\u4e00" <= character <= "\u9fff" for character in normalized_value):
-            compact_value = re.sub(r"[\s_-]+", "", normalized_value)
-            compact_text = re.sub(r"[\s_-]+", "", normalized_text)
-            return compact_value in compact_text
+            phrase_parts = [re.escape(part) for part in normalized_value.split() if part]
+            if not phrase_parts:
+                return False
+            pattern = r"(?<!\w)" + r"\s+".join(phrase_parts) + r"(?!\w)"
+            return re.search(pattern, normalized_text) is not None
 
         terms = [re.escape(term) for term in re.split(r"[\s_-]+", normalized_value) if term]
         if not terms:

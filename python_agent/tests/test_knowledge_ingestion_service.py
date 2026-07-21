@@ -163,7 +163,7 @@ def test_admin_parse_document_rejects_invalid_base64_with_stable_error() -> None
 def test_rule_matching_requires_english_token_boundaries_and_keeps_chinese_phrase_matching() -> None:
     result = KnowledgeIngestionService(classifier=FakeClassifier({})).parse(
         file_name="policy.txt",
-        content="undamaged 商品质量问题".encode("utf-8"),
+        content="undamaged\n质量问题".encode("utf-8"),
         knowledge_type="faq",
         allowed_metadata={
             "product_categories": ["damaged"],
@@ -179,6 +179,27 @@ def test_rule_matching_requires_english_token_boundaries_and_keeps_chinese_phras
     assert chunk.review_required is True
     assert KnowledgeIngestionService._contains_term("The return policy applies", "return_policy") is True
     assert KnowledgeIngestionService._contains_term("return_policy_extended", "return_policy") is False
+
+
+def test_cjk_rule_matching_rejects_negated_substrings_and_requires_review() -> None:
+    result = KnowledgeIngestionService(classifier=FakeClassifier({})).parse(
+        file_name="policy.txt",
+        content="不退款；非质量问题".encode("utf-8"),
+        knowledge_type="faq",
+        allowed_metadata={
+            "product_categories": ["退款"],
+            "scenes": ["质量问题"],
+            "intents": ["退款"],
+        },
+    )
+
+    chunk = result.chunks[0]
+    assert chunk.product_categories is None
+    assert chunk.scenes is None
+    assert chunk.intents is None
+    assert chunk.review_required is True
+    assert KnowledgeIngestionService._contains_term("质量问题", "质量问题") is True
+    assert KnowledgeIngestionService._contains_term("标题：质量问题", "质量问题") is True
 
 
 @pytest.mark.parametrize("response", [{}, None, []])
