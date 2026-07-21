@@ -14,9 +14,11 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -217,6 +219,96 @@ class KnowledgeServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
+    }
+
+    @Test
+    void concurrentFileDuplicateUsesConflictReturningCleansOnlyItsStoredFileAndDoesNotDispatchAgain() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(
+                List.of(), List.of(Map.of("id", 77L, "review_status", "REVIEW_REQUIRED")));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), draftService, tempDir.toString());
+        MockMultipartFile file = new MockMultipartFile("file", "policy.txt", "text/plain", "draft".getBytes());
+
+        var response = service.createFileImport(new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(
+                null, "faq", "MERCHANT", "MERCHANT_DEMO", file));
+
+        assertThat(response.documentId()).isEqualTo(77L);
+        assertThat(response.reviewStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(response.duplicate()).isTrue();
+        ArgumentCaptor<String> insertSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(insertSql.capture(), eq(Long.class), any(Object[].class));
+        assertThat(insertSql.getValue()).contains("ON CONFLICT (merchant_code, source_type, content_hash)")
+                .contains("DO NOTHING RETURNING id")
+                .contains("COALESCE(metadata ->> 'deleted', 'false') <> 'true'");
+        verify(jdbcTemplate, org.mockito.Mockito.times(2)).queryForList(anyString(), any(Object[].class));
+        verifyNoInteractions(asyncService);
+    }
+
+    @Test
+    void fileImportRejectsMissingBlankAndMismatchedMimeWhileAcceptingTheTenMegabyteBoundary() throws Exception {
+        KnowledgeService validationService = new KnowledgeService(
+                mock(JdbcTemplate.class), mock(KnowledgeIngestionAsyncService.class), metadataPolicy("v2.0"), tempDir.toString());
+        for (MockMultipartFile invalid : List.of(
+                new MockMultipartFile("file", "policy.pdf", null, "x".getBytes()),
+                new MockMultipartFile("file", "policy.pdf", " ", "x".getBytes()),
+                new MockMultipartFile("file", "policy.pdf", "text/plain", "x".getBytes()))) {
+            assertThatIllegalArgumentException().isThrownBy(() -> validationService.createFileImport(
+                    new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(null, "faq", "MERCHANT", "MERCHANT_DEMO", invalid)));
+        }
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 1L, "review_status", "PROCESSING")));
+        KnowledgeService boundaryService = new KnowledgeService(
+                jdbcTemplate, mock(KnowledgeIngestionAsyncService.class), metadataPolicy("v2.0"), tempDir.toString());
+        MockMultipartFile boundary = new MockMultipartFile("file", "policy.txt", "text/plain", new byte[10 * 1024 * 1024]);
+
+        assertThat(boundaryService.createFileImport(new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(
+                null, "faq", "MERCHANT", "MERCHANT_DEMO", boundary)).duplicate()).isTrue();
+    }
+
+    @Test
+    void reindexClaimsFileRevisionWithoutChangingPublishedPointerAndDispatchesTheClaimedRevisionAfterCommit() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = new KnowledgeService(jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString());
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class))).thenReturn(List.of(42L));
+        when(jdbcTemplate.queryForList(startsWith("SELECT COALESCE"), eq(String.class), eq(42L))).thenReturn(List.of("FILE"));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(42L))).thenReturn(9L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.reindexAll();
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).reprocessDocument(42L, 9L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        ArgumentCaptor<String> claimSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(claimSql.capture(), eq(Long.class), eq(42L));
+        assertThat(claimSql.getValue()).contains("revision = revision + 1").contains("'PUBLISHED'")
+                .doesNotContain("published_revision =");
+    }
+
+    @Test
+    void reindexDoesNotDispatchWhenAFileClaimIsStaleOrDeleted() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = new KnowledgeService(jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString());
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class))).thenReturn(List.of(42L));
+        when(jdbcTemplate.queryForList(startsWith("SELECT COALESCE"), eq(String.class), eq(42L))).thenReturn(List.of("FILE"));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(42L)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+
+        service.reindexAll();
+
+        verifyNoInteractions(asyncService);
     }
 
     private KnowledgeMetadataPolicy metadataPolicy(String policyVersion) {

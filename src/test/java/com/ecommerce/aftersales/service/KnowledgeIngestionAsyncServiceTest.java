@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class KnowledgeIngestionAsyncServiceTest {
@@ -159,5 +160,45 @@ class KnowledgeIngestionAsyncServiceTest {
                 .processFileImport(42L, file.toString(), "encrypted.pdf", 7L);
 
         verify(draftService).markParseFailed(eq(42L), eq(7L), eq("PDF_ENCRYPTED"), anyString());
+    }
+
+    @Test
+    void legacyNoRevisionEntryPointDoesNotReprocessFileDocuments() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
+                "id", 42L, "content", "", "metadata", "{\"ingestionSourceType\":\"FILE\"}")));
+
+        new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, new AgentGatewayProperties(), mock(KnowledgeMetadataPolicy.class), draftService)
+                .reprocessDocument(42L);
+
+        verifyNoInteractions(restTemplate, draftService);
+    }
+
+    @Test
+    void unknownHttpErrorUsesGenericCodeAndScrubsUnixPathsWithinTheMessageLimit() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgeMetadataPolicy policy = mock(KnowledgeMetadataPolicy.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        AgentGatewayProperties properties = new AgentGatewayProperties();
+        properties.setBaseUrl("http://agent.internal/api");
+        when(policy.options("MERCHANT_DEMO")).thenReturn(Map.of(
+                "productCategories", List.of(), "scenes", List.of(), "intents", List.of()));
+        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
+                "id", 42L, "source_type", "after_sales_policy", "merchant_code", "MERCHANT_DEMO", "metadata", "{}")));
+        String body = "{\"error\":\"UNEXPECTED\",\"message\":\"/srv/secret/customer-upload.txt " + "x".repeat(400) + "\"}";
+        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenThrow(
+                HttpClientErrorException.create(HttpStatus.BAD_REQUEST, "bad request", HttpHeaders.EMPTY, body.getBytes(), null));
+        Path file = tempDir.resolve("unknown.txt");
+        Files.writeString(file, "text");
+
+        new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, policy, draftService)
+                .processFileImport(42L, file.toString(), "unknown.txt", 7L);
+
+        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+        verify(draftService).markParseFailed(eq(42L), eq(7L), eq("PARSE_FAILED"), message.capture());
+        assertThat(message.getValue()).doesNotContain("/srv/secret").hasSizeLessThanOrEqualTo(300);
     }
 }

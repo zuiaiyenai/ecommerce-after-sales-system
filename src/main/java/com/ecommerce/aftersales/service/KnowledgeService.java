@@ -14,7 +14,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -208,21 +207,31 @@ public class KnowledgeService {
             documentId = pgJdbcTemplate.queryForObject("""
                     INSERT INTO knowledge_document (source_type, source_code, merchant_code, title, content, metadata,
                         status, review_status, content_hash, revision, published_revision, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, '', ?::jsonb, 1, 'PROCESSING', ?, 1, NULL, NOW(), NOW()) RETURNING id
+                    VALUES (?, ?, ?, ?, '', ?::jsonb, 1, 'PROCESSING', ?, 1, NULL, NOW(), NOW())
+                    ON CONFLICT (merchant_code, source_type, content_hash)
+                    WHERE content_hash IS NOT NULL AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                    DO NOTHING RETURNING id
                     """, Long.class, knowledgeType, generateSourceCode(knowledgeType), merchantCode, title,
-                    toJson(metadata), contentHash);
-        } catch (DuplicateKeyException duplicateKeyException) {
+                toJson(metadata), contentHash);
+        } catch (EmptyResultDataAccessException ignored) {
+            documentId = null;
+        }
+        if (documentId == null) {
             List<Map<String, Object>> active = pgJdbcTemplate.queryForList("""
                     SELECT id, review_status FROM knowledge_document
                     WHERE merchant_code = ? AND source_type = ? AND content_hash = ?
                       AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                     LIMIT 1
                     """, merchantCode, knowledgeType, contentHash);
-            if (!active.isEmpty()) return duplicateResponse(active.getFirst());
-            throw duplicateKeyException;
+            if (!active.isEmpty()) {
+                deleteStoredFileQuietly(stored.storagePath());
+                return duplicateResponse(active.getFirst());
+            }
+            throw new IllegalStateException("Duplicate knowledge import was not found after conflict");
         }
-        runAfterCommit(() -> asyncService.processFileImport(documentId, stored.storagePath().toString(), fileName, 1L));
-        return new FileImportResponse(documentId, "PROCESSING", false);
+        Long insertedDocumentId = documentId;
+        runAfterCommit(() -> asyncService.processFileImport(insertedDocumentId, stored.storagePath().toString(), fileName, 1L));
+        return new FileImportResponse(insertedDocumentId, "PROCESSING", false);
     }
 
     public IngestionStatusResponse ingestionStatus(Long documentId) {
@@ -465,6 +474,7 @@ public class KnowledgeService {
         }
     }
 
+    @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> reindexAll() {
         List<Long> ids = pgJdbcTemplate.queryForList(
                 """
@@ -474,23 +484,41 @@ public class KnowledgeService {
                 """,
                 Long.class
         );
-        ids.forEach(asyncService::reprocessDocument);
+        ids.forEach(this::scheduleReprocess);
         return Map.of("count", ids.size(), "message", "Reindex started");
     }
 
+    @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> syncKnowledge(Long id) {
         KnowledgeUploadDto.KnowledgeInfo info = getKnowledgeById(id);
 
-        Map<String, Object> metadata = new LinkedHashMap<>(info.getMetadata() == null ? Map.of() : info.getMetadata());
-        metadata.put("ingestionStatus", "PROCESSING");
-        metadata.put("errorMessage", null);
-        pgJdbcTemplate.update(
-                "UPDATE knowledge_document SET metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
-                toJson(metadata),
-                id
-        );
-        asyncService.reprocessDocument(id);
+        scheduleReprocess(id);
         return Map.of("documentId", id, "message", "Knowledge sync started");
+    }
+
+    private void scheduleReprocess(Long documentId) {
+        List<String> sources = pgJdbcTemplate.queryForList(
+                "SELECT COALESCE(metadata ->> 'ingestionSourceType', '') FROM knowledge_document WHERE id = ? AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'",
+                String.class, documentId);
+        if (sources.isEmpty()) return;
+        if (!"FILE".equalsIgnoreCase(sources.getFirst())) {
+            runAfterCommit(() -> asyncService.reprocessDocument(documentId));
+            return;
+        }
+        Long targetRevision;
+        try {
+            targetRevision = pgJdbcTemplate.queryForObject("""
+                    UPDATE knowledge_document SET revision = revision + 1, review_status = 'PROCESSING',
+                        metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
+                    WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') = 'FILE'
+                      AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                      AND review_status IN ('PUBLISHED', 'REVIEW_REQUIRED', 'PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED')
+                    RETURNING revision
+                    """, Long.class, documentId);
+        } catch (EmptyResultDataAccessException ignored) {
+            return;
+        }
+        runAfterCommit(() -> asyncService.reprocessDocument(documentId, targetRevision));
     }
 
     public List<Map<String, Object>> testRetrieval(String query, String merchantCode, Integer topK) {
@@ -651,6 +679,11 @@ public class KnowledgeService {
         Object id = document.get("id");
         Long documentId = id instanceof Number number ? number.longValue() : Long.valueOf(String.valueOf(id));
         return new FileImportResponse(documentId, String.valueOf(document.get("review_status")), true);
+    }
+
+    private void deleteStoredFileQuietly(Path path) {
+        try { Files.deleteIfExists(path); }
+        catch (IOException exception) { log.warn("Unable to clean duplicate upload {}", path, exception); }
     }
 
     private String sha256(byte[] content) {

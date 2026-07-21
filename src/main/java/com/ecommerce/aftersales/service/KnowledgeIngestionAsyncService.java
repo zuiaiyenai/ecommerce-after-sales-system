@@ -110,9 +110,12 @@ public class KnowledgeIngestionAsyncService {
             log.warn("Skip reprocess, document not found: {}", documentId);
             return;
         }
-
-        long targetRevision = ((Number) document.getOrDefault("revision", 1L)).longValue();
-        reprocessDocument(documentId, targetRevision);
+        Map<String, Object> metadata = readMetadata(document.get("metadata"));
+        if ("FILE".equalsIgnoreCase(stringValue(metadata.get("ingestionSourceType")))) {
+            log.warn("Skip file reprocess without a claimed revision, documentId={}", documentId);
+            return;
+        }
+        processDocument(documentId, stringValue(document.get("content")), null, null);
     }
 
     @Async("knowledgeIngestionExecutor")
@@ -263,7 +266,8 @@ public class KnowledgeIngestionAsyncService {
                 ? responseException.getResponseBodyAsString()
                 : exception.getMessage();
         if (message == null || message.isBlank()) return "Parse failed";
-        String sanitized = message.replaceAll("[\\r\\n\\t]+", " ").replaceAll("(?i)(https?://\\S+|[A-Za-z]:\\\\\\S+)", "[redacted]");
+        String sanitized = message.replaceAll("[\\r\\n\\t]+", " ")
+                .replaceAll("(?i)(https?://\\S+|[A-Za-z]:\\\\\\S+|/(?:[^\\s/]+/)*[^\\s]+)", "[redacted]");
         return sanitized.length() <= 300 ? sanitized : sanitized.substring(0, 300);
     }
 
@@ -301,7 +305,7 @@ public class KnowledgeIngestionAsyncService {
         List<Map<String, Object>> rows = pgJdbcTemplate.queryForList(
             """
             SELECT id, source_type, source_code, merchant_code, title, content,
-                   product_category, scene, intent, policy_version, tags, metadata, status
+                   product_category, scene, intent, policy_version, tags, metadata, status, revision, review_status
             FROM knowledge_document
             WHERE id = ?
             LIMIT 1
