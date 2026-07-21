@@ -12,6 +12,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.EmptyResultDataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,19 +52,32 @@ public class KnowledgeService {
     private final JdbcTemplate pgJdbcTemplate;
     private final KnowledgeIngestionAsyncService asyncService;
     private final KnowledgeMetadataPolicy metadataPolicy;
+    private final KnowledgeDraftService draftService;
     private final Path uploadRoot;
 
+    @Autowired
     public KnowledgeService(
             @Qualifier("pgJdbcTemplate") JdbcTemplate pgJdbcTemplate,
             KnowledgeIngestionAsyncService asyncService,
             KnowledgeMetadataPolicy metadataPolicy,
+            KnowledgeDraftService draftService,
             @Value("${app.upload.dir:./uploads}") String uploadDir
     ) throws IOException {
         this.pgJdbcTemplate = pgJdbcTemplate;
         this.asyncService = asyncService;
         this.metadataPolicy = metadataPolicy;
+        this.draftService = draftService;
         this.uploadRoot = Paths.get(uploadDir).toAbsolutePath().normalize();
         Files.createDirectories(this.uploadRoot.resolve("knowledge"));
+    }
+
+    KnowledgeService(
+            JdbcTemplate pgJdbcTemplate,
+            KnowledgeIngestionAsyncService asyncService,
+            KnowledgeMetadataPolicy metadataPolicy,
+            String uploadDir
+    ) throws IOException {
+        this(pgJdbcTemplate, asyncService, metadataPolicy, new KnowledgeDraftService(pgJdbcTemplate), uploadDir);
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
@@ -168,13 +184,13 @@ public class KnowledgeService {
         byte[] bytes;
         try { bytes = file.getBytes(); } catch (IOException e) { throw new IllegalArgumentException("Unable to read uploaded file", e); }
         String contentHash = sha256(bytes);
-        List<Long> duplicates = pgJdbcTemplate.query("""
-                SELECT id FROM knowledge_document
+        List<Map<String, Object>> duplicates = pgJdbcTemplate.queryForList("""
+                SELECT id, review_status FROM knowledge_document
                 WHERE merchant_code = ? AND source_type = ? AND content_hash = ?
                   AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                 LIMIT 1
-                """, (rs, rowNum) -> rs.getLong(1), merchantCode, knowledgeType, contentHash);
-        if (!duplicates.isEmpty()) return new FileImportResponse(duplicates.getFirst(), "PROCESSING", true);
+                """, merchantCode, knowledgeType, contentHash);
+        if (!duplicates.isEmpty()) return duplicateResponse(duplicates.getFirst());
 
         StoredKnowledgeFile stored = storeKnowledgeFile(file);
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -187,33 +203,52 @@ public class KnowledgeService {
         metadata.put("errorMessage", null);
         String title = normalizeOptional(command.title());
         if (title == null) title = fileName.substring(0, fileName.lastIndexOf('.'));
-        Long documentId = pgJdbcTemplate.queryForObject("""
-                INSERT INTO knowledge_document (source_type, source_code, merchant_code, title, content, metadata,
-                    status, review_status, content_hash, revision, published_revision, created_at, updated_at)
-                VALUES (?, ?, ?, ?, '', ?::jsonb, 1, 'PROCESSING', ?, 1, NULL, NOW(), NOW()) RETURNING id
-                """, Long.class, knowledgeType, generateSourceCode(knowledgeType), merchantCode, title,
-                toJson(metadata), contentHash);
-        runAfterCommit(() -> asyncService.processFileImport(documentId, stored.storagePath().toString(), fileName));
+        Long documentId;
+        try {
+            documentId = pgJdbcTemplate.queryForObject("""
+                    INSERT INTO knowledge_document (source_type, source_code, merchant_code, title, content, metadata,
+                        status, review_status, content_hash, revision, published_revision, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, '', ?::jsonb, 1, 'PROCESSING', ?, 1, NULL, NOW(), NOW()) RETURNING id
+                    """, Long.class, knowledgeType, generateSourceCode(knowledgeType), merchantCode, title,
+                    toJson(metadata), contentHash);
+        } catch (DuplicateKeyException duplicateKeyException) {
+            List<Map<String, Object>> active = pgJdbcTemplate.queryForList("""
+                    SELECT id, review_status FROM knowledge_document
+                    WHERE merchant_code = ? AND source_type = ? AND content_hash = ?
+                      AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                    LIMIT 1
+                    """, merchantCode, knowledgeType, contentHash);
+            if (!active.isEmpty()) return duplicateResponse(active.getFirst());
+            throw duplicateKeyException;
+        }
+        runAfterCommit(() -> asyncService.processFileImport(documentId, stored.storagePath().toString(), fileName, 1L));
         return new FileImportResponse(documentId, "PROCESSING", false);
     }
 
     public IngestionStatusResponse ingestionStatus(Long documentId) {
-        return new KnowledgeDraftService(pgJdbcTemplate).ingestionStatus(documentId);
+        return draftService.ingestionStatus(documentId);
     }
 
     public List<DraftChunkResponse> draft(Long documentId) {
-        return new KnowledgeDraftService(pgJdbcTemplate).draft(documentId);
+        return draftService.draft(documentId);
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
     public IngestionStatusResponse retryFileImport(Long documentId) {
-        int changed = pgJdbcTemplate.update("""
-                UPDATE knowledge_document SET review_status = 'PROCESSING',
-                    metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
-                WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') = 'FILE'
-                """, documentId);
-        if (changed == 0) throw new BizException(ErrorCode.NOT_FOUND, "Knowledge file document not found");
-        runAfterCommit(() -> asyncService.reprocessDocument(documentId));
+        Long targetRevision;
+        try {
+            targetRevision = pgJdbcTemplate.queryForObject("""
+                    UPDATE knowledge_document SET review_status = 'PROCESSING', revision = revision + 1,
+                        metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
+                    WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') = 'FILE'
+                      AND review_status IN ('PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED')
+                      AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                    RETURNING revision
+                    """, Long.class, documentId);
+        } catch (EmptyResultDataAccessException exception) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Knowledge file document is not retryable");
+        }
+        runAfterCommit(() -> asyncService.reprocessDocument(documentId, targetRevision));
         return ingestionStatus(documentId);
     }
 
@@ -606,9 +641,16 @@ public class KnowledgeService {
                 ".txt", Set.of("text/plain")
         );
         Set<String> allowed = supported.get(extension);
-        if (allowed == null || (contentType != null && !contentType.isBlank() && !allowed.contains(contentType.toLowerCase(java.util.Locale.ROOT)))) {
+        if (allowed == null || contentType == null || contentType.isBlank()
+                || !allowed.contains(contentType.toLowerCase(java.util.Locale.ROOT))) {
             throw new IllegalArgumentException("Unsupported file type");
         }
+    }
+
+    private FileImportResponse duplicateResponse(Map<String, Object> document) {
+        Object id = document.get("id");
+        Long documentId = id instanceof Number number ? number.longValue() : Long.valueOf(String.valueOf(id));
+        return new FileImportResponse(documentId, String.valueOf(document.get("review_status")), true);
     }
 
     private String sha256(byte[] content) {

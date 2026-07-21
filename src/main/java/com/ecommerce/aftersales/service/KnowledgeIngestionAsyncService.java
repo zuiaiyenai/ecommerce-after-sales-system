@@ -16,6 +16,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -37,30 +39,43 @@ import java.util.stream.Collectors;
 public class KnowledgeIngestionAsyncService {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Set<String> PARSE_ERROR_CODES = Set.of(
+            "UNSUPPORTED_FILE_TYPE", "PDF_ENCRYPTED", "PDF_TEXT_LAYER_MISSING", "FILE_DECODE_FAILED"
+    );
 
     @Qualifier("pgJdbcTemplate")
     private final JdbcTemplate pgJdbcTemplate;
     private final RestTemplate restTemplate;
     private final AgentGatewayProperties agentGatewayProperties;
     private final KnowledgeMetadataPolicy metadataPolicy;
+    private final KnowledgeDraftService draftService;
 
     @Autowired
     public KnowledgeIngestionAsyncService(
             JdbcTemplate pgJdbcTemplate,
             RestTemplate restTemplate,
             AgentGatewayProperties agentGatewayProperties,
-            KnowledgeMetadataPolicy metadataPolicy
+            KnowledgeMetadataPolicy metadataPolicy,
+            KnowledgeDraftService draftService
     ) {
         this.pgJdbcTemplate = pgJdbcTemplate;
         this.restTemplate = restTemplate;
         this.agentGatewayProperties = agentGatewayProperties;
         this.metadataPolicy = metadataPolicy;
+        this.draftService = draftService;
+    }
+
+    public KnowledgeIngestionAsyncService(
+            JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate, AgentGatewayProperties agentGatewayProperties,
+            KnowledgeMetadataPolicy metadataPolicy
+    ) {
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, metadataPolicy, new KnowledgeDraftService(pgJdbcTemplate));
     }
 
     KnowledgeIngestionAsyncService(
             JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate, AgentGatewayProperties agentGatewayProperties
     ) {
-        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, null);
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, null, new KnowledgeDraftService(pgJdbcTemplate));
     }
 
     @Async("knowledgeIngestionExecutor")
@@ -70,22 +85,25 @@ public class KnowledgeIngestionAsyncService {
     }
 
     @Async("knowledgeIngestionExecutor")
-    @Transactional(transactionManager = "pgTransactionManager")
     public void processFileImport(Long documentId, String filePath, String fileName) {
+        processFileImport(documentId, filePath, fileName, 1L);
+    }
+
+    @Async("knowledgeIngestionExecutor")
+    public void processFileImport(Long documentId, String filePath, String fileName, long targetRevision) {
         try {
             Path path = Path.of(filePath);
             if (!Files.exists(path) || Files.size(path) > 10 * 1024 * 1024) {
                 throw new IllegalArgumentException("FILE_TOO_LARGE_OR_MISSING");
             }
-            processParsedFile(documentId, Files.readAllBytes(path), fileName);
+            processParsedFile(documentId, Files.readAllBytes(path), fileName, targetRevision);
         } catch (Exception e) {
             log.error("Failed to process knowledge file import, documentId={}", documentId, e);
-            markFailed(documentId, errorCode(e), e.getMessage());
+            draftService.markParseFailed(documentId, targetRevision, errorCode(e), safeErrorMessage(e));
         }
     }
 
     @Async("knowledgeIngestionExecutor")
-    @Transactional(transactionManager = "pgTransactionManager")
     public void reprocessDocument(Long documentId) {
         Map<String, Object> document = loadDocument(documentId);
         if (document == null) {
@@ -93,27 +111,37 @@ public class KnowledgeIngestionAsyncService {
             return;
         }
 
+        long targetRevision = ((Number) document.getOrDefault("revision", 1L)).longValue();
+        reprocessDocument(documentId, targetRevision);
+    }
+
+    @Async("knowledgeIngestionExecutor")
+    public void reprocessDocument(Long documentId, long targetRevision) {
+        Map<String, Object> document = loadDocument(documentId);
+        if (document == null) {
+            log.warn("Skip reprocess, document not found: {}", documentId);
+            return;
+        }
         Map<String, Object> metadata = readMetadata(document.get("metadata"));
         String sourceMode = stringValue(metadata.get("ingestionSourceType"));
-        markProcessing(documentId, metadata);
 
         try {
             if ("FILE".equalsIgnoreCase(sourceMode)) {
                 String filePath = stringValue(metadata.get("fileStoragePath"));
                 String fileName = stringValue(metadata.get("fileName"));
-                processFileImport(documentId, filePath, fileName);
+                processFileImport(documentId, filePath, fileName, targetRevision);
                 return;
             }
 
             processDocument(documentId, stringValue(document.get("content")), null, null);
         } catch (Exception e) {
             log.error("Failed to reprocess document {}", documentId, e);
-            markFailed(documentId, errorCode(e), e.getMessage());
+            draftService.markParseFailed(documentId, targetRevision, errorCode(e), safeErrorMessage(e));
         }
     }
 
     @SuppressWarnings("unchecked")
-    private void processParsedFile(Long documentId, byte[] content, String fileName) {
+    private void processParsedFile(Long documentId, byte[] content, String fileName, long targetRevision) {
         Map<String, Object> document = loadDocument(documentId);
         if (document == null) throw new IllegalArgumentException("Knowledge document not found");
         Map<String, Object> request = new LinkedHashMap<>();
@@ -134,26 +162,14 @@ public class KnowledgeIngestionAsyncService {
         if (!(body instanceof Map<?, ?> parsed)) throw new IllegalStateException("PARSE_RESPONSE_INVALID");
         Object chunksValue = parsed.get("chunks");
         if (!(chunksValue instanceof List<?> chunks)) throw new IllegalStateException("PARSE_RESPONSE_INVALID");
-        long revision = ((Number) document.getOrDefault("revision", 1L)).longValue();
-        pgJdbcTemplate.update("DELETE FROM knowledge_chunk_draft WHERE document_id = ?", documentId);
-        for (Object item : chunks) {
-            if (!(item instanceof Map<?, ?> chunk)) continue;
-            pgJdbcTemplate.update("""
-                    INSERT INTO knowledge_chunk_draft (document_id, chunk_index, heading_path, page_number, chunk_text,
-                        product_categories, scenes, intents, classification_source, classification_confidence,
-                        classification_reason, review_required, revision)
-                    VALUES (?, ?, ?::text[], ?, ?, ?::text[], ?::text[], ?::text[], ?, ?, ?, ?, ?)
-                    """, documentId, number(chunk.get("chunk_index")), stringArray(chunk.get("heading_path")),
-                    chunk.get("page_number"), stringValue(chunk.get("text")), stringArray(chunk.get("product_categories")),
-                    stringArray(chunk.get("scenes")), stringArray(chunk.get("intents")),
-                    stringValue(chunk.get("classification_source")), chunk.get("classification_confidence"),
-                    stringValue(chunk.get("classification_reason")), Boolean.TRUE.equals(chunk.get("review_required")), revision);
-        }
-        pgJdbcTemplate.update("""
-                UPDATE knowledge_document SET content = ?, valid_from = CAST(? AS timestamp), valid_to = CAST(? AS timestamp),
-                    review_status = 'REVIEW_REQUIRED', updated_at = NOW()
-                WHERE id = ? AND revision = ? AND review_status = 'PROCESSING'
-                """, stringValue(parsed.get("content")), stringValue(parsed.get("valid_from")), stringValue(parsed.get("valid_to")), documentId, revision);
+        draftService.replaceParsedDraft(documentId, targetRevision, castParsed(parsed, chunks));
+    }
+
+    private Map<String, Object> castParsed(Map<?, ?> parsed, List<?> chunks) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        parsed.forEach((key, value) -> result.put(String.valueOf(key), value));
+        result.put("chunks", chunks);
+        return result;
     }
 
     private void processDocument(Long documentId, String content, String filePath, String fileName) {
@@ -225,24 +241,30 @@ public class KnowledgeIngestionAsyncService {
         );
     }
 
-    private void markFailed(Long documentId, String errorCode, String errorMessage) {
-        Map<String, Object> document = loadDocument(documentId);
-        Map<String, Object> metadata = readMetadata(document == null ? null : document.get("metadata"));
-        metadata.put("ingestionStatus", "FAILED");
-        metadata.put("errorCode", errorCode);
-        metadata.put("errorMessage", errorMessage == null ? "Unknown error" : errorMessage);
-        pgJdbcTemplate.update(
-            "UPDATE knowledge_document SET review_status = 'PARSE_FAILED', metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
-            toJson(metadata),
-            documentId
-        );
-    }
-
     private String errorCode(Exception exception) {
+        if (exception instanceof RestClientResponseException responseException) {
+            try {
+                Map<String, Object> body = OBJECT_MAPPER.readValue(responseException.getResponseBodyAsString(), new TypeReference<>() {});
+                String code = stringValue(body.get("error"));
+                if (code != null && PARSE_ERROR_CODES.contains(code)) return code;
+            } catch (Exception ignored) {
+                // A non-JSON or unknown error response deliberately remains a stable generic failure.
+            }
+            return "PARSE_FAILED";
+        }
         String message = exception.getMessage();
         if (message == null || message.isBlank()) return "PARSE_FAILED";
         int separator = message.indexOf(':');
         return (separator < 0 ? message : message.substring(0, separator)).replaceAll("[^A-Z0-9_]", "_").toUpperCase();
+    }
+
+    private String safeErrorMessage(Exception exception) {
+        String message = exception instanceof RestClientResponseException responseException
+                ? responseException.getResponseBodyAsString()
+                : exception.getMessage();
+        if (message == null || message.isBlank()) return "Parse failed";
+        String sanitized = message.replaceAll("[\\r\\n\\t]+", " ").replaceAll("(?i)(https?://\\S+|[A-Za-z]:\\\\\\S+)", "[redacted]");
+        return sanitized.length() <= 300 ? sanitized : sanitized.substring(0, 300);
     }
 
     private Integer number(Object value) {

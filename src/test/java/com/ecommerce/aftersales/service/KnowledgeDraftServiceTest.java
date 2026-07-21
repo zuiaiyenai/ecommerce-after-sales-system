@@ -5,9 +5,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class KnowledgeDraftServiceTest {
 
@@ -20,5 +27,58 @@ class KnowledgeDraftServiceTest {
 
         assertThat(response.chunkId()).isEqualTo(9007199254740993L);
         assertThat(response.reviewRequired()).isFalse();
+    }
+
+    @Test
+    void staleRevisionOrStatusCannotReplaceDrafts() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.replaceParsedDraft(42L, 7L, parsedDraft()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("STALE_DRAFT_TARGET");
+    }
+
+    @Test
+    void chunkInsertFailurePropagatesSoTheDraftReplacementTransactionRollsBack() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 42L)));
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0, String.class);
+            if (sql.contains("INSERT INTO knowledge_chunk_draft")) throw new IllegalStateException("insert failed");
+            return 1;
+        });
+
+        assertThatThrownBy(() -> service.replaceParsedDraft(42L, 7L, parsedDraft()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("insert failed");
+    }
+
+    @Test
+    void conditionalCompletionMustAffectExactlyOneRow() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 42L)));
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenAnswer(invocation ->
+                invocation.getArgument(0, String.class).contains("SET content") ? 0 : 1);
+
+        assertThatThrownBy(() -> service.replaceParsedDraft(42L, 7L, parsedDraft()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("STALE_DRAFT_TARGET");
+    }
+
+    private Map<String, Object> parsedDraft() {
+        Map<String, Object> parsed = new LinkedHashMap<>();
+        parsed.put("content", "draft content");
+        parsed.put("chunks", List.of(Map.of(
+                "chunk_index", 0,
+                "heading_path", List.of("Refund"),
+                "text", "draft content",
+                "classification_source", "RULE",
+                "review_required", false
+        )));
+        return parsed;
     }
 }
