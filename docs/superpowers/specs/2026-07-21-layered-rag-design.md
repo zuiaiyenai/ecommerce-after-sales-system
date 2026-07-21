@@ -449,12 +449,13 @@ API：
 POST /admin/knowledge/file-import
 GET  /admin/knowledge/{documentId}/ingestion-status
 GET  /admin/knowledge/{documentId}/draft
+PUT  /admin/knowledge/{documentId}/draft
 PUT  /admin/knowledge/{documentId}/draft/chunks/{chunkId}
 POST /admin/knowledge/{documentId}/publish
 POST /admin/knowledge/{documentId}/retry
 ```
 
-Draft 修改和发布携带 `expectedRevision`。发布 CAS：
+文档级 Draft 更新政策版本、生效时间和失效时间；Chunk 级 Draft 更新品类、场景和意图。两类 Draft 修改和发布都携带 `expectedRevision`。发布 CAS：
 
 ```sql
 UPDATE knowledge_document
