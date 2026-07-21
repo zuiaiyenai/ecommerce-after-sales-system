@@ -10,6 +10,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 
@@ -240,12 +241,39 @@ class KnowledgeServiceTest {
         assertThat(response.documentId()).isEqualTo(77L);
         assertThat(response.reviewStatus()).isEqualTo("REVIEW_REQUIRED");
         assertThat(response.duplicate()).isTrue();
+        try (var storedFiles = Files.walk(tempDir)) {
+            assertThat(storedFiles.filter(Files::isRegularFile)).isEmpty();
+        }
         ArgumentCaptor<String> insertSql = ArgumentCaptor.forClass(String.class);
         verify(jdbcTemplate).queryForObject(insertSql.capture(), eq(Long.class), any(Object[].class));
         assertThat(insertSql.getValue()).contains("ON CONFLICT (merchant_code, source_type, content_hash)")
                 .contains("DO NOTHING RETURNING id")
                 .contains("COALESCE(metadata ->> 'deleted', 'false') <> 'true'");
         verify(jdbcTemplate, org.mockito.Mockito.times(2)).queryForList(anyString(), any(Object[].class));
+        verifyNoInteractions(asyncService);
+    }
+
+    @Test
+    void conflictWithNoLongerActiveDuplicateStillCleansItsStoredFileBeforeFailing() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(), List.of());
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), draftService, tempDir.toString());
+        MockMultipartFile file = new MockMultipartFile("file", "policy.txt", "text/plain", "draft".getBytes());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createFileImport(
+                new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(
+                        null, "faq", "MERCHANT", "MERCHANT_DEMO", file)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Duplicate knowledge import was not found after conflict");
+
+        try (var storedFiles = Files.walk(tempDir)) {
+            assertThat(storedFiles.filter(Files::isRegularFile)).isEmpty();
+        }
         verifyNoInteractions(asyncService);
     }
 
@@ -262,12 +290,16 @@ class KnowledgeServiceTest {
         }
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 1L, "review_status", "PROCESSING")));
+        KnowledgeIngestionAsyncService boundaryAsyncService = mock(KnowledgeIngestionAsyncService.class);
         KnowledgeService boundaryService = new KnowledgeService(
-                jdbcTemplate, mock(KnowledgeIngestionAsyncService.class), metadataPolicy("v2.0"), tempDir.toString());
+                jdbcTemplate, boundaryAsyncService, metadataPolicy("v2.0"), tempDir.toString());
         MockMultipartFile boundary = new MockMultipartFile("file", "policy.txt", "text/plain", new byte[10 * 1024 * 1024]);
 
-        assertThat(boundaryService.createFileImport(new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(
-                null, "faq", "MERCHANT", "MERCHANT_DEMO", boundary)).duplicate()).isTrue();
+        var duplicate = boundaryService.createFileImport(new com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand(
+                null, "faq", "MERCHANT", "MERCHANT_DEMO", boundary));
+        assertThat(duplicate.duplicate()).isTrue();
+        assertThat(duplicate.reviewStatus()).isEqualTo("PROCESSING");
+        verifyNoInteractions(boundaryAsyncService);
     }
 
     @Test
@@ -309,6 +341,25 @@ class KnowledgeServiceTest {
         service.reindexAll();
 
         verifyNoInteractions(asyncService);
+    }
+
+    @Test
+    void retrySqlRetainsDeletedGuardAndDoesNotDispatchWhenTheDocumentIsDeleted() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(42L)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), draftService, tempDir.toString());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.retryFileImport(42L))
+                .isInstanceOf(com.ecommerce.aftersales.common.BizException.class);
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(sql.capture(), eq(Long.class), eq(42L));
+        assertThat(sql.getValue()).contains("COALESCE(metadata ->> 'deleted', 'false') <> 'true'");
+        verifyNoInteractions(asyncService, draftService);
     }
 
     private KnowledgeMetadataPolicy metadataPolicy(String policyVersion) {

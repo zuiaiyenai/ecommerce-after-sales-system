@@ -3,6 +3,7 @@ package com.ecommerce.aftersales.service;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -27,6 +28,23 @@ class KnowledgeDraftServiceTest {
 
         assertThat(response.chunkId()).isEqualTo(9007199254740993L);
         assertThat(response.reviewRequired()).isFalse();
+    }
+
+    @Test
+    void deletedDocumentsAreExcludedFromStatusAndDraftQueries() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.ingestionStatus(42L))
+                .isInstanceOf(com.ecommerce.aftersales.common.BizException.class);
+        assertThat(service.draft(42L)).isEmpty();
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(jdbcTemplate, org.mockito.Mockito.times(2))
+                .query(sql.capture(), any(RowMapper.class), any(Object[].class));
+        assertThat(sql.getAllValues().get(0)).contains("COALESCE(metadata ->> 'deleted', 'false') <> 'true'");
+        assertThat(sql.getAllValues().get(1)).contains("COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'");
     }
 
     @Test

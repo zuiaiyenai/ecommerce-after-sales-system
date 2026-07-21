@@ -217,14 +217,14 @@ public class KnowledgeService {
             documentId = null;
         }
         if (documentId == null) {
+            deleteStoredFileQuietly(stored.storagePath());
             List<Map<String, Object>> active = pgJdbcTemplate.queryForList("""
                     SELECT id, review_status FROM knowledge_document
                     WHERE merchant_code = ? AND source_type = ? AND content_hash = ?
                       AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                     LIMIT 1
-                    """, merchantCode, knowledgeType, contentHash);
+            """, merchantCode, knowledgeType, contentHash);
             if (!active.isEmpty()) {
-                deleteStoredFileQuietly(stored.storagePath());
                 return duplicateResponse(active.getFirst());
             }
             throw new IllegalStateException("Duplicate knowledge import was not found after conflict");
