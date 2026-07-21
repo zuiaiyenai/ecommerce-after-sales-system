@@ -1,53 +1,71 @@
 package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
+import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/admin/knowledge")
 @RequiredArgsConstructor
 public class KnowledgeManagementController {
-
     private final KnowledgeService knowledgeService;
 
-    @PostMapping("/import/text")
-    public ApiResponse<Map<String, Object>> importTextKnowledge(
-            @RequestBody KnowledgeUploadDto.TextImportRequest request
+    @PostMapping(value = "/file-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<FileImportResponse> fileImport(
+            @RequestParam String knowledgeType,
+            @RequestParam(defaultValue = "MERCHANT") String scope,
+            @RequestParam(required = false) String merchantCode,
+            @RequestParam(required = false) String title,
+            @RequestPart MultipartFile file
     ) {
-        return ApiResponse.success("知识导入任务已创建", knowledgeService.createTextImport(request));
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
+        if (!(name.endsWith(".pdf") || name.endsWith(".md") || name.endsWith(".txt"))) {
+            throw new BizException("Unsupported file type");
+        }
+        return ApiResponse.success("File import created", knowledgeService.createFileImport(
+                new FileImportCommand(title, knowledgeType, scope, merchantCode, file)));
     }
 
-    @PostMapping(value = "/import/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ApiResponse<Map<String, Object>> importFileKnowledge(
-            @RequestParam("title") String title,
-            @RequestParam("knowledgeType") String knowledgeType,
-            @RequestParam(value = "scope", defaultValue = "MERCHANT") String scope,
-            @RequestParam(value = "merchantCode", required = false) String merchantCode,
-            @RequestParam(value = "status", defaultValue = "ENABLED") String status,
-            @RequestParam("file") MultipartFile file
-    ) {
-        return ApiResponse.success(
-                "文件导入任务已创建",
-                knowledgeService.createFileImport(title, knowledgeType, scope, merchantCode, status, file)
-        );
+    @GetMapping("/{id:\\d+}/ingestion-status")
+    public ApiResponse<IngestionStatusResponse> ingestionStatus(@PathVariable Long id) {
+        return ApiResponse.success("Query successful", knowledgeService.ingestionStatus(id));
     }
 
-    @PostMapping("/upload")
-    public ApiResponse<Map<String, Object>> uploadKnowledge(@RequestBody KnowledgeUploadDto.UploadRequest request) {
-        return ApiResponse.success("兼容导入任务已创建", knowledgeService.uploadKnowledge(request));
+    @GetMapping("/{id:\\d+}/draft")
+    public ApiResponse<List<DraftChunkResponse>> draft(@PathVariable Long id) {
+        return ApiResponse.success("Query successful", knowledgeService.draft(id));
     }
 
-    @PostMapping("/batch-upload")
-    public ApiResponse<Map<String, Object>> batchUploadKnowledge(@RequestBody List<KnowledgeUploadDto.UploadRequest> requests) {
-        return ApiResponse.success("批量导入任务已创建", knowledgeService.batchUploadKnowledge(requests));
+    @PostMapping("/{id:\\d+}/retry")
+    public ApiResponse<IngestionStatusResponse> retry(@PathVariable Long id) {
+        return ApiResponse.success("Retry created", knowledgeService.retryFileImport(id));
+    }
+
+    @GetMapping("/metadata-options")
+    public ApiResponse<Map<String, Object>> getMetadataOptions(@RequestParam(required = false) String merchantCode) {
+        return ApiResponse.success("Query successful", knowledgeService.getMetadataOptions(merchantCode));
     }
 
     @GetMapping("/list")
@@ -57,44 +75,40 @@ public class KnowledgeManagementController {
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "20") Integer pageSize
     ) {
-        return ApiResponse.success("查询成功", knowledgeService.listKnowledge(sourceType, merchantCode, page, pageSize));
+        return ApiResponse.success("Query successful", knowledgeService.listKnowledge(sourceType, merchantCode, page, pageSize));
     }
 
-    @GetMapping("/{id}")
+    @GetMapping("/{id:\\d+}")
     public ApiResponse<KnowledgeUploadDto.KnowledgeInfo> getKnowledge(@PathVariable Long id) {
-        return ApiResponse.success("查询成功", knowledgeService.getKnowledgeById(id));
+        return ApiResponse.success("Query successful", knowledgeService.getKnowledgeById(id));
     }
 
-    @PutMapping("/{id}")
-    public ApiResponse<Map<String, Object>> updateKnowledge(
-            @PathVariable Long id,
-            @RequestBody KnowledgeUploadDto.UpdateRequest request
-    ) {
-        return ApiResponse.success("更新成功", knowledgeService.updateKnowledge(id, request));
+    @PutMapping("/{id:\\d+}")
+    public ApiResponse<Map<String, Object>> updateKnowledge(@PathVariable Long id, @RequestBody KnowledgeUploadDto.UpdateRequest request) {
+        return ApiResponse.success("Updated", knowledgeService.updateKnowledge(id, request));
     }
 
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{id:\\d+}")
     public ApiResponse<Void> deleteKnowledge(@PathVariable Long id) {
         knowledgeService.deleteKnowledge(id);
-        return ApiResponse.success("删除成功", null);
+        return ApiResponse.success("Deleted", null);
     }
 
     @PostMapping("/reindex")
     public ApiResponse<Map<String, Object>> reindexAll() {
-        return ApiResponse.success("已触发全量重建", knowledgeService.reindexAll());
+        return ApiResponse.success("Reindex started", knowledgeService.reindexAll());
     }
 
-    @PostMapping("/{id}/sync")
+    @PostMapping("/{id:\\d+}/sync")
     public ApiResponse<Map<String, Object>> syncKnowledge(@PathVariable Long id) {
-        return ApiResponse.success("已触发重新处理", knowledgeService.syncKnowledge(id));
+        return ApiResponse.success("Sync started", knowledgeService.syncKnowledge(id));
     }
 
     @GetMapping("/test-retrieval")
     public ApiResponse<List<Map<String, Object>>> testRetrieval(
-            @RequestParam String query,
-            @RequestParam(required = false) String merchantCode,
+            @RequestParam String query, @RequestParam(required = false) String merchantCode,
             @RequestParam(defaultValue = "5") Integer topK
     ) {
-        return ApiResponse.success("检索成功", knowledgeService.testRetrieval(query, merchantCode, topK));
+        return ApiResponse.success("Retrieved", knowledgeService.testRetrieval(query, merchantCode, topK));
     }
 }

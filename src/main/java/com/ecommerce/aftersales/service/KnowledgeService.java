@@ -1,6 +1,12 @@
 package com.ecommerce.aftersales.service;
 
+import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.common.enums.ErrorCode;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
+import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -9,12 +15,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -23,6 +33,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -30,42 +41,55 @@ import java.util.UUID;
 public class KnowledgeService {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Set<String> RESERVED_METADATA_KEYS = Set.of(
+            "scope", "ingestionStatus", "ingestionSourceType", "errorMessage",
+            "chunkCount", "fileName", "fileUrl", "fileStoragePath", "deleted"
+    );
 
     private final JdbcTemplate pgJdbcTemplate;
     private final KnowledgeIngestionAsyncService asyncService;
+    private final KnowledgeMetadataPolicy metadataPolicy;
     private final Path uploadRoot;
 
     public KnowledgeService(
             @Qualifier("pgJdbcTemplate") JdbcTemplate pgJdbcTemplate,
             KnowledgeIngestionAsyncService asyncService,
+            KnowledgeMetadataPolicy metadataPolicy,
             @Value("${app.upload.dir:./uploads}") String uploadDir
     ) throws IOException {
         this.pgJdbcTemplate = pgJdbcTemplate;
         this.asyncService = asyncService;
+        this.metadataPolicy = metadataPolicy;
         this.uploadRoot = Paths.get(uploadDir).toAbsolutePath().normalize();
         Files.createDirectories(this.uploadRoot.resolve("knowledge"));
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
-    public Map<String, Object> createTextImport(KnowledgeUploadDto.TextImportRequest request) {
+    Map<String, Object> createTextImport(KnowledgeUploadDto.TextImportRequest request) {
+        String knowledgeType = normalizeKnowledgeType(request.getKnowledgeType());
         String merchantCode = normalizeMerchantCode(request.getScope(), request.getMerchantCode());
-        Map<String, Object> metadata = new LinkedHashMap<>();
+        Map<String, Object> metadata = copyCustomMetadata(request.getMetadata());
         metadata.put("scope", normalizeScope(request.getScope()));
         metadata.put("ingestionStatus", "PROCESSING");
         metadata.put("ingestionSourceType", "TEXT");
         metadata.put("errorMessage", null);
 
         Long documentId = insertKnowledgeDocument(
-                request.getKnowledgeType(),
-                generateSourceCode(request.getKnowledgeType()),
+                knowledgeType,
+                normalizeSourceCode(request.getSourceCode(), knowledgeType),
                 merchantCode,
                 request.getTitle(),
                 request.getContent(),
+                metadataPolicy.normalizeProductCategory(request.getProductCategory()),
+                metadataPolicy.normalizeScene(request.getScene()),
+                metadataPolicy.normalizeIntent(request.getIntent()),
+                metadataPolicy.resolvePolicyVersion(knowledgeType, merchantCode),
+                request.getTags(),
                 statusToDbValue(request.getStatus()),
                 metadata
         );
 
-        asyncService.processTextImport(documentId, request.getContent());
+        runAfterCommit(() -> asyncService.processTextImport(documentId, request.getContent()));
         return Map.of(
                 "documentId", documentId,
                 "ingestionStatus", "PROCESSING",
@@ -74,12 +98,17 @@ public class KnowledgeService {
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
-    public Map<String, Object> createFileImport(
+    Map<String, Object> createFileImport(
             String title,
             String knowledgeType,
             String scope,
             String merchantCode,
             String status,
+            String sourceCode,
+            String productCategory,
+            String scene,
+            String intent,
+            List<String> tags,
             MultipartFile file
     ) {
         if (file == null || file.isEmpty()) {
@@ -87,6 +116,7 @@ public class KnowledgeService {
         }
 
         String normalizedMerchantCode = normalizeMerchantCode(scope, merchantCode);
+        String normalizedKnowledgeType = normalizeKnowledgeType(knowledgeType);
         StoredKnowledgeFile storedFile = storeKnowledgeFile(file);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -99,16 +129,25 @@ public class KnowledgeService {
         metadata.put("errorMessage", null);
 
         Long documentId = insertKnowledgeDocument(
-                knowledgeType,
-                generateSourceCode(knowledgeType),
+                normalizedKnowledgeType,
+                normalizeSourceCode(sourceCode, normalizedKnowledgeType),
                 normalizedMerchantCode,
                 title,
                 "",
+                metadataPolicy.normalizeProductCategory(productCategory),
+                metadataPolicy.normalizeScene(scene),
+                metadataPolicy.normalizeIntent(intent),
+                metadataPolicy.resolvePolicyVersion(normalizedKnowledgeType, normalizedMerchantCode),
+                tags,
                 statusToDbValue(status),
                 metadata
         );
 
-        asyncService.processFileImport(documentId, storedFile.storagePath().toString(), storedFile.fileName());
+        runAfterCommit(() -> asyncService.processFileImport(
+                documentId,
+                storedFile.storagePath().toString(),
+                storedFile.fileName()
+        ));
         return Map.of(
                 "documentId", documentId,
                 "ingestionStatus", "PROCESSING",
@@ -118,19 +157,87 @@ public class KnowledgeService {
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
-    public Map<String, Object> uploadKnowledge(KnowledgeUploadDto.UploadRequest request) {
+    public FileImportResponse createFileImport(FileImportCommand command) {
+        MultipartFile file = command == null ? null : command.file();
+        if (file == null || file.isEmpty()) throw new IllegalArgumentException("Uploaded file must not be empty");
+        if (file.getSize() > 10 * 1024 * 1024) throw new IllegalArgumentException("File must not exceed 10MB");
+        String fileName = normalizedFileName(file.getOriginalFilename());
+        validateFileType(fileName, file.getContentType());
+        String knowledgeType = normalizeKnowledgeType(command.knowledgeType());
+        String merchantCode = normalizeMerchantCode(command.scope(), command.merchantCode());
+        byte[] bytes;
+        try { bytes = file.getBytes(); } catch (IOException e) { throw new IllegalArgumentException("Unable to read uploaded file", e); }
+        String contentHash = sha256(bytes);
+        List<Long> duplicates = pgJdbcTemplate.query("""
+                SELECT id FROM knowledge_document
+                WHERE merchant_code = ? AND source_type = ? AND content_hash = ?
+                  AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                LIMIT 1
+                """, (rs, rowNum) -> rs.getLong(1), merchantCode, knowledgeType, contentHash);
+        if (!duplicates.isEmpty()) return new FileImportResponse(duplicates.getFirst(), "PROCESSING", true);
+
+        StoredKnowledgeFile stored = storeKnowledgeFile(file);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("scope", normalizeScope(command.scope()));
+        metadata.put("ingestionSourceType", "FILE");
+        metadata.put("fileName", fileName);
+        metadata.put("fileUrl", stored.fileUrl());
+        metadata.put("fileStoragePath", stored.storagePath().toString());
+        metadata.put("errorCode", null);
+        metadata.put("errorMessage", null);
+        String title = normalizeOptional(command.title());
+        if (title == null) title = fileName.substring(0, fileName.lastIndexOf('.'));
+        Long documentId = pgJdbcTemplate.queryForObject("""
+                INSERT INTO knowledge_document (source_type, source_code, merchant_code, title, content, metadata,
+                    status, review_status, content_hash, revision, published_revision, created_at, updated_at)
+                VALUES (?, ?, ?, ?, '', ?::jsonb, 1, 'PROCESSING', ?, 1, NULL, NOW(), NOW()) RETURNING id
+                """, Long.class, knowledgeType, generateSourceCode(knowledgeType), merchantCode, title,
+                toJson(metadata), contentHash);
+        runAfterCommit(() -> asyncService.processFileImport(documentId, stored.storagePath().toString(), fileName));
+        return new FileImportResponse(documentId, "PROCESSING", false);
+    }
+
+    public IngestionStatusResponse ingestionStatus(Long documentId) {
+        return new KnowledgeDraftService(pgJdbcTemplate).ingestionStatus(documentId);
+    }
+
+    public List<DraftChunkResponse> draft(Long documentId) {
+        return new KnowledgeDraftService(pgJdbcTemplate).draft(documentId);
+    }
+
+    @Transactional(transactionManager = "pgTransactionManager")
+    public IngestionStatusResponse retryFileImport(Long documentId) {
+        int changed = pgJdbcTemplate.update("""
+                UPDATE knowledge_document SET review_status = 'PROCESSING',
+                    metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
+                WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') = 'FILE'
+                """, documentId);
+        if (changed == 0) throw new BizException(ErrorCode.NOT_FOUND, "Knowledge file document not found");
+        runAfterCommit(() -> asyncService.reprocessDocument(documentId));
+        return ingestionStatus(documentId);
+    }
+
+    @Transactional(transactionManager = "pgTransactionManager")
+    Map<String, Object> uploadKnowledge(KnowledgeUploadDto.UploadRequest request) {
         KnowledgeUploadDto.TextImportRequest importRequest = new KnowledgeUploadDto.TextImportRequest();
         importRequest.setTitle(request.getTitle());
         importRequest.setKnowledgeType(request.getSourceType());
+        importRequest.setSourceCode(request.getSourceCode());
         importRequest.setScope("MERCHANT");
         importRequest.setMerchantCode(request.getMerchantCode());
         importRequest.setStatus(request.getStatus() != null && request.getStatus() == 0 ? "DISABLED" : "ENABLED");
         importRequest.setContent(request.getContent());
+        importRequest.setProductCategory(request.getProductCategory());
+        importRequest.setScene(request.getScene());
+        importRequest.setIntent(request.getIntent());
+        importRequest.setPolicyVersion(request.getPolicyVersion());
+        importRequest.setTags(request.getTags());
+        importRequest.setMetadata(request.getMetadata());
         return createTextImport(importRequest);
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
-    public Map<String, Object> batchUploadKnowledge(List<KnowledgeUploadDto.UploadRequest> requests) {
+    Map<String, Object> batchUploadKnowledge(List<KnowledgeUploadDto.UploadRequest> requests) {
         List<Map<String, Object>> created = new ArrayList<>();
         for (KnowledgeUploadDto.UploadRequest request : requests) {
             created.add(uploadKnowledge(request));
@@ -188,6 +295,13 @@ public class KnowledgeService {
         ));
     }
 
+    public Map<String, Object> getMetadataOptions(String merchantCode) {
+        String normalizedMerchantCode = "GLOBAL".equalsIgnoreCase(merchantCode)
+                ? "GLOBAL"
+                : normalizeMerchantCode("MERCHANT", merchantCode);
+        return metadataPolicy.options(normalizedMerchantCode);
+    }
+
     public KnowledgeUploadDto.KnowledgeInfo getKnowledgeById(Long id) {
         List<KnowledgeUploadDto.KnowledgeInfo> result = pgJdbcTemplate.query(
                 """
@@ -222,30 +336,62 @@ public class KnowledgeService {
                         rs.getInt("chunk_count")
                 )
         );
-        return result.isEmpty() ? null : result.get(0);
+        if (result.isEmpty()) {
+            throw new BizException(ErrorCode.NOT_FOUND, "知识文档不存在或已删除");
+        }
+        return result.get(0);
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
     public Map<String, Object> updateKnowledge(Long id, KnowledgeUploadDto.UpdateRequest request) {
         KnowledgeUploadDto.KnowledgeInfo current = getKnowledgeById(id);
-        if (current == null) {
-            throw new IllegalArgumentException("Knowledge document not found: " + id);
-        }
 
         Map<String, Object> metadata = new LinkedHashMap<>(current.getMetadata() == null ? Map.of() : current.getMetadata());
+        mergeCustomMetadata(metadata, request.getMetadata());
+        boolean productCategoryProvided = request.getProductCategory() != null;
+        boolean sceneProvided = request.getScene() != null;
+        boolean intentProvided = request.getIntent() != null;
+        boolean policyVersionProvided = request.getPolicyVersion() != null || request.getContent() != null;
+        boolean tagsProvided = request.getTags() != null;
+        String effectiveMerchantCode = normalizeOptional(request.getMerchantCode()) == null
+                ? current.getMerchantCode()
+                : normalizeMerchantCode("MERCHANT", request.getMerchantCode());
+        String normalizedProductCategory = productCategoryProvided
+                ? metadataPolicy.normalizeProductCategory(request.getProductCategory())
+                : null;
+        String normalizedScene = sceneProvided ? metadataPolicy.normalizeScene(request.getScene()) : null;
+        String normalizedIntent = intentProvided ? metadataPolicy.normalizeIntent(request.getIntent()) : null;
+        String normalizedPolicyVersion = policyVersionProvided
+                ? metadataPolicy.resolvePolicyVersion(current.getSourceType(), effectiveMerchantCode)
+                : null;
         pgJdbcTemplate.update(
                 """
                 UPDATE knowledge_document
                 SET title = COALESCE(?, title),
                     merchant_code = COALESCE(?, merchant_code),
                     status = COALESCE(?, status),
+                    product_category = CASE WHEN ? THEN ? ELSE product_category END,
+                    scene = CASE WHEN ? THEN ? ELSE scene END,
+                    intent = CASE WHEN ? THEN ? ELSE intent END,
+                    policy_version = CASE WHEN ? THEN ? ELSE policy_version END,
+                    tags = CASE WHEN ? THEN ?::jsonb ELSE tags END,
                     metadata = ?::jsonb,
                     updated_at = NOW()
                 WHERE id = ?
                 """,
                 request.getTitle(),
-                request.getMerchantCode(),
+                normalizeOptional(request.getMerchantCode()),
                 request.getStatus(),
+                productCategoryProvided,
+                normalizedProductCategory,
+                sceneProvided,
+                normalizedScene,
+                intentProvided,
+                normalizedIntent,
+                policyVersionProvided,
+                normalizedPolicyVersion,
+                tagsProvided,
+                toNullableJson(normalizeTags(request.getTags())),
                 toJson(metadata),
                 id
         );
@@ -260,15 +406,17 @@ public class KnowledgeService {
                     toJson(metadata),
                     id
             );
-            asyncService.processTextImport(id, request.getContent());
+            runAfterCommit(() -> asyncService.processTextImport(id, request.getContent()));
         }
+
+        syncChunkMetadata(id);
 
         return Map.of("documentId", id, "updated", true);
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
     public void deleteKnowledge(Long id) {
-        pgJdbcTemplate.update(
+        int updated = pgJdbcTemplate.update(
                 """
                 UPDATE knowledge_document
                 SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{deleted}', 'true'::jsonb, true),
@@ -277,6 +425,9 @@ public class KnowledgeService {
                 """,
                 id
         );
+        if (updated == 0) {
+            throw new BizException(ErrorCode.NOT_FOUND, "知识文档不存在或已删除");
+        }
     }
 
     public Map<String, Object> reindexAll() {
@@ -294,9 +445,6 @@ public class KnowledgeService {
 
     public Map<String, Object> syncKnowledge(Long id) {
         KnowledgeUploadDto.KnowledgeInfo info = getKnowledgeById(id);
-        if (info == null) {
-            throw new IllegalArgumentException("Knowledge document not found: " + id);
-        }
 
         Map<String, Object> metadata = new LinkedHashMap<>(info.getMetadata() == null ? Map.of() : info.getMetadata());
         metadata.put("ingestionStatus", "PROCESSING");
@@ -321,6 +469,11 @@ public class KnowledgeService {
             String merchantCode,
             String title,
             String content,
+            String productCategory,
+            String scene,
+            String intent,
+            String policyVersion,
+            List<String> tags,
             Integer status,
             Map<String, Object> metadata
     ) {
@@ -328,8 +481,9 @@ public class KnowledgeService {
                 """
                 INSERT INTO knowledge_document (
                     source_type, source_code, merchant_code, title, content,
+                    product_category, scene, intent, policy_version, tags,
                     metadata, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, NOW(), NOW())
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, NOW(), NOW())
                 RETURNING id
                 """,
                 Long.class,
@@ -338,8 +492,35 @@ public class KnowledgeService {
                 merchantCode,
                 title,
                 content == null ? "" : content,
+                normalizeOptional(productCategory),
+                normalizeOptional(scene),
+                normalizeOptional(intent),
+                normalizeOptional(policyVersion),
+                toNullableJson(normalizeTags(tags)),
                 toJson(metadata),
                 status
+        );
+    }
+
+    private void syncChunkMetadata(Long documentId) {
+        pgJdbcTemplate.update(
+                """
+                UPDATE knowledge_chunk kc
+                SET metadata = COALESCE(kc.metadata, '{}'::jsonb) || jsonb_build_object(
+                    'title', kd.title,
+                    'source_type', kd.source_type,
+                    'source_code', kd.source_code,
+                    'merchant_code', kd.merchant_code,
+                    'product_category', kd.product_category,
+                    'scene', kd.scene,
+                    'intent', kd.intent,
+                    'policy_version', kd.policy_version,
+                    'tags', COALESCE(kd.tags, '[]'::jsonb)
+                )
+                FROM knowledge_document kd
+                WHERE kc.document_id = kd.id AND kd.id = ?
+                """,
+                documentId
         );
     }
 
@@ -411,12 +592,85 @@ public class KnowledgeService {
         }
     }
 
+    private String normalizedFileName(String originalFilename) {
+        String fileName = originalFilename == null ? "" : Path.of(originalFilename).getFileName().toString().trim();
+        if (fileName.isBlank() || !fileName.contains(".")) throw new IllegalArgumentException("Unsupported file type");
+        return fileName;
+    }
+
+    private void validateFileType(String fileName, String contentType) {
+        String extension = fileName.substring(fileName.lastIndexOf('.')).toLowerCase(java.util.Locale.ROOT);
+        Map<String, Set<String>> supported = Map.of(
+                ".pdf", Set.of("application/pdf"),
+                ".md", Set.of("text/markdown", "text/plain"),
+                ".txt", Set.of("text/plain")
+        );
+        Set<String> allowed = supported.get(extension);
+        if (allowed == null || (contentType != null && !contentType.isBlank() && !allowed.contains(contentType.toLowerCase(java.util.Locale.ROOT)))) {
+            throw new IllegalArgumentException("Unsupported file type");
+        }
+    }
+
+    private String sha256(byte[] content) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(content);
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest) result.append(String.format("%02x", value));
+            return result.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
     private String normalizeKnowledgeType(String knowledgeType) {
-        return (knowledgeType == null || knowledgeType.isBlank()) ? "faq" : knowledgeType;
+        return (knowledgeType == null || knowledgeType.isBlank())
+                ? "faq"
+                : knowledgeType.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     private String generateSourceCode(String knowledgeType) {
         return normalizeKnowledgeType(knowledgeType) + "_" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private String normalizeSourceCode(String sourceCode, String knowledgeType) {
+        String normalized = normalizeOptional(sourceCode);
+        return normalized == null ? generateSourceCode(knowledgeType) : normalized;
+    }
+
+    private String normalizeOptional(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private List<String> normalizeTags(List<String> tags) {
+        if (tags == null) {
+            return null;
+        }
+        return tags.stream()
+                .map(this::normalizeOptional)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+    }
+
+    private Map<String, Object> copyCustomMetadata(Map<String, Object> customMetadata) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        mergeCustomMetadata(result, customMetadata);
+        return result;
+    }
+
+    private void mergeCustomMetadata(Map<String, Object> target, Map<String, Object> customMetadata) {
+        if (customMetadata == null) {
+            return;
+        }
+        customMetadata.forEach((key, value) -> {
+            if (key != null && !RESERVED_METADATA_KEYS.contains(key)) {
+                target.put(key, value);
+            }
+        });
     }
 
     private String normalizeScope(String scope) {
@@ -427,7 +681,7 @@ public class KnowledgeService {
         if ("GLOBAL".equalsIgnoreCase(scope)) {
             return "GLOBAL";
         }
-        return (merchantCode == null || merchantCode.isBlank()) ? "MERCHANT_DEMO" : merchantCode;
+        return metadataPolicy.normalizeMerchantCode(merchantCode);
     }
 
     private Integer statusToDbValue(String status) {
@@ -443,6 +697,10 @@ public class KnowledgeService {
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize json", e);
         }
+    }
+
+    private String toNullableJson(Object obj) {
+        return obj == null ? null : toJson(obj);
     }
 
     private List<String> parseJsonToStringList(String json) {
@@ -472,6 +730,19 @@ public class KnowledgeService {
     private String stringMetadata(Map<String, Object> metadata, String key, String defaultValue) {
         Object value = metadata.get(key);
         return value == null ? defaultValue : String.valueOf(value);
+    }
+
+    private void runAfterCommit(Runnable task) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            task.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                task.run();
+            }
+        });
     }
 
     private record StoredKnowledgeFile(String fileName, String fileUrl, Path storagePath) {}

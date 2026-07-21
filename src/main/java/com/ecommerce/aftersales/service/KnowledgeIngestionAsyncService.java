@@ -1,12 +1,16 @@
 package com.ecommerce.aftersales.service;
 
+import com.ecommerce.aftersales.config.AgentGatewayProperties;
+import com.ecommerce.aftersales.config.TraceContext;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -19,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -29,7 +34,6 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class KnowledgeIngestionAsyncService {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -37,29 +41,50 @@ public class KnowledgeIngestionAsyncService {
     @Qualifier("pgJdbcTemplate")
     private final JdbcTemplate pgJdbcTemplate;
     private final RestTemplate restTemplate;
+    private final AgentGatewayProperties agentGatewayProperties;
+    private final KnowledgeMetadataPolicy metadataPolicy;
 
-    @Value("${python.agent.url:http://localhost:8765}")
-    private String pythonAgentUrl;
+    @Autowired
+    public KnowledgeIngestionAsyncService(
+            JdbcTemplate pgJdbcTemplate,
+            RestTemplate restTemplate,
+            AgentGatewayProperties agentGatewayProperties,
+            KnowledgeMetadataPolicy metadataPolicy
+    ) {
+        this.pgJdbcTemplate = pgJdbcTemplate;
+        this.restTemplate = restTemplate;
+        this.agentGatewayProperties = agentGatewayProperties;
+        this.metadataPolicy = metadataPolicy;
+    }
 
-    @Async
+    KnowledgeIngestionAsyncService(
+            JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate, AgentGatewayProperties agentGatewayProperties
+    ) {
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, null);
+    }
+
+    @Async("knowledgeIngestionExecutor")
     @Transactional(transactionManager = "pgTransactionManager")
     public void processTextImport(Long documentId, String content) {
         processDocument(documentId, content, null, null);
     }
 
-    @Async
+    @Async("knowledgeIngestionExecutor")
     @Transactional(transactionManager = "pgTransactionManager")
     public void processFileImport(Long documentId, String filePath, String fileName) {
         try {
-            String content = extractTextFromFile(Path.of(filePath), fileName);
-            processDocument(documentId, content, filePath, fileName);
+            Path path = Path.of(filePath);
+            if (!Files.exists(path) || Files.size(path) > 10 * 1024 * 1024) {
+                throw new IllegalArgumentException("FILE_TOO_LARGE_OR_MISSING");
+            }
+            processParsedFile(documentId, Files.readAllBytes(path), fileName);
         } catch (Exception e) {
             log.error("Failed to process knowledge file import, documentId={}", documentId, e);
-            markFailed(documentId, e.getMessage());
+            markFailed(documentId, errorCode(e), e.getMessage());
         }
     }
 
-    @Async
+    @Async("knowledgeIngestionExecutor")
     @Transactional(transactionManager = "pgTransactionManager")
     public void reprocessDocument(Long documentId) {
         Map<String, Object> document = loadDocument(documentId);
@@ -76,16 +101,59 @@ public class KnowledgeIngestionAsyncService {
             if ("FILE".equalsIgnoreCase(sourceMode)) {
                 String filePath = stringValue(metadata.get("fileStoragePath"));
                 String fileName = stringValue(metadata.get("fileName"));
-                String content = extractTextFromFile(Path.of(filePath), fileName);
-                processDocument(documentId, content, filePath, fileName);
+                processFileImport(documentId, filePath, fileName);
                 return;
             }
 
             processDocument(documentId, stringValue(document.get("content")), null, null);
         } catch (Exception e) {
             log.error("Failed to reprocess document {}", documentId, e);
-            markFailed(documentId, e.getMessage());
+            markFailed(documentId, errorCode(e), e.getMessage());
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void processParsedFile(Long documentId, byte[] content, String fileName) {
+        Map<String, Object> document = loadDocument(documentId);
+        if (document == null) throw new IllegalArgumentException("Knowledge document not found");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("file_name", fileName);
+        request.put("content_base64", Base64.getEncoder().encodeToString(content));
+        request.put("knowledge_type", stringValue(document.get("source_type")));
+        request.put("allowed_metadata", canonicalAllowedMetadata(stringValue(document.get("merchant_code"))));
+        String baseUrl = agentGatewayProperties.getBaseUrl().replaceAll("/+$", "");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (agentGatewayProperties.getInternalToken() != null && !agentGatewayProperties.getInternalToken().isBlank()) {
+            headers.set("X-Agent-Internal-Token", agentGatewayProperties.getInternalToken());
+        }
+        TraceContext.putHeader(headers);
+        Map<String, Object> response = restTemplate.postForObject(baseUrl + "/knowledge/parse", new HttpEntity<>(request, headers), Map.class);
+        if (response == null) throw new IllegalStateException("PARSE_RESPONSE_EMPTY");
+        Object body = response.getOrDefault("data", response);
+        if (!(body instanceof Map<?, ?> parsed)) throw new IllegalStateException("PARSE_RESPONSE_INVALID");
+        Object chunksValue = parsed.get("chunks");
+        if (!(chunksValue instanceof List<?> chunks)) throw new IllegalStateException("PARSE_RESPONSE_INVALID");
+        long revision = ((Number) document.getOrDefault("revision", 1L)).longValue();
+        pgJdbcTemplate.update("DELETE FROM knowledge_chunk_draft WHERE document_id = ?", documentId);
+        for (Object item : chunks) {
+            if (!(item instanceof Map<?, ?> chunk)) continue;
+            pgJdbcTemplate.update("""
+                    INSERT INTO knowledge_chunk_draft (document_id, chunk_index, heading_path, page_number, chunk_text,
+                        product_categories, scenes, intents, classification_source, classification_confidence,
+                        classification_reason, review_required, revision)
+                    VALUES (?, ?, ?::text[], ?, ?, ?::text[], ?::text[], ?::text[], ?, ?, ?, ?, ?)
+                    """, documentId, number(chunk.get("chunk_index")), stringArray(chunk.get("heading_path")),
+                    chunk.get("page_number"), stringValue(chunk.get("text")), stringArray(chunk.get("product_categories")),
+                    stringArray(chunk.get("scenes")), stringArray(chunk.get("intents")),
+                    stringValue(chunk.get("classification_source")), chunk.get("classification_confidence"),
+                    stringValue(chunk.get("classification_reason")), Boolean.TRUE.equals(chunk.get("review_required")), revision);
+        }
+        pgJdbcTemplate.update("""
+                UPDATE knowledge_document SET content = ?, valid_from = CAST(? AS timestamp), valid_to = CAST(? AS timestamp),
+                    review_status = 'REVIEW_REQUIRED', updated_at = NOW()
+                WHERE id = ? AND revision = ? AND review_status = 'PROCESSING'
+                """, stringValue(parsed.get("content")), stringValue(parsed.get("valid_from")), stringValue(parsed.get("valid_to")), documentId, revision);
     }
 
     private void processDocument(Long documentId, String content, String filePath, String fileName) {
@@ -157,22 +225,61 @@ public class KnowledgeIngestionAsyncService {
         );
     }
 
-    private void markFailed(Long documentId, String errorMessage) {
+    private void markFailed(Long documentId, String errorCode, String errorMessage) {
         Map<String, Object> document = loadDocument(documentId);
         Map<String, Object> metadata = readMetadata(document == null ? null : document.get("metadata"));
         metadata.put("ingestionStatus", "FAILED");
+        metadata.put("errorCode", errorCode);
         metadata.put("errorMessage", errorMessage == null ? "Unknown error" : errorMessage);
         pgJdbcTemplate.update(
-            "UPDATE knowledge_document SET metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
+            "UPDATE knowledge_document SET review_status = 'PARSE_FAILED', metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
             toJson(metadata),
             documentId
         );
     }
 
+    private String errorCode(Exception exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) return "PARSE_FAILED";
+        int separator = message.indexOf(':');
+        return (separator < 0 ? message : message.substring(0, separator)).replaceAll("[^A-Z0-9_]", "_").toUpperCase();
+    }
+
+    private Integer number(Object value) {
+        return value instanceof Number number ? number.intValue() : Integer.parseInt(String.valueOf(value));
+    }
+
+    private String[] stringArray(Object value) {
+        if (!(value instanceof List<?> values)) return null;
+        return values.stream().filter(Objects::nonNull).map(String::valueOf).toArray(String[]::new);
+    }
+
+    private Map<String, List<String>> canonicalAllowedMetadata(String merchantCode) {
+        if (metadataPolicy == null) {
+            throw new IllegalStateException("Knowledge metadata policy is required for file parsing");
+        }
+        Map<String, Object> options = metadataPolicy.options(merchantCode);
+        return Map.of(
+                "product_categories", optionValues(options.get("productCategories")),
+                "scenes", optionValues(options.get("scenes")),
+                "intents", optionValues(options.get("intents"))
+        );
+    }
+
+    private List<String> optionValues(Object value) {
+        if (!(value instanceof List<?> options)) return List.of();
+        return options.stream()
+                .filter(KnowledgeMetadataPolicy.Option.class::isInstance)
+                .map(KnowledgeMetadataPolicy.Option.class::cast)
+                .map(KnowledgeMetadataPolicy.Option::value)
+                .toList();
+    }
+
     private Map<String, Object> loadDocument(Long id) {
         List<Map<String, Object>> rows = pgJdbcTemplate.queryForList(
             """
-            SELECT id, source_type, source_code, merchant_code, title, content, metadata, status
+            SELECT id, source_type, source_code, merchant_code, title, content,
+                   product_category, scene, intent, policy_version, tags, metadata, status
             FROM knowledge_document
             WHERE id = ?
             LIMIT 1
@@ -228,8 +335,23 @@ public class KnowledgeIngestionAsyncService {
             "document_type", stringValue(document.get("source_type"))
         );
 
-        String url = pythonAgentUrl + "/api/embeddings";
-        Map<String, Object> response = restTemplate.postForObject(url, requestBody, Map.class);
+        String baseUrl = agentGatewayProperties.getBaseUrl();
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        String url = baseUrl + "/embeddings";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (agentGatewayProperties.getInternalToken() != null
+                && !agentGatewayProperties.getInternalToken().isBlank()) {
+            headers.set("X-Agent-Internal-Token", agentGatewayProperties.getInternalToken());
+        }
+        TraceContext.putHeader(headers);
+        Map<String, Object> response = restTemplate.postForObject(
+                url,
+                new HttpEntity<>(requestBody, headers),
+                Map.class
+        );
         if (response == null || !response.containsKey("embeddings")) {
             throw new IllegalStateException("Embedding service returned no embeddings");
         }
@@ -246,6 +368,11 @@ public class KnowledgeIngestionAsyncService {
             chunkMetadata.put("source_type", stringValue(document.get("source_type")));
             chunkMetadata.put("source_code", stringValue(document.get("source_code")));
             chunkMetadata.put("merchant_code", stringValue(document.get("merchant_code")));
+            chunkMetadata.put("product_category", stringValue(document.get("product_category")));
+            chunkMetadata.put("scene", stringValue(document.get("scene")));
+            chunkMetadata.put("intent", stringValue(document.get("intent")));
+            chunkMetadata.put("policy_version", stringValue(document.get("policy_version")));
+            chunkMetadata.put("tags", readTags(document.get("tags")));
 
             String embeddingVector = embeddings.get(i).stream()
                 .map(String::valueOf)
@@ -259,6 +386,21 @@ public class KnowledgeIngestionAsyncService {
             records.add(record);
         }
         return records;
+    }
+
+    private List<String> readTags(Object rawTags) {
+        if (rawTags == null) {
+            return List.of();
+        }
+        try {
+            if (rawTags instanceof List<?> list) {
+                return list.stream().map(String::valueOf).toList();
+            }
+            return OBJECT_MAPPER.readValue(String.valueOf(rawTags), new TypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("Failed to parse knowledge tags: {}", rawTags, e);
+            return List.of();
+        }
     }
 
     private Map<String, Object> readMetadata(Object rawMetadata) {
