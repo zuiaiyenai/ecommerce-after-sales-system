@@ -202,7 +202,7 @@ class KnowledgeIngestionService:
                         knowledge_type=knowledge_type,
                         allowed_metadata={key: allowed[key] for key in missing},
                     )
-                    model_available = True
+                    model_available = bool(model)
                 except Exception:
                     model = {}
 
@@ -255,8 +255,20 @@ class KnowledgeIngestionService:
 
     @staticmethod
     def _contains_term(text: str, value: str) -> bool:
-        normalized = value.lower()
-        return normalized in text or normalized.replace("_", " ") in text
+        normalized_value = value.strip().casefold()
+        normalized_text = text.casefold()
+        if not normalized_value:
+            return False
+        if any("\u4e00" <= character <= "\u9fff" for character in normalized_value):
+            compact_value = re.sub(r"[\s_-]+", "", normalized_value)
+            compact_text = re.sub(r"[\s_-]+", "", normalized_text)
+            return compact_value in compact_text
+
+        terms = [re.escape(term) for term in re.split(r"[\s_-]+", normalized_value) if term]
+        if not terms:
+            return False
+        pattern = r"(?<!\w)" + r"[\s_-]+".join(terms) + r"(?!\w)"
+        return re.search(pattern, normalized_text) is not None
 
     def _classify_with_model(
         self,
