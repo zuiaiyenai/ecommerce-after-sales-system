@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from collections import OrderedDict
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import logging
@@ -13,6 +14,8 @@ import threading
 import urllib.error
 import urllib.request
 from typing import Any
+
+from after_sales_agent.providers.reranker_client import RerankResult, RerankerClient
 
 from after_sales_agent.retrieval.knowledge_filters import (
     POLICY_SOURCE_TYPES,
@@ -24,6 +27,14 @@ from after_sales_agent.retrieval.knowledge_filters import (
 from after_sales_agent.retrieval.rrf import rrf_fuse
 
 logger = logging.getLogger("after_sales_agent.rag")
+
+RERANK_THRESHOLDS = {
+    "after_sales_policy": 0.75,
+    "refund_policy": 0.75,
+    "exchange_rule": 0.75,
+    "evidence_requirement": 0.65,
+    "faq": 0.60,
+}
 
 
 @dataclass(frozen=True)
@@ -115,8 +126,14 @@ class PgVectorKnowledgeRetriever:
     legacy MySQL/JSON retrieval.
     """
 
-    def __init__(self, config: PgVectorConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: PgVectorConfig | None = None,
+        *,
+        reranker: Any | None = None,
+    ) -> None:
         self.config = config or PgVectorConfig.from_env()
+        self.reranker = reranker or RerankerClient()
         self._embedding_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache_lock = threading.Lock()
 
@@ -288,14 +305,23 @@ class PgVectorKnowledgeRetriever:
         )
         hits = self._annotate_hits_with_filter_contract(hits, strict_plan)
         lexical = self._apply_filter_contract(lexical, strict_plan)
-        if hits:
-            hits = self._merge_and_rerank_hits(hits, lexical.get("hits") or [], normalized_query, limit)
+        lexical_hits = lexical.get("hits") or []
+        if hits or lexical_hits:
+            return self._finalize_reranked_result(
+                query=normalized_query,
+                dense_hits=hits,
+                keyword_hits=lexical_hits,
+                plan=strict_plan,
+                limit=limit,
+                trace={
+                    "filters": metadata_filters,
+                    "top_k": limit,
+                    "ivfflat_probes": self.config.ivfflat_probes,
+                    "vector_latency_ms": vector_latency_ms,
+                    "embedding_cache_hit": embedding_cache_hit,
+                },
+            )
         else:
-            if lexical["hits"]:
-                lexical["mode"] = "lexical_fallback_after_empty_vector"
-                lexical["trace"]["vector_filters"] = metadata_filters
-                logger.warning("rag vector returned empty, fallback to lexical hits=%s", len(lexical["hits"]))
-                return lexical
             relaxed = self._relaxed_retrieve_after_empty_vector(
                 psycopg_module=psycopg,
                 embedding=embedding,
@@ -418,18 +444,22 @@ class PgVectorKnowledgeRetriever:
                 "embedding_cache_hit": embedding_cache_hit,
                 "vector_latency_ms": vector_latency_ms,
             }
-            if vector_hits:
-                hits = self._merge_and_rerank_hits(vector_hits, lexical.get("hits") or [], query, limit)
-                logger.warning("rag fallback vector hit level=%s hits=%s", plan.level, len(hits))
-                return self._apply_filter_contract(
-                    {"mode": "pgvector_relaxed_filters", "query": query, "hits": hits, "trace": trace},
-                    plan,
+            lexical_hits = lexical.get("hits") or []
+            if vector_hits or lexical_hits:
+                logger.warning(
+                    "rag relaxed filters hit level=%s vector=%s keyword=%s",
+                    plan.level,
+                    len(vector_hits),
+                    len(lexical_hits),
                 )
-            if lexical["hits"]:
-                lexical["mode"] = "lexical_fallback_after_relaxed_filters"
-                lexical["trace"].update(trace)
-                logger.warning("rag fallback lexical hit level=%s hits=%s", plan.level, len(lexical["hits"]))
-                return self._apply_filter_contract(lexical, plan)
+                return self._finalize_reranked_result(
+                    query=query,
+                    dense_hits=vector_hits,
+                    keyword_hits=lexical_hits,
+                    plan=plan,
+                    limit=limit,
+                    trace=trace,
+                )
         exhausted_plan = plans[-1] if plans else build_filter_plans(
             FilterContext(
                 merchant_code=self._normalized_merchant_code(merchant_code),
@@ -496,7 +526,7 @@ class PgVectorKnowledgeRetriever:
         plan: FilterPlan,
     ) -> list[dict[str, Any]]:
         for hit in hits:
-            hit["trusted_policy_eligible"] = plan.trusted_policy_eligible
+            hit["trusted_policy_eligible"] = False
             hit["relaxation_level"] = plan.level
         return hits
 
@@ -506,10 +536,10 @@ class PgVectorKnowledgeRetriever:
         result: dict[str, Any],
         plan: FilterPlan,
     ) -> dict[str, Any]:
-        result["trusted_policy_eligible"] = plan.trusted_policy_eligible
+        result["trusted_policy_eligible"] = False
         result["relaxation_level"] = plan.level
         trace = result.setdefault("trace", {})
-        trace["trusted_policy_eligible"] = plan.trusted_policy_eligible
+        trace["trusted_policy_eligible"] = False
         trace["relaxation_level"] = plan.level
         hits = result.get("hits")
         if isinstance(hits, list):
@@ -639,6 +669,105 @@ class PgVectorKnowledgeRetriever:
     ) -> list[dict[str, Any]]:
         del query
         return rrf_fuse(vector_hits, lexical_hits, limit=limit)
+
+    def _finalize_reranked_result(
+        self,
+        *,
+        query: str,
+        dense_hits: list[dict[str, Any]],
+        keyword_hits: list[dict[str, Any]],
+        plan: FilterPlan,
+        limit: int,
+        trace: dict[str, Any],
+    ) -> dict[str, Any]:
+        fused = rrf_fuse(dense_hits, keyword_hits, limit=20)
+        self._annotate_hits_with_filter_contract(fused, plan)
+        try:
+            reranked = self.reranker.rerank(query, fused, top_n=limit)
+        except Exception:
+            reranked = RerankResult(
+                items=fused[:limit],
+                mode="hybrid_rrf_degraded",
+                degraded=True,
+                failure_reason="UNEXPECTED_ERROR",
+                latency_ms=0.0,
+            )
+
+        default_source = plan.source_type or self._hit_source_type(fused[0] if fused else {})
+        threshold = self._threshold_for_source(default_source)
+        output_hits: list[dict[str, Any]] = []
+        for raw_hit in reranked.items:
+            hit = dict(raw_hit)
+            source = self._hit_source_type(hit)
+            hit_threshold = self._threshold_for_source(source)
+            hit["threshold"] = hit_threshold
+            hit["relaxation_level"] = plan.level
+            hit["trusted_policy_eligible"] = False
+            if reranked.degraded:
+                output_hits.append(hit)
+                continue
+            score = self._rerank_score(hit)
+            if score < hit_threshold:
+                continue
+            if (
+                plan.level == "strict"
+                and {"dense", "keyword"}.issubset(set(hit.get("retrieval_channels") or []))
+                and source in POLICY_SOURCE_TYPES
+            ):
+                hit["trusted_policy_eligible"] = True
+            output_hits.append(hit)
+
+        reranker_succeeded = not reranked.degraded
+        trusted_policy_eligible = bool(
+            reranker_succeeded
+            and plan.level == "strict"
+            and any(hit.get("trusted_policy_eligible") is True for hit in output_hits)
+        )
+        stage_latency = trace.get("stage_latency_ms")
+        if not isinstance(stage_latency, dict):
+            stage_latency = {}
+        if "vector_latency_ms" in trace:
+            stage_latency["vector"] = trace["vector_latency_ms"]
+        stage_latency["reranker"] = reranked.latency_ms
+        trace["stage_latency_ms"] = stage_latency
+        trace["filter_level"] = plan.level
+        trace["reranker_succeeded"] = reranker_succeeded
+        trace["reranker_failure_reason"] = reranked.failure_reason
+        trace["threshold"] = threshold
+        trace["trusted_policy_eligible"] = trusted_policy_eligible
+        no_answer = bool(reranked.degraded or not output_hits)
+        return {
+            "mode": reranked.mode,
+            "query": query,
+            "hits": output_hits,
+            "filter_level": plan.level,
+            "relaxation_level": plan.level,
+            "reranker_succeeded": reranker_succeeded,
+            "threshold": threshold,
+            "no_answer": no_answer,
+            "trusted_policy_eligible": trusted_policy_eligible,
+            "trace": trace,
+        }
+
+    @staticmethod
+    def _hit_source_type(hit: dict[str, Any]) -> str:
+        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        return str(hit.get("source_type") or metadata.get("source_type") or "").strip()
+
+    @staticmethod
+    def _threshold_for_source(source_type: str | None) -> float:
+        return RERANK_THRESHOLDS.get(str(source_type or "").strip(), 0.60)
+
+    @staticmethod
+    def _rerank_score(hit: dict[str, Any]) -> float:
+        raw = hit.get("rerank_score")
+        if raw is None:
+            raw = hit.get("relevance_score")
+        try:
+            score = float(raw)
+        except (TypeError, ValueError):
+            return -1.0
+        return score if math.isfinite(score) else -1.0
 
     def _keyword_search(
         self,

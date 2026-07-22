@@ -274,7 +274,11 @@ class FakeDamageImageTools:
                 ok=True,
                 name=name,
                 data={
-                    "mode": "pgvector",
+                    "mode": "hybrid_reranked",
+                    "filter_level": "strict",
+                    "reranker_succeeded": True,
+                    "threshold": 0.75,
+                    "no_answer": False,
                     "trusted_policy_eligible": True,
                     "relaxation_level": "strict",
                     "hits": [
@@ -285,7 +289,8 @@ class FakeDamageImageTools:
                             "snippet": "商品破损需要提供商品问题照片和问题描述，图片清晰可见破损即可进入审核。",
                             "score": 0.82,
                             "rerank_score": 0.91,
-                            "dense_score": 0.82,
+                            "rerank_score": 0.82,
+                            "threshold": 0.75,
                             "trusted_policy_eligible": True,
                             "relaxation_level": "strict",
                             "metadata": {
@@ -703,13 +708,18 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         order = {"merchant_code": "MERCHANT_DEMO"}
         trusted_hit = {
             "source_type": "after_sales_policy",
-            "dense_score": 0.72,
+            "rerank_score": 0.82,
+            "threshold": 0.75,
             "trusted_policy_eligible": True,
             "relaxation_level": "strict",
             "metadata": {"merchant_code": "MERCHANT_DEMO"},
         }
         strict_knowledge = {
-            "mode": "pgvector",
+            "mode": "hybrid_reranked",
+            "filter_level": "strict",
+            "reranker_succeeded": True,
+            "threshold": 0.75,
+            "no_answer": False,
             "trusted_policy_eligible": True,
             "relaxation_level": "strict",
             "hits": [trusted_hit],
@@ -732,7 +742,7 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual(
             [],
             LangGraphAfterSalesAgent._trusted_policy_hits(
-                {**strict_knowledge, "hits": [{**trusted_hit, "dense_score": 0.2}]},
+                {**strict_knowledge, "hits": [{**trusted_hit, "rerank_score": 0.2}]},
                 order,
             ),
         )
@@ -746,13 +756,27 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual(
             [],
             LangGraphAfterSalesAgent._trusted_policy_hits(
-                {**strict_knowledge, "hits": [{**trusted_hit, "dense_score": None, "keyword_score": 2.8, "score": 2.8}]},
+                {**strict_knowledge, "hits": [{**trusted_hit, "rerank_score": None, "dense_score": 0.99, "keyword_score": 2.8, "score": 2.8}]},
+                order,
+            ),
+        )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                {**strict_knowledge, "reranker_succeeded": False},
+                order,
+            ),
+        )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                {**strict_knowledge, "filter_level": "category_relaxed"},
                 order,
             ),
         )
 
     def test_decision_confidence_is_calibrated_from_visual_and_policy_evidence(self) -> None:
-        strong_policy = [{"dense_score": 0.8}]
+        strong_policy = [{"rerank_score": 0.8}]
 
         approved = LangGraphAfterSalesAgent._decision_confidence(0.9, strong_policy, True)
         manual = LangGraphAfterSalesAgent._decision_confidence(0.9, [], False)

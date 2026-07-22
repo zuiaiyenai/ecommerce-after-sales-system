@@ -1831,6 +1831,12 @@ class LangGraphAfterSalesAgent:
         """Return only policy evidence strong enough to authorize an automatic decision."""
         if not isinstance(knowledge, dict):
             return []
+        if knowledge.get("reranker_succeeded") is not True:
+            return []
+        if knowledge.get("filter_level") != "strict":
+            return []
+        if knowledge.get("no_answer") is True:
+            return []
         if knowledge.get("trusted_policy_eligible") is not True:
             return []
         if knowledge.get("relaxation_level") != "strict":
@@ -1858,7 +1864,11 @@ class LangGraphAfterSalesAgent:
             policy_version = str(hit.get("policy_version") or metadata.get("policy_version") or "").strip()
             if expected_policy_version and policy_version != expected_policy_version:
                 continue
-            if LangGraphAfterSalesAgent._policy_hit_score(hit) < minimum_score:
+            try:
+                hit_threshold = float(hit.get("threshold", knowledge.get("threshold", minimum_score)))
+            except (TypeError, ValueError):
+                continue
+            if LangGraphAfterSalesAgent._policy_hit_score(hit) < max(minimum_score, hit_threshold):
                 continue
             trusted.append(hit)
         return trusted
@@ -1867,7 +1877,7 @@ class LangGraphAfterSalesAgent:
     def _policy_hit_score(hit: dict[str, Any]) -> float:
         raw = hit.get("calibrated_policy_confidence")
         if raw is None:
-            raw = hit.get("dense_score")
+            raw = hit.get("rerank_score")
         try:
             return max(0.0, min(float(raw or 0.0), 1.0))
         except (TypeError, ValueError):

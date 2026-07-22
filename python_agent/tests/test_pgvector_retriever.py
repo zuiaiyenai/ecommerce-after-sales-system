@@ -6,6 +6,8 @@ import sys
 import types
 import unittest
 
+from after_sales_agent.providers.reranker_client import RerankResult
+
 
 RETRIEVER_PATH = pathlib.Path(__file__).resolve().parents[1] / "after_sales_agent" / "retrieval" / "pgvector_retriever.py"
 
@@ -234,13 +236,144 @@ class PgVectorRetrievalTest(unittest.TestCase):
             self.assertEqual(7, hit["citation"]["revision"])
         self.assertEqual(1, dense[0]["dense_rank"])
         self.assertEqual(["dense"], dense[0]["retrieval_channels"])
-        self.assertTrue(dense[0]["trusted_policy_eligible"])
+        self.assertFalse(dense[0]["trusted_policy_eligible"])
         self.assertEqual("strict", dense[0]["relaxation_level"])
         self.assertEqual(1, keyword[0]["keyword_rank"])
         self.assertEqual(["keyword"], keyword[0]["retrieval_channels"])
-        self.assertTrue(keyword[0]["trusted_policy_eligible"])
+        self.assertFalse(keyword[0]["trusted_policy_eligible"])
         self.assertEqual("strict", keyword[0]["relaxation_level"])
         self.assertEqual(dense[0]["citation"], keyword[0]["citation"])
+
+    def test_strict_hybrid_rerank_is_the_only_path_that_can_mark_policy_trusted(self) -> None:
+        reranker = _FakeReranker(score=0.8)
+        retriever = _PipelineRetriever(reranker=reranker, dense=True, keyword=True)
+
+        result = _retrieve_with_fake_psycopg(
+            retriever,
+            source_type="after_sales_policy",
+            product_category="headphone",
+            scene="quality_issue",
+        )
+
+        self.assertEqual("hybrid_reranked", result["mode"])
+        self.assertEqual("strict", result["filter_level"])
+        self.assertTrue(result["reranker_succeeded"])
+        self.assertEqual(0.75, result["threshold"])
+        self.assertFalse(result["no_answer"])
+        self.assertTrue(result["trusted_policy_eligible"])
+        self.assertTrue(result["hits"][0]["trusted_policy_eligible"])
+        self.assertEqual(4.25, result["trace"]["stage_latency_ms"]["reranker"])
+        self.assertEqual(1, len(reranker.calls))
+
+    def test_reranker_receives_rrf_top_twenty_before_applying_top_n(self) -> None:
+        reranker = _FakeReranker(score=0.8)
+        retriever = _PipelineRetriever(reranker=reranker, dense=True, keyword=True, candidate_count=25)
+
+        _retrieve_with_fake_psycopg(retriever, source_type="faq", top_k=5)
+
+        self.assertEqual(20, len(reranker.calls[0][1]))
+        self.assertEqual(5, reranker.calls[0][2])
+
+    def test_unconfigured_or_failed_reranker_returns_rrf_and_never_trusts_policy(self) -> None:
+        reranker = _FakeReranker(score=0.99, degraded=True, failure_reason="NOT_CONFIGURED")
+        retriever = _PipelineRetriever(reranker=reranker, dense=True, keyword=True)
+
+        result = _retrieve_with_fake_psycopg(retriever, source_type="after_sales_policy")
+
+        self.assertEqual("hybrid_rrf_degraded", result["mode"])
+        self.assertFalse(result["reranker_succeeded"])
+        self.assertTrue(result["no_answer"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
+        self.assertEqual("NOT_CONFIGURED", result["trace"]["reranker_failure_reason"])
+
+    def test_dense_only_and_keyword_only_remain_untrusted_after_successful_rerank(self) -> None:
+        for dense, keyword in ((True, False), (False, True)):
+            with self.subTest(dense=dense, keyword=keyword):
+                reranker = _FakeReranker(score=0.99)
+                retriever = _PipelineRetriever(reranker=reranker, dense=dense, keyword=keyword)
+
+                result = _retrieve_with_fake_psycopg(retriever, source_type="after_sales_policy")
+
+                self.assertTrue(result["reranker_succeeded"])
+                self.assertFalse(result["trusted_policy_eligible"])
+                self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
+
+    def test_keyword_only_policy_hit_stays_untrusted_when_other_dense_hit_exists(self) -> None:
+        retriever = PgVectorKnowledgeRetriever(
+            PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"),
+            reranker=_FakeReranker(score=0.99),
+        )
+        plan = retriever._strict_filter_plan(
+            merchant_code="M1",
+            product_category="headphone",
+            scene="quality_issue",
+            intent="refund",
+            source_type=None,
+            policy_version=None,
+            as_of_time=datetime(2026, 7, 21, 12, 30),
+        )
+
+        result = retriever._finalize_reranked_result(
+            query="refund policy",
+            dense_hits=[
+                {
+                    "chunk_id": "FAQ-A",
+                    "chunk_text": "faq",
+                    "source_type": "faq",
+                    "metadata": {"merchant_code": "M1"},
+                }
+            ],
+            keyword_hits=[
+                {
+                    "chunk_id": "POLICY-B",
+                    "chunk_text": "policy",
+                    "source_type": "after_sales_policy",
+                    "metadata": {"merchant_code": "M1"},
+                }
+            ],
+            plan=plan,
+            limit=5,
+            trace={},
+        )
+
+        policy_hit = next(hit for hit in result["hits"] if hit["chunk_id"] == "POLICY-B")
+        self.assertEqual(["keyword"], policy_hit["retrieval_channels"])
+        self.assertFalse(policy_hit["trusted_policy_eligible"])
+        self.assertFalse(result["trusted_policy_eligible"])
+
+    def test_successful_rerank_applies_source_threshold_and_sets_no_answer(self) -> None:
+        policy_result = _retrieve_with_fake_psycopg(
+            _PipelineRetriever(reranker=_FakeReranker(score=0.74), dense=True, keyword=True),
+            source_type="after_sales_policy",
+        )
+        faq_result = _retrieve_with_fake_psycopg(
+            _PipelineRetriever(reranker=_FakeReranker(score=0.61), dense=True, keyword=True),
+            source_type="faq",
+        )
+
+        self.assertEqual(0.75, policy_result["threshold"])
+        self.assertTrue(policy_result["no_answer"])
+        self.assertEqual([], policy_result["hits"])
+        self.assertEqual(0.6, faq_result["threshold"])
+        self.assertFalse(faq_result["no_answer"])
+        self.assertEqual(1, len(faq_result["hits"]))
+
+    def test_relaxed_filter_result_stays_untrusted_even_when_reranker_succeeds(self) -> None:
+        reranker = _FakeReranker(score=0.99)
+        retriever = _RelaxedPipelineRetriever(reranker=reranker)
+
+        result = _retrieve_with_fake_psycopg(
+            retriever,
+            source_type="after_sales_policy",
+            product_category="missing-category",
+            scene="quality_issue",
+        )
+
+        self.assertTrue(result["reranker_succeeded"])
+        self.assertEqual("category_relaxed", result["filter_level"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
 
     def test_local_fallback_uses_scene_aliases_for_damage(self) -> None:
         retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key=""))
@@ -319,7 +452,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
             else:
                 sys.modules["psycopg"] = old_psycopg
 
-        self.assertEqual("pgvector_relaxed_filters", result["mode"])
+        self.assertEqual("hybrid_rrf_degraded", result["mode"])
         self.assertEqual(
             [
                 ("不存在的前端品类", "不存在的场景"),
@@ -381,7 +514,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
             else:
                 sys.modules["psycopg"] = old_psycopg
 
-        self.assertEqual("pgvector_relaxed_filters", result["mode"])
+        self.assertEqual("hybrid_rrf_degraded", result["mode"])
         self.assertEqual("category_relaxed", result["trace"]["fallback_level"])
         self.assertEqual("category_relaxed", result["relaxation_level"])
         self.assertFalse(result["trusted_policy_eligible"])
@@ -424,11 +557,119 @@ class PgVectorRetrievalTest(unittest.TestCase):
             else:
                 sys.modules["psycopg"] = old_psycopg
 
-        self.assertEqual("lexical_fallback_after_relaxed_filters", result["mode"])
+        self.assertEqual("hybrid_rrf_degraded", result["mode"])
         self.assertEqual("category_relaxed", result["relaxation_level"])
         self.assertFalse(result["trusted_policy_eligible"])
         self.assertFalse(result["trace"]["trusted_policy_eligible"])
         self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
+
+
+class _FakeReranker:
+    def __init__(self, *, score: float, degraded: bool = False, failure_reason=None) -> None:
+        self.score = score
+        self.degraded = degraded
+        self.failure_reason = failure_reason
+        self.calls: list[tuple[str, list[dict[str, object]], int]] = []
+
+    def rerank(self, query, candidates, top_n):
+        self.calls.append((query, list(candidates), top_n))
+        if self.degraded:
+            return RerankResult(
+                items=list(candidates[:top_n]),
+                mode="hybrid_rrf_degraded",
+                degraded=True,
+                failure_reason=self.failure_reason,
+                latency_ms=4.25,
+            )
+        items = []
+        for index, candidate in enumerate(candidates[:top_n]):
+            items.append({**candidate, "provider_index": index, "relevance_score": self.score, "rerank_score": self.score})
+        return RerankResult(
+            items=items,
+            mode="hybrid_reranked",
+            degraded=False,
+            failure_reason=None,
+            latency_ms=4.25,
+        )
+
+
+class _PipelineRetriever(PgVectorKnowledgeRetriever):
+    def __init__(self, *, reranker, dense: bool, keyword: bool, candidate_count: int = 1) -> None:
+        super().__init__(
+            PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"),
+            reranker=reranker,
+        )
+        self.dense_enabled = dense
+        self.keyword_enabled = keyword
+        self.candidate_count = candidate_count
+
+    def _embed(self, text: str) -> list[float]:
+        return [0.0]
+
+    def _hits(self, channel: str, source_type: str = "after_sales_policy") -> list[dict[str, object]]:
+        return [
+            {
+                "id": index + 1,
+                "chunk_id": index + 1,
+                "chunk_text": f"policy-{index}",
+                "snippet": f"policy-{index}",
+                "source_type": source_type,
+                "source_code": f"P-{index}",
+                "raw_score": 0.9 - index / 100,
+                "score": 0.9 - index / 100,
+                f"{channel}_rank": index + 1,
+                f"{channel}_score": 0.9 - index / 100,
+                "retrieval_channels": [channel],
+                "metadata": {"merchant_code": "M1", "source_type": source_type},
+                "trusted_policy_eligible": False,
+                "relaxation_level": "strict",
+            }
+            for index in range(self.candidate_count)
+        ]
+
+    def _vector_search(self, **kwargs):
+        return self._hits("dense", kwargs.get("source_type") or "after_sales_policy") if self.dense_enabled else []
+
+    def _lexical_fallback(self, **kwargs):
+        return {
+            "mode": "lexical_fallback",
+            "query": kwargs.get("query") or "",
+            "hits": self._hits("keyword", kwargs.get("source_type") or "after_sales_policy") if self.keyword_enabled else [],
+            "trace": {},
+        }
+
+
+class _RelaxedPipelineRetriever(_PipelineRetriever):
+    def __init__(self, *, reranker) -> None:
+        super().__init__(reranker=reranker, dense=True, keyword=True)
+
+    def _vector_search(self, **kwargs):
+        return self._hits("dense", kwargs.get("source_type") or "after_sales_policy") if kwargs.get("product_category") is None else []
+
+    def _lexical_fallback(self, **kwargs):
+        hits = self._hits("keyword", kwargs.get("source_type") or "after_sales_policy") if kwargs.get("product_category") is None else []
+        return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": hits, "trace": {}}
+
+
+def _retrieve_with_fake_psycopg(retriever, **overrides):
+    old_psycopg = sys.modules.get("psycopg")
+    sys.modules["psycopg"] = types.SimpleNamespace()
+    arguments = {
+        "query": "refund policy",
+        "merchant_code": "M1",
+        "product_category": "headphone",
+        "scene": "quality_issue",
+        "source_type": "after_sales_policy",
+        "top_k": 5,
+    }
+    arguments.update(overrides)
+    try:
+        return retriever.retrieve(**arguments)
+    finally:
+        if old_psycopg is None:
+            sys.modules.pop("psycopg", None)
+        else:
+            sys.modules["psycopg"] = old_psycopg
 
 
 class _CapturingCursor:
