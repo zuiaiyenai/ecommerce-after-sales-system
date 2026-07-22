@@ -1,3 +1,5 @@
+import { buildKnowledgePath, normalizeKnowledgeId } from './knowledgeId';
+
 const BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080');
 const TOKEN_KEY = 'admin_console_token';
 
@@ -37,14 +39,18 @@ async function request(path, options = {}) {
     payload = JSON.parse(text);
   }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || `管理员接口请求失败（HTTP ${response.status}）`);
+    const error = new Error(payload.message || `管理员接口请求失败（HTTP ${response.status}）`);
+    error.status = response.status;
+    error.code = payload.code;
+    error.data = payload.data || null;
+    throw error;
   }
   return payload.data;
 }
 
 function mapKnowledgeRecord(item) {
   return {
-    id: item.id,
+    id: normalizeKnowledgeId(item.id),
     code: item.sourceCode,
     name: item.title,
     type: item.sourceType,
@@ -54,12 +60,17 @@ function mapKnowledgeRecord(item) {
     productCategory: item.productCategory || '',
     scene: item.scene || '',
     intent: item.intent || '',
-    policyVersion: item.policyVersion || 'v1.0',
+    policyVersion: item.policyVersion || '',
+    validFrom: item.validFrom || '',
+    validTo: item.validTo || '',
     tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
     updatedAt: item.updatedAt,
     createdAt: item.createdAt,
     chunkCount: item.chunkCount || 0,
     ingestionStatus: item.ingestionStatus || 'SUCCESS',
+    reviewStatus: item.reviewStatus || item.ingestionStatus || 'PUBLISHED',
+    revision: Number(item.revision || 0),
+    publishedRevision: item.publishedRevision == null ? null : Number(item.publishedRevision),
     ingestionSourceType: item.ingestionSourceType || 'TEXT',
     fileName: item.fileName || '',
     fileUrl: item.fileUrl || '',
@@ -92,6 +103,10 @@ export async function getCurrentAdmin() {
 
 export async function getAdminOverview() {
   return request('/api/admin/overview');
+}
+
+export async function getAgentOperations(range = '1h') {
+  return request(`/api/admin/agent-operations?range=${encodeURIComponent(range)}`);
 }
 
 export async function getAgentAccounts(page = 1, size = 100) {
@@ -127,8 +142,13 @@ export async function getKnowledgeLibraries() {
   };
 }
 
+export async function getKnowledgeMetadataOptions(merchantCode = 'MERCHANT_DEMO') {
+  const query = new URLSearchParams({ merchantCode }).toString();
+  return request(`/api/admin/knowledge/metadata-options?${query}`);
+}
+
 export async function getKnowledgeLibrary(libraryId) {
-  const item = await request(`/api/admin/knowledge/${libraryId}`);
+  const item = await request(buildKnowledgePath(libraryId));
   return mapKnowledgeRecord(item);
 }
 
@@ -140,27 +160,43 @@ export async function createKnowledgeTextImport(payload) {
 }
 
 export async function createKnowledgeFileImport(formData) {
-  return request('/api/admin/knowledge/import/file', {
+  return request('/api/admin/knowledge/file-import', {
     method: 'POST',
     body: formData
   });
 }
 
+export const getKnowledgeIngestionStatus = (id) => request(buildKnowledgePath(id, '/ingestion-status'));
+export const getKnowledgeDraft = (id) => request(buildKnowledgePath(id, '/draft'));
+export const updateKnowledgeDraft = (id, body) => request(buildKnowledgePath(id, '/draft'), {
+  method: 'PUT',
+  body: JSON.stringify(body)
+});
+export const updateKnowledgeDraftChunk = (id, chunkId, body) => request(
+  buildKnowledgePath(id, `/draft/chunks/${normalizeKnowledgeId(chunkId)}`),
+  { method: 'PUT', body: JSON.stringify(body) }
+);
+export const publishKnowledgeDraft = (id, expectedRevision) => request(buildKnowledgePath(id, '/publish'), {
+  method: 'POST',
+  body: JSON.stringify({ expectedRevision })
+});
+export const retryKnowledgeIngestion = (id) => request(buildKnowledgePath(id, '/retry'), { method: 'POST' });
+
 export async function updateKnowledgeLibrary(libraryId, payload) {
-  return request(`/api/admin/knowledge/${libraryId}`, {
+  return request(buildKnowledgePath(libraryId), {
     method: 'PUT',
     body: JSON.stringify(payload)
   });
 }
 
 export async function syncKnowledgeLibrary(libraryId) {
-  return request(`/api/admin/knowledge/${libraryId}/sync`, {
+  return request(buildKnowledgePath(libraryId, '/sync'), {
     method: 'POST'
   });
 }
 
 export async function deleteKnowledgeLibrary(libraryId) {
-  return request(`/api/admin/knowledge/${libraryId}`, {
+  return request(buildKnowledgePath(libraryId), {
     method: 'DELETE'
   });
 }
