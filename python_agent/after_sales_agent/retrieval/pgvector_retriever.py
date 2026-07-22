@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import OrderedDict
 from datetime import datetime
+import hashlib
 import json
 import math
 import os
@@ -40,6 +41,9 @@ RERANK_THRESHOLDS = {
 @dataclass(frozen=True)
 class PgVectorConfig:
     dsn: str
+    # None keeps direct unit-test fixtures on their existing injected behavior.
+    # Real process configuration is always resolved by from_env(), whose default is false.
+    layered_retrieval_enabled: bool | None = None
     dimensions: int = 1024
     top_k: int = 5
     embedding_model: str = "text-embedding-v3"
@@ -57,6 +61,7 @@ class PgVectorConfig:
         file_values = _read_local_env()
         return cls(
             dsn=os.getenv("PGVECTOR_DSN") or file_values.get("PGVECTOR_DSN", ""),
+            layered_retrieval_enabled=_read_bool("RAG_LAYERED_RETRIEVAL_ENABLED", file_values, default=False),
             dimensions=int(os.getenv("PGVECTOR_DIMENSIONS") or file_values.get("PGVECTOR_DIMENSIONS", "1024")),
             top_k=int(os.getenv("PGVECTOR_TOP_K") or file_values.get("PGVECTOR_TOP_K", "5")),
             embedding_model=os.getenv("EMBEDDING_MODEL") or file_values.get("EMBEDDING_MODEL", "text-embedding-v3"),
@@ -91,6 +96,15 @@ class PgVectorConfig:
                 os.getenv("EMBEDDING_CACHE_MAX_ENTRIES") or file_values.get("EMBEDDING_CACHE_MAX_ENTRIES", "256")
             ),
         )
+
+
+def _read_bool(name: str, file_values: dict[str, str], *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        raw = file_values.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _read_local_env() -> dict[str, str]:
@@ -149,8 +163,13 @@ class PgVectorKnowledgeRetriever:
         policy_version: str | None = None,
         as_of_time: datetime | None = None,
         top_k: int | None = None,
+        retrieval_mode: str = "rerank",
+        query_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_query = str(query or "").strip()
+        selected_mode = str(retrieval_mode or "rerank").strip().lower()
+        if selected_mode not in {"dense", "keyword", "rrf", "rerank"}:
+            raise ValueError("retrieval_mode must be one of: dense, keyword, rrf, rerank")
         resolved_as_of_time = as_of_time or datetime.now()
         filter_plans = build_filter_plans(
             FilterContext(
@@ -170,14 +189,25 @@ class PgVectorKnowledgeRetriever:
                 plan=strict_plan,
                 failure_reason="EMPTY_QUERY",
             )
+        if self.config.layered_retrieval_enabled is False:
+            return self._retrieve_compatibility(
+                query=normalized_query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                as_of_time=resolved_as_of_time,
+                top_k=top_k,
+                plan=strict_plan,
+            )
+        safe_query_id = self._safe_query_id(query_id, normalized_query)
         logger.info(
-            "rag retrieve start query=%s merchant=%s category=%s scene=%s intent=%s dsn=%s",
-            normalized_query[:160],
-            merchant_code,
-            product_category,
-            scene,
-            intent,
-            "SET" if self.config.dsn else "EMPTY",
+            "rag retrieve start query_id=%s mode=%s dsn_configured=%s",
+            safe_query_id,
+            selected_mode,
+            bool(self.config.dsn),
         )
         if not self.config.dsn and source_type not in POLICY_SOURCE_TYPES:
             local = self._local_knowledge_fallback(
@@ -226,6 +256,35 @@ class PgVectorKnowledgeRetriever:
                 failure_reason="PGVECTOR_DEPENDENCY_MISSING",
             )
 
+        limit = max(1, min(int(top_k or self.config.top_k), 10))
+        candidate_limit = 20
+        if selected_mode == "keyword":
+            keyword_started_at = time.perf_counter()
+            keyword = self._lexical_fallback(
+                query=normalized_query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                as_of_time=resolved_as_of_time,
+                filter_plan=strict_plan,
+                top_k=candidate_limit,
+            )
+            keyword_latency_ms = round((time.perf_counter() - keyword_started_at) * 1000, 2)
+            keyword = self._apply_filter_contract(keyword, strict_plan)
+            keyword_hits = keyword.get("hits") or []
+            return self._finalize_ablation_result(
+                mode="keyword",
+                hits=keyword_hits[:limit],
+                plan=strict_plan,
+                dense_count=0,
+                keyword_count=len(keyword_hits),
+                rrf_count=0,
+                trace={"stage_latency_ms": {"keyword": keyword_latency_ms}},
+            )
+
         try:
             embedding, embedding_cache_hit = self._get_query_embedding(normalized_query)
         except Exception as exc:
@@ -256,7 +315,12 @@ class PgVectorKnowledgeRetriever:
             )
             lexical = self._apply_filter_contract(lexical, strict_plan)
             error_info = self._embedding_error_info(exc)
-            logger.error("rag embedding failed mode=%s detail=%s", error_info.get("type"), error_info)
+            logger.error(
+                "rag embedding failed query_id=%s type=%s error=%s",
+                safe_query_id,
+                error_info.get("type"),
+                error_info.get("error"),
+            )
             if local["hits"]:
                 local["mode"] = "local_json_fallback_after_embedding_error"
                 local["trace"]["embedding_error"] = error_info
@@ -294,8 +358,6 @@ class PgVectorKnowledgeRetriever:
             "policy_version": policy_version,
             "as_of_time": resolved_as_of_time.isoformat(),
         }
-        limit = max(1, min(int(top_k or self.config.top_k), 10))
-        candidate_limit = 20
         vector_started_at = time.perf_counter()
         try:
             hits = self._vector_search(
@@ -323,6 +385,21 @@ class PgVectorKnowledgeRetriever:
                 failure_reason="PGVECTOR_ERROR",
             )
         vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
+        hits = self._annotate_hits_with_filter_contract(hits, strict_plan)
+        if selected_mode == "dense":
+            return self._finalize_ablation_result(
+                mode="dense",
+                hits=hits[:limit],
+                plan=strict_plan,
+                dense_count=len(hits),
+                keyword_count=0,
+                rrf_count=0,
+                trace={
+                    "stage_latency_ms": {"vector": vector_latency_ms},
+                    "embedding_cache_hit": embedding_cache_hit,
+                },
+            )
+        keyword_started_at = time.perf_counter()
         lexical = self._lexical_fallback(
             query=normalized_query,
             merchant_code=merchant_code,
@@ -335,10 +412,28 @@ class PgVectorKnowledgeRetriever:
             filter_plan=strict_plan,
             top_k=candidate_limit,
         )
-        hits = self._annotate_hits_with_filter_contract(hits, strict_plan)
+        keyword_latency_ms = round((time.perf_counter() - keyword_started_at) * 1000, 2)
         lexical = self._apply_filter_contract(lexical, strict_plan)
         lexical_hits = lexical.get("hits") or []
         if hits or lexical_hits:
+            if selected_mode == "rrf":
+                fused = rrf_fuse(hits, lexical_hits, limit=limit)
+                self._annotate_hits_with_filter_contract(fused, strict_plan)
+                return self._finalize_ablation_result(
+                    mode="rrf",
+                    hits=fused,
+                    plan=strict_plan,
+                    dense_count=len(hits),
+                    keyword_count=len(lexical_hits),
+                    rrf_count=len(fused),
+                    trace={
+                        "stage_latency_ms": {
+                            "vector": vector_latency_ms,
+                            "keyword": keyword_latency_ms,
+                        },
+                        "embedding_cache_hit": embedding_cache_hit,
+                    },
+                )
             return self._finalize_reranked_result(
                 query=normalized_query,
                 dense_hits=hits,
@@ -350,6 +445,10 @@ class PgVectorKnowledgeRetriever:
                     "top_k": limit,
                     "ivfflat_probes": self.config.ivfflat_probes,
                     "vector_latency_ms": vector_latency_ms,
+                    "stage_latency_ms": {
+                        "vector": vector_latency_ms,
+                        "keyword": keyword_latency_ms,
+                    },
                     "embedding_cache_hit": embedding_cache_hit,
                 },
             )
@@ -367,6 +466,7 @@ class PgVectorKnowledgeRetriever:
                 top_k=top_k,
                 embedding_cache_hit=embedding_cache_hit,
                 as_of_time=resolved_as_of_time,
+                retrieval_mode=selected_mode,
             )
             return relaxed
     def _relaxed_retrieve_after_empty_vector(
@@ -384,6 +484,7 @@ class PgVectorKnowledgeRetriever:
         top_k: int | None,
         embedding_cache_hit: bool,
         as_of_time: datetime,
+        retrieval_mode: str = "rerank",
     ) -> dict[str, Any]:
         plans = build_filter_plans(
             FilterContext(
@@ -409,10 +510,8 @@ class PgVectorKnowledgeRetriever:
                 "as_of_time": plan.as_of_time.isoformat(),
             }
             logger.warning(
-                "rag strict filters empty, retry fallback_level=%s strict=%s relaxed=%s",
+                "rag strict filters empty, retry fallback_level=%s",
                 plan.level,
-                strict_filters,
-                relaxed_filters,
             )
             vector_started_at = time.perf_counter()
             try:
@@ -526,6 +625,18 @@ class PgVectorKnowledgeRetriever:
                     len(vector_hits),
                     len(lexical_hits),
                 )
+                if retrieval_mode == "rrf":
+                    fused = rrf_fuse(vector_hits, lexical_hits, limit=limit)
+                    self._annotate_hits_with_filter_contract(fused, plan)
+                    return self._finalize_ablation_result(
+                        mode="rrf",
+                        hits=fused,
+                        plan=plan,
+                        dense_count=len(vector_hits),
+                        keyword_count=len(lexical_hits),
+                        rrf_count=len(fused),
+                        trace=trace,
+                    )
                 return self._finalize_reranked_result(
                     query=query,
                     dense_hits=vector_hits,
@@ -566,6 +677,14 @@ class PgVectorKnowledgeRetriever:
     def _normalized_merchant_code(merchant_code: str | None) -> str:
         normalized = str(merchant_code or "").strip()
         return normalized or "GLOBAL"
+
+    @staticmethod
+    def _safe_query_id(query_id: str | None, query: str) -> str:
+        candidate = str(query_id or "").strip()
+        safe = "".join(char for char in candidate if char.isalnum() or char in {"-", "_"})[:64]
+        if safe:
+            return safe
+        return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
 
     def _strict_filter_plan(
         self,
@@ -665,6 +784,12 @@ class PgVectorKnowledgeRetriever:
         trace["reranker_succeeded"] = bool(reranker_succeeded)
         trace["threshold"] = resolved_threshold
         trace["failure_reason"] = failure_reason
+        trace.setdefault("dense_candidate_count", 0)
+        trace.setdefault("keyword_candidate_count", 0)
+        trace.setdefault("rrf_candidate_count", 0)
+        trace.setdefault("rerank_candidate_count", 0)
+        trace.setdefault("retrieval_mode", str(finalized.get("mode") or "unknown"))
+        trace.setdefault("fallback_reason", failure_reason)
         trace["trusted_policy_eligible"] = bool(trusted_policy_eligible)
         finalized["trace"] = trace
 
@@ -677,6 +802,111 @@ class PgVectorKnowledgeRetriever:
             else:
                 hit.setdefault("trusted_policy_eligible", False)
         return finalized
+
+    @classmethod
+    def _finalize_ablation_result(
+        cls,
+        *,
+        mode: str,
+        hits: list[dict[str, Any]],
+        plan: FilterPlan,
+        dense_count: int,
+        keyword_count: int,
+        rrf_count: int,
+        trace: dict[str, Any],
+    ) -> dict[str, Any]:
+        no_answer = not hits
+        trace.update(
+            {
+                "dense_candidate_count": dense_count,
+                "keyword_candidate_count": keyword_count,
+                "rrf_candidate_count": rrf_count,
+                "rerank_candidate_count": 0,
+                "retrieval_mode": mode,
+                "fallback_reason": "NO_MATCH" if no_answer else None,
+            }
+        )
+        return cls._finalize_result(
+            {"mode": mode, "hits": hits, "trace": trace},
+            plan=plan,
+            failure_reason="NO_MATCH" if no_answer else None,
+            no_answer=no_answer,
+        )
+
+    def _retrieve_compatibility(
+        self,
+        *,
+        query: str,
+        merchant_code: str | None,
+        product_category: str | None,
+        scene: str | None,
+        intent: str | None,
+        source_type: str | None,
+        policy_version: str | None,
+        as_of_time: datetime,
+        top_k: int | None,
+        plan: FilterPlan,
+    ) -> dict[str, Any]:
+        """Keep the pre-rollout path free of embedding, RRF, and reranker calls."""
+        if not self.config.dsn and source_type not in POLICY_SOURCE_TYPES:
+            local = self._local_knowledge_fallback(
+                query=query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                top_k=top_k,
+            )
+            local_hits = local.get("hits") or []
+            if local_hits:
+                return self._finalize_result(
+                    {
+                        "mode": "local_json_compatibility",
+                        "query": query,
+                        "hits": local_hits,
+                        "trace": {
+                            **(local.get("trace") or {}),
+                            "retrieval_mode": "compatibility",
+                            "fallback_reason": "RAG_LAYERED_RETRIEVAL_DISABLED",
+                        },
+                    },
+                    plan=plan,
+                    failure_reason=None,
+                    no_answer=False,
+                )
+
+        lexical = self._lexical_fallback(
+            query=query,
+            merchant_code=merchant_code,
+            product_category=product_category,
+            scene=scene,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            as_of_time=as_of_time,
+            filter_plan=plan,
+            top_k=top_k,
+        )
+        lexical = self._apply_filter_contract(lexical, plan)
+        hits = lexical.get("hits") or []
+        failure_reason = None if hits else str(lexical.get("failure_reason") or "NO_MATCH")
+        return self._finalize_result(
+            {
+                "mode": "lexical_compatibility",
+                "query": query,
+                "hits": hits,
+                "trace": {
+                    **(lexical.get("trace") or {}),
+                    "retrieval_mode": "compatibility",
+                    "fallback_reason": "RAG_LAYERED_RETRIEVAL_DISABLED",
+                },
+            },
+            plan=plan,
+            failure_reason=failure_reason,
+            no_answer=not hits,
+        )
 
     def _vector_search(
         self,
@@ -867,6 +1097,12 @@ class PgVectorKnowledgeRetriever:
         trace["reranker_failure_reason"] = reranked.failure_reason
         trace["threshold"] = threshold
         trace["trusted_policy_eligible"] = trusted_policy_eligible
+        trace["dense_candidate_count"] = len(dense_hits)
+        trace["keyword_candidate_count"] = len(keyword_hits)
+        trace["rrf_candidate_count"] = len(fused)
+        trace["rerank_candidate_count"] = len(reranked.items)
+        trace["retrieval_mode"] = reranked.mode
+        trace["fallback_reason"] = reranked.failure_reason
         no_answer = bool(reranked.degraded or not output_hits)
         failure_reason = reranked.failure_reason if reranked.degraded else ("NO_MATCH" if no_answer else None)
         return self._finalize_result(

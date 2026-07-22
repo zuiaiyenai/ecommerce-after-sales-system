@@ -4,5 +4,28 @@ spring:
     password: your-local-mysql-password
 
 app:
+  knowledge:
+    # 10 MiB; must match KNOWLEDGE_MAX_FILE_BYTES supplied to the Python Agent.
+    max-file-bytes: 10485760
+  rag:
+    # Keep the layered retriever disabled until migration, backfill and offline gates pass.
+    layered-retrieval-enabled: false
+  async:
+    knowledge-ingestion:
+      core-pool-size: 2
+      max-pool-size: 4
+      queue-capacity: 100
+  security:
+    allowed-origins: "http://localhost:5173,http://127.0.0.1:5173"
   jwt:
     secret: "change-this-secret-key-to-at-least-32-bytes-in-production"
+  agent:
+    # 多副本时填写多个 Agent 地址；每个副本应绑定独立 GPU/推理服务。
+    # base-urls:
+    #   - http://10.0.0.11:8000/api
+    #   - http://10.0.0.12:8000/api
+    internal-token: "replace-with-a-random-shared-secret"
+    # 0 时按“副本数 × 单副本并发”自动计算网关容量。
+    max-concurrent-requests: 0
+    per-instance-max-concurrent-requests: 2
+    queue-wait-millis: 200

@@ -536,6 +536,34 @@ class PgVectorRetrievalTest(unittest.TestCase):
         self.assertTrue(result["trusted_policy_eligible"])
         self.assertTrue(result["hits"][0]["trusted_policy_eligible"])
         self.assertEqual(4.25, result["trace"]["stage_latency_ms"]["reranker"])
+        self.assertEqual(
+            {
+                "filter_level",
+                "dense_candidate_count",
+                "keyword_candidate_count",
+                "rrf_candidate_count",
+                "rerank_candidate_count",
+                "retrieval_mode",
+                "stage_latency_ms",
+                "fallback_reason",
+            },
+            {
+                "filter_level",
+                "dense_candidate_count",
+                "keyword_candidate_count",
+                "rrf_candidate_count",
+                "rerank_candidate_count",
+                "retrieval_mode",
+                "stage_latency_ms",
+                "fallback_reason",
+            }.intersection(result["trace"]),
+        )
+        self.assertEqual(1, result["trace"]["dense_candidate_count"])
+        self.assertEqual(1, result["trace"]["keyword_candidate_count"])
+        self.assertEqual(1, result["trace"]["rrf_candidate_count"])
+        self.assertEqual(1, result["trace"]["rerank_candidate_count"])
+        self.assertEqual("hybrid_reranked", result["trace"]["retrieval_mode"])
+        self.assertIsNone(result["trace"]["fallback_reason"])
         self.assertEqual(1, len(reranker.calls))
 
     def test_reranker_receives_rrf_top_twenty_before_applying_top_n(self) -> None:
@@ -546,6 +574,54 @@ class PgVectorRetrievalTest(unittest.TestCase):
 
         self.assertEqual(20, len(reranker.calls[0][1]))
         self.assertEqual(5, reranker.calls[0][2])
+
+    def test_evaluation_ablation_modes_stop_before_later_pipeline_stages(self) -> None:
+        expected = {
+            "dense": (1, 0, 0),
+            "keyword": (0, 1, 0),
+            "rrf": (1, 1, 1),
+        }
+        for retrieval_mode, counts in expected.items():
+            with self.subTest(retrieval_mode=retrieval_mode):
+                reranker = _FakeReranker(score=0.8)
+                result = _retrieve_with_fake_psycopg(
+                    _PipelineRetriever(reranker=reranker, dense=True, keyword=True),
+                    source_type="faq",
+                    retrieval_mode=retrieval_mode,
+                )
+
+                self.assertEqual(retrieval_mode, result["mode"])
+                self.assertEqual(retrieval_mode, result["trace"]["retrieval_mode"])
+                self.assertEqual(counts[0], result["trace"]["dense_candidate_count"])
+                self.assertEqual(counts[1], result["trace"]["keyword_candidate_count"])
+                self.assertEqual(counts[2], result["trace"]["rrf_candidate_count"])
+                self.assertEqual(0, result["trace"]["rerank_candidate_count"])
+                self.assertEqual([], reranker.calls)
+                self.assertFalse(result["trusted_policy_eligible"])
+
+    def test_retrieval_rejects_unknown_ablation_mode_before_provider_access(self) -> None:
+        retriever = _PipelineRetriever(
+            reranker=_FakeReranker(score=0.8),
+            dense=True,
+            keyword=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "retrieval_mode"):
+            _retrieve_with_fake_psycopg(retriever, retrieval_mode="magic")
+
+    def test_rrf_ablation_preserves_mode_when_relaxed_filters_find_candidates(self) -> None:
+        reranker = _FakeReranker(score=0.99)
+
+        result = _retrieve_with_fake_psycopg(
+            _RelaxedPipelineRetriever(reranker=reranker),
+            source_type="faq",
+            product_category="missing-category",
+            retrieval_mode="rrf",
+        )
+
+        self.assertEqual("rrf", result["mode"])
+        self.assertEqual("rrf", result["trace"]["retrieval_mode"])
+        self.assertEqual([], reranker.calls)
 
     def test_unconfigured_or_failed_reranker_returns_rrf_and_never_trusts_policy(self) -> None:
         reranker = _FakeReranker(score=0.99, degraded=True, failure_reason="NOT_CONFIGURED")

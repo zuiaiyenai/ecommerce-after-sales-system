@@ -1,0 +1,84 @@
+name: Nightly and controlled smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 18 * * *"
+
+jobs:
+  python-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python_agent/requirements-test.txt
+      - run: pip install -r requirements-test.txt
+        working-directory: python_agent
+      - run: python -m pytest tests -m smoke -q
+        working-directory: python_agent
+
+  real-llm-smoke:
+    runs-on: ubuntu-latest
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python_agent/requirements-test.txt
+      - run: pip install -r requirements-test.txt
+        working-directory: python_agent
+      - name: Run real LLM tests when the protected secret is configured
+        if: env.LLM_API_KEY != ''
+        run: python -m pytest tests -m real_llm -q
+        working-directory: python_agent
+      - name: Explain skipped real LLM smoke
+        if: env.LLM_API_KEY == ''
+        run: echo "LLM_API_KEY is not configured; real LLM smoke was skipped."
+
+  layered-rag-integration:
+    runs-on: ubuntu-latest
+    env:
+      RAG_LAYERED_RETRIEVAL_ENABLED: "true"
+      PGVECTOR_DSN: ${{ secrets.PGVECTOR_DSN }}
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || secrets.BAILIAN_API_KEY }}
+      RERANK_API_KEY: ${{ secrets.RERANK_API_KEY }}
+      RERANK_PROVIDER: ${{ vars.RERANK_PROVIDER }}
+      RERANK_BASE_URL: ${{ vars.RERANK_BASE_URL }}
+      RERANK_MODEL: ${{ vars.RERANK_MODEL }}
+      RERANK_COST_PER_CALL: ${{ vars.RERANK_COST_PER_CALL }}
+      RERANK_COST_CURRENCY: ${{ vars.RERANK_COST_CURRENCY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python_agent/requirements-test.txt
+      - run: pip install -r requirements-test.txt
+        working-directory: python_agent
+      - name: Run real layered RAG ablation when protected configuration is complete
+        if: >-
+          env.PGVECTOR_DSN != '' &&
+          env.DASHSCOPE_API_KEY != '' &&
+          env.RERANK_API_KEY != '' &&
+          env.RERANK_PROVIDER != '' &&
+          env.RERANK_BASE_URL != '' &&
+          env.RERANK_MODEL != ''
+        run: python tools/evaluate_rag_recall.py --dataset python_agent/evaluation/rag_retrieval_cases.jsonl --mode all
+      - name: Explain skipped layered RAG integration
+        if: >-
+          env.PGVECTOR_DSN == '' ||
+          env.DASHSCOPE_API_KEY == '' ||
+          env.RERANK_API_KEY == '' ||
+          env.RERANK_PROVIDER == '' ||
+          env.RERANK_BASE_URL == '' ||
+          env.RERANK_MODEL == ''
+        run: echo "Layered RAG integration was skipped because PGVECTOR_DSN, embedding, or rerank configuration is incomplete."

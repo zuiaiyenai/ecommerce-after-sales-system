@@ -2,6 +2,7 @@ package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.enums.ErrorCode;
+import com.ecommerce.aftersales.config.KnowledgeUploadProperties;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand;
@@ -53,6 +54,7 @@ public class KnowledgeService {
     private final KnowledgeMetadataPolicy metadataPolicy;
     private final KnowledgeDraftService draftService;
     private final Path uploadRoot;
+    private final long maxFileBytes;
 
     @Autowired
     public KnowledgeService(
@@ -60,14 +62,26 @@ public class KnowledgeService {
             KnowledgeIngestionAsyncService asyncService,
             KnowledgeMetadataPolicy metadataPolicy,
             KnowledgeDraftService draftService,
-            @Value("${app.upload.dir:./uploads}") String uploadDir
+            @Value("${app.upload.dir:./uploads}") String uploadDir,
+            KnowledgeUploadProperties uploadProperties
     ) throws IOException {
         this.pgJdbcTemplate = pgJdbcTemplate;
         this.asyncService = asyncService;
         this.metadataPolicy = metadataPolicy;
         this.draftService = draftService;
         this.uploadRoot = Paths.get(uploadDir).toAbsolutePath().normalize();
+        this.maxFileBytes = uploadProperties.getMaxFileBytes();
         Files.createDirectories(this.uploadRoot.resolve("knowledge"));
+    }
+
+    KnowledgeService(
+            JdbcTemplate pgJdbcTemplate,
+            KnowledgeIngestionAsyncService asyncService,
+            KnowledgeMetadataPolicy metadataPolicy,
+            KnowledgeDraftService draftService,
+            String uploadDir
+    ) throws IOException {
+        this(pgJdbcTemplate, asyncService, metadataPolicy, draftService, uploadDir, new KnowledgeUploadProperties());
     }
 
     KnowledgeService(
@@ -130,6 +144,7 @@ public class KnowledgeService {
             throw new IllegalArgumentException("上传文件不能为空");
         }
 
+        validateFileSize(file);
         String normalizedMerchantCode = normalizeMerchantCode(scope, merchantCode);
         String normalizedKnowledgeType = normalizeKnowledgeType(knowledgeType);
         StoredKnowledgeFile storedFile = storeKnowledgeFile(file);
@@ -175,7 +190,7 @@ public class KnowledgeService {
     public FileImportResponse createFileImport(FileImportCommand command) {
         MultipartFile file = command == null ? null : command.file();
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("Uploaded file must not be empty");
-        if (file.getSize() > 10 * 1024 * 1024) throw new IllegalArgumentException("File must not exceed 10MB");
+        validateFileSize(file);
         String fileName = normalizedFileName(file.getOriginalFilename());
         validateFileType(fileName, file.getContentType());
         String knowledgeType = normalizeKnowledgeType(command.knowledgeType());
@@ -672,6 +687,12 @@ public class KnowledgeService {
         if (allowed == null || contentType == null || contentType.isBlank()
                 || !allowed.contains(contentType.toLowerCase(java.util.Locale.ROOT))) {
             throw new IllegalArgumentException("Unsupported file type");
+        }
+    }
+
+    private void validateFileSize(MultipartFile file) {
+        if (file.getSize() > maxFileBytes) {
+            throw new IllegalArgumentException("File must not exceed configured maximum size");
         }
     }
 

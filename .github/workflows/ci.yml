@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python_agent/requirements-test.txt
+      - run: pip install -r requirements-test.txt
+        working-directory: python_agent
+      - run: python -m pytest tests -q
+        working-directory: python_agent
+      - name: Layered RAG pure metrics quality gate
+        run: python -m pytest tests/test_rag_metrics.py -q
+        working-directory: python_agent
+      - name: Agent deterministic safety quality gate
+        run: python tools/evaluate_agent_safety.py --check
+
+  java-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B test
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            frontend/staff-auth-test-ui/package-lock.json
+            frontend/uniapp/package-lock.json
+      - run: npm ci
+        working-directory: frontend/staff-auth-test-ui
+      - run: npm run test:contracts
+        working-directory: frontend/staff-auth-test-ui
+      - run: npm run build
+        working-directory: frontend/staff-auth-test-ui
+        env:
+          VITE_API_BASE_URL: http://127.0.0.1:8080
+      - run: npm ci
+        working-directory: frontend/uniapp
+      - run: npm run build:mp-weixin
+        working-directory: frontend/uniapp
