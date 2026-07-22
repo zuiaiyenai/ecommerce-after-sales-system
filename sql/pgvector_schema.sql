@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk_draft
     heading_path              TEXT[] NOT NULL DEFAULT '{}',
     page_number               INTEGER NULL,
     chunk_text                TEXT NOT NULL,
+    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
     product_categories        TEXT[] NULL,
     scenes                    TEXT[] NULL,
     intents                   TEXT[] NULL,

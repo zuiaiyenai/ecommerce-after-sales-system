@@ -133,11 +133,12 @@ public class KnowledgeDraftService {
             raw.forEach((key, value) -> chunk.put(String.valueOf(key), value));
             pgJdbcTemplate.update("""
                     INSERT INTO knowledge_chunk_draft (document_id, chunk_index, heading_path, page_number, chunk_text,
-                        product_categories, scenes, intents, classification_source, classification_confidence,
+                        metadata, product_categories, scenes, intents, classification_source, classification_confidence,
                         classification_reason, review_required, revision)
-                    VALUES (?, ?, ?::text[], ?, ?, ?::text[], ?::text[], ?::text[], ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?::text[], ?, ?, ?::jsonb, ?::text[], ?::text[], ?::text[], ?, ?, ?, ?, ?)
                     """, documentId, number(chunk.get("chunk_index")), strings(chunk.get("heading_path")),
-                    chunk.get("page_number"), string(chunk.get("text")), strings(chunk.get("product_categories")),
+                    chunk.get("page_number"), string(chunk.get("text")), structuralMetadataJson(chunk.get("metadata")),
+                    strings(chunk.get("product_categories")),
                     strings(chunk.get("scenes")), strings(chunk.get("intents")),
                     string(chunk.get("classification_source")), chunk.get("classification_confidence"),
                     string(chunk.get("classification_reason")), Boolean.TRUE.equals(chunk.get("review_required")), targetRevision);
@@ -174,9 +175,15 @@ public class KnowledgeDraftService {
         if (!(value instanceof List<?> values)) return null;
         return values.stream().filter(Objects::nonNull).map(String::valueOf).toArray(String[]::new);
     }
+    private static String structuralMetadataJson(Object value) {
+        if (!(value instanceof Map<?, ?> rawMetadata)) return "{}";
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        rawMetadata.forEach((key, metadataValue) -> metadata.put(String.valueOf(key), metadataValue));
+        return toJson(metadata);
+    }
     private static String toJson(Map<String, Object> value) {
         try { return OBJECT_MAPPER.writeValueAsString(value); }
-        catch (Exception exception) { throw new IllegalStateException("Unable to serialize ingestion failure", exception); }
+        catch (Exception exception) { throw new IllegalStateException("Unable to serialize JSON metadata", exception); }
     }
     private static List<String> strings(Array array) throws java.sql.SQLException { return array == null ? null : Arrays.stream((Object[]) array.getArray()).map(String::valueOf).toList(); }
 }

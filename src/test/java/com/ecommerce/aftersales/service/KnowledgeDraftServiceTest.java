@@ -10,12 +10,15 @@ import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class KnowledgeDraftServiceTest {
@@ -119,16 +122,63 @@ class KnowledgeDraftServiceTest {
                 .hasMessageContaining("STALE_DRAFT_TARGET");
     }
 
+    @Test
+    void parsedStructuralMetadataIsPersistedAsJsonb() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 42L)));
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbc);
+
+        service.replaceParsedDraft(42L, 7L, parsedDraft());
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<Object[]> args = org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc, atLeastOnce()).update(sql.capture(), args.capture());
+        int insert = IntStream.range(0, sql.getAllValues().size())
+                .filter(i -> sql.getAllValues().get(i).contains("INSERT INTO knowledge_chunk_draft"))
+                .findFirst().orElseThrow();
+        assertThat(sql.getAllValues().get(insert)).contains("metadata").contains("?::jsonb");
+        assertThat(String.valueOf(args.getAllValues().get(insert)[5]))
+                .contains("structured_recursive_v1", "page_end");
+        int documentUpdate = IntStream.range(0, sql.getAllValues().size())
+                .filter(i -> sql.getAllValues().get(i).contains("UPDATE knowledge_document SET content"))
+                .findFirst().orElseThrow();
+        assertThat(sql.getAllValues().get(documentUpdate)).doesNotContain("metadata =");
+    }
+
+    @Test
+    void nonObjectStructuralMetadataIsPersistedAsEmptyJsonObject() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 42L)));
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbc);
+
+        service.replaceParsedDraft(42L, 7L, parsedDraft(List.of("unexpected")));
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<Object[]> args = org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc, atLeastOnce()).update(sql.capture(), args.capture());
+        int insert = IntStream.range(0, sql.getAllValues().size())
+                .filter(i -> sql.getAllValues().get(i).contains("INSERT INTO knowledge_chunk_draft"))
+                .findFirst().orElseThrow();
+        assertThat(args.getAllValues().get(insert)[5]).isEqualTo("{}");
+    }
+
     private Map<String, Object> parsedDraft() {
+        return parsedDraft(Map.of("strategy", "structured_recursive_v1", "page_end", 2));
+    }
+
+    private Map<String, Object> parsedDraft(Object structuralMetadata) {
         Map<String, Object> parsed = new LinkedHashMap<>();
         parsed.put("content", "draft content");
-        parsed.put("chunks", List.of(Map.of(
-                "chunk_index", 0,
-                "heading_path", List.of("Refund"),
-                "text", "draft content",
-                "classification_source", "RULE",
-                "review_required", false
-        )));
+        Map<String, Object> chunk = new LinkedHashMap<>();
+        chunk.put("chunk_index", 0);
+        chunk.put("heading_path", List.of("Refund"));
+        chunk.put("text", "draft content");
+        chunk.put("classification_source", "RULE");
+        chunk.put("review_required", false);
+        chunk.put("metadata", structuralMetadata);
+        parsed.put("chunks", List.of(chunk));
         return parsed;
     }
 }
