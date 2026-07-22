@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
+import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -45,6 +46,25 @@ class KnowledgeDraftServiceTest {
                 .query(sql.capture(), any(RowMapper.class), any(Object[].class));
         assertThat(sql.getAllValues().get(0)).contains("COALESCE(metadata ->> 'deleted', 'false') <> 'true'");
         assertThat(sql.getAllValues().get(1)).contains("COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'");
+    }
+
+    @Test
+    void draftCasConflictReturnsTheDatabaseCurrentRevisionAndStatusWithoutEditingDraftRows() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+        when(jdbcTemplate.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class), any(Object[].class)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(Map.of("revision", 5L, "review_status", "PUBLISHING")));
+
+        assertThatThrownBy(() -> service.updateDraftChunk(42L, 7L, 3L,
+                Map.of("productCategories", List.of(), "scenes", List.of(), "intents", List.of())))
+                .isInstanceOfSatisfying(KnowledgeRevisionConflictException.class, conflict -> {
+                    assertThat(conflict.getCurrentRevision()).isEqualTo(5L);
+                    assertThat(conflict.getReviewStatus()).isEqualTo("PUBLISHING");
+                });
+        org.mockito.Mockito.verify(jdbcTemplate, org.mockito.Mockito.never()).update(
+                org.mockito.ArgumentMatchers.contains("knowledge_chunk_draft"), any(Object[].class));
     }
 
     @Test

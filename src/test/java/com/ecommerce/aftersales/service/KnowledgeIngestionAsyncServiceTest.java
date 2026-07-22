@@ -8,6 +8,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
@@ -24,6 +25,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class KnowledgeIngestionAsyncServiceTest {
@@ -200,5 +202,72 @@ class KnowledgeIngestionAsyncServiceTest {
         ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
         verify(draftService).markParseFailed(eq(42L), eq(7L), eq("PARSE_FAILED"), message.capture());
         assertThat(message.getValue()).doesNotContain("/srv/secret").hasSizeLessThanOrEqualTo(300);
+    }
+
+    @Test
+    void embeddingCountAndMalformedElementsFailTheSameTargetWithoutCommit() {
+        List<Object> cases = new java.util.ArrayList<>(List.of(
+                List.of(), List.of((Object) Map.of("error", "partial")), List.of((Object) "bad"),
+                List.of(java.util.Collections.nCopies(1024, 0.0d), java.util.Collections.nCopies(1024, 0.0d))));
+        cases.add(java.util.Collections.singletonList(null));
+        for (Object embeddings : cases) {
+            JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+            RestTemplate restTemplate = mock(RestTemplate.class);
+            KnowledgePublishService publishService = mock(KnowledgePublishService.class);
+            @SuppressWarnings("unchecked") ObjectProvider<KnowledgePublishService> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(publishService);
+            when(publishService.targetDraft(42L, 6L)).thenReturn(List.of(Map.of("chunk_text", "draft")));
+            AgentGatewayProperties properties = new AgentGatewayProperties();
+            properties.setBaseUrl("http://agent/api");
+            when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenReturn(Map.of("embeddings", embeddings));
+
+            new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, mock(KnowledgeMetadataPolicy.class),
+                    mock(KnowledgeDraftService.class), provider).publish(42L, 6L);
+
+            verify(publishService).markEmbeddingFailed(42L, 6L, "EMBEDDING_FAILED");
+            verify(publishService, never()).commitPublishedRevision(any(), any(Long.class), any());
+        }
+    }
+
+    @Test
+    void embeddingDimensionMustBeExactly1024BeforeCommit() {
+        for (int size : List.of(1023, 1025)) {
+            JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+            RestTemplate restTemplate = mock(RestTemplate.class);
+            KnowledgePublishService publishService = mock(KnowledgePublishService.class);
+            @SuppressWarnings("unchecked") ObjectProvider<KnowledgePublishService> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(publishService);
+            when(publishService.targetDraft(42L, 6L)).thenReturn(List.of(Map.of("chunk_text", "draft")));
+            AgentGatewayProperties properties = new AgentGatewayProperties();
+            properties.setBaseUrl("http://agent/api");
+            when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class)))
+                    .thenReturn(Map.of("embeddings", List.of(java.util.Collections.nCopies(size, 0.0d))));
+
+            new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, mock(KnowledgeMetadataPolicy.class),
+                    mock(KnowledgeDraftService.class), provider).publish(42L, 6L);
+
+            verify(publishService).markEmbeddingFailed(42L, 6L, "EMBEDDING_FAILED");
+            verify(publishService, never()).commitPublishedRevision(any(), any(Long.class), any());
+        }
+    }
+
+    @Test
+    void exactly1024EmbeddingValuesCommitTheFrozenTargetRevision() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgePublishService publishService = mock(KnowledgePublishService.class);
+        @SuppressWarnings("unchecked") ObjectProvider<KnowledgePublishService> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(publishService);
+        when(publishService.targetDraft(42L, 6L)).thenReturn(List.of(Map.of("chunk_text", "draft")));
+        AgentGatewayProperties properties = new AgentGatewayProperties();
+        properties.setBaseUrl("http://agent/api");
+        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(Map.of("embeddings", List.of(java.util.Collections.nCopies(1024, 0.0d))));
+
+        new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, mock(KnowledgeMetadataPolicy.class),
+                mock(KnowledgeDraftService.class), provider).publish(42L, 6L);
+
+        verify(publishService).commitPublishedRevision(eq(42L), eq(6L), any());
+        verify(publishService, never()).markEmbeddingFailed(any(), any(Long.class), anyString());
     }
 }

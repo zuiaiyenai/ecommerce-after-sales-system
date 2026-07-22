@@ -5,6 +5,8 @@ import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
 import com.ecommerce.aftersales.service.KnowledgeService;
+import com.ecommerce.aftersales.service.KnowledgeDraftService;
+import com.ecommerce.aftersales.service.KnowledgePublishService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,12 +29,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class KnowledgeManagementControllerTest {
     private KnowledgeService knowledgeService;
+    private KnowledgePublishService publishService;
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
         knowledgeService = mock(KnowledgeService.class);
-        mockMvc = MockMvcBuilders.standaloneSetup(new KnowledgeManagementController(knowledgeService))
+        publishService = mock(KnowledgePublishService.class);
+        mockMvc = MockMvcBuilders.standaloneSetup(new KnowledgeManagementController(knowledgeService, mock(KnowledgeDraftService.class), publishService))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 
@@ -86,5 +90,15 @@ class KnowledgeManagementControllerTest {
         assertThat(statusNode.path("publishedRevision").textValue()).isEqualTo("9007199254740993");
         assertThat(chunkNode.path("chunkId").isTextual()).isTrue();
         assertThat(chunkNode.path("chunkId").textValue()).isEqualTo("9007199254740993");
+    }
+
+    @Test
+    void publishRejectsDecimalOrNonNumericExpectedRevisionWithBadRequest() throws Exception {
+        for (String expectedRevision : List.of("1.5", "\"not-a-number\"")) {
+            mockMvc.perform(post("/admin/knowledge/42/publish").contentType("application/json")
+                            .content("{\"expectedRevision\":" + expectedRevision + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(publishService);
     }
 }

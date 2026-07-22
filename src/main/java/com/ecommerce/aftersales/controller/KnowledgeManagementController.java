@@ -10,6 +10,9 @@ import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import com.ecommerce.aftersales.service.KnowledgeDraftService;
 import com.ecommerce.aftersales.service.KnowledgePublishService;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -87,8 +90,9 @@ public class KnowledgeManagementController {
     }
 
     @PostMapping("/{id:\\d+}/publish")
-    public ApiResponse<Map<String, String>> publish(@PathVariable Long id, @RequestBody Map<String, Object> request) {
-        long revision = publishService.startPublishing(id, longValue(request, "expectedRevision"));
+    public ApiResponse<Map<String, String>> publish(@PathVariable Long id, @RequestBody PublishRequest request) {
+        if (request == null || request.expectedRevision() == null) throw new BizException("expectedRevision is required");
+        long revision = publishService.startPublishing(id, request.expectedRevision());
         return ApiResponse.success("Publishing started", Map.of("documentId", String.valueOf(id), "targetRevision", String.valueOf(revision)));
     }
 
@@ -148,8 +152,26 @@ public class KnowledgeManagementController {
 
     private static long longValue(Map<String, Object> request, String field) {
         Object value = request.get(field);
-        if (value instanceof Number number) return number.longValue();
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return ((Number) value).longValue();
         if (value == null) throw new BizException(field + " is required");
-        return Long.parseLong(String.valueOf(value));
+        try { return Long.parseLong(String.valueOf(value)); }
+        catch (NumberFormatException exception) { throw new BizException(field + " must be an integer"); }
+    }
+
+    public record PublishRequest(Long expectedRevision) {
+        @JsonCreator
+        public PublishRequest(@JsonProperty("expectedRevision") JsonNode value) {
+            this(parseRevision(value));
+        }
+
+        private static Long parseRevision(JsonNode value) {
+            if (value == null || value.isNull()) return null;
+            if (value.isIntegralNumber() && value.canConvertToLong()) return value.longValue();
+            if (value.isTextual() && value.textValue().matches("-?\\d+")) {
+                try { return Long.parseLong(value.textValue()); }
+                catch (NumberFormatException ignored) { return null; }
+            }
+            throw new BizException("expectedRevision must be an integer");
+        }
     }
 }

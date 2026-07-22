@@ -88,7 +88,12 @@ public class KnowledgeDraftService {
                     """, Long.class, documentId, expectedRevision);
             if (revision != null) return revision;
         } catch (org.springframework.dao.EmptyResultDataAccessException ignored) { }
-        throw new com.ecommerce.aftersales.common.KnowledgeRevisionConflictException(expectedRevision, "REVIEW_REQUIRED");
+        List<Map<String, Object>> current = pgJdbcTemplate.queryForList(
+                "SELECT revision, review_status FROM knowledge_document WHERE id=? AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'", documentId);
+        if (current.isEmpty()) throw new BizException(ErrorCode.NOT_FOUND, "Knowledge document not found");
+        Map<String, Object> row = current.getFirst();
+        throw new com.ecommerce.aftersales.common.KnowledgeRevisionConflictException(
+                ((Number) row.get("revision")).longValue(), String.valueOf(row.get("review_status")));
     }
 
     private String[] canonical(Object raw, Field field) {

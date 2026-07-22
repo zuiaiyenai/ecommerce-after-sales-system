@@ -1,8 +1,9 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
+import com.ecommerce.aftersales.common.BizException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,11 +23,23 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class KnowledgePublishService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     @Qualifier("pgJdbcTemplate") private final JdbcTemplate pgJdbcTemplate;
     private final KnowledgeIngestionAsyncService asyncService;
+    private final KnowledgeMetadataPolicy metadataPolicy;
+
+    @Autowired
+    public KnowledgePublishService(JdbcTemplate pgJdbcTemplate, KnowledgeIngestionAsyncService asyncService,
+                                   KnowledgeMetadataPolicy metadataPolicy) {
+        this.pgJdbcTemplate = pgJdbcTemplate;
+        this.asyncService = asyncService;
+        this.metadataPolicy = metadataPolicy;
+    }
+
+    public KnowledgePublishService(JdbcTemplate pgJdbcTemplate, KnowledgeIngestionAsyncService asyncService) {
+        this(pgJdbcTemplate, asyncService, null);
+    }
 
     @Transactional(transactionManager = "pgTransactionManager")
     public long startPublishing(Long documentId, long expectedRevision) {
@@ -43,6 +56,7 @@ public class KnowledgePublishService {
         }
         if (targetRevision == null) throw conflict(documentId);
         pgJdbcTemplate.update("UPDATE knowledge_chunk_draft SET revision=? WHERE document_id=?", targetRevision, documentId);
+        validatePublishable(documentId, targetRevision);
         long frozenRevision = targetRevision;
         afterCommit(() -> asyncService.publish(documentId, frozenRevision));
         return frozenRevision;
@@ -54,6 +68,7 @@ public class KnowledgePublishService {
         if (rows.isEmpty() || embeddings == null || embeddings.size() != rows.size()) {
             throw new IllegalStateException("EMBEDDING_COUNT_MISMATCH");
         }
+        validateDraftLabels(rows);
         for (int index = 0; index < rows.size(); index++) {
             List<Double> vector = embeddings.get(index);
             if (vector == null || vector.size() != 1024) throw new IllegalStateException("EMBEDDING_DIMENSION_INVALID");
@@ -96,6 +111,36 @@ public class KnowledgePublishService {
                   AND COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'
                 ORDER BY d.chunk_index
                 """, documentId, targetRevision, targetRevision);
+    }
+
+    private void validatePublishable(Long documentId, long targetRevision) {
+        List<Map<String, Object>> rows = targetDraft(documentId, targetRevision);
+        if (rows.isEmpty()) throw new BizException("没有可发布的知识草稿");
+        Map<String, Object> document = rows.getFirst();
+        if (metadataPolicy != null && metadataPolicy.isVersionedKnowledgeType(value(document, "source_type"))) {
+            Object version = document.get("policy_version");
+            Object validFrom = document.get("valid_from");
+            Object validTo = document.get("valid_to");
+            if (version == null || String.valueOf(version).isBlank() || validFrom == null || validTo == null
+                    || !(validTo instanceof Comparable<?> comparable) || compareTimestamp(comparable, validFrom) <= 0) {
+                throw new BizException("政策版本与有效期不合法");
+            }
+        }
+        validateDraftLabels(rows);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static int compareTimestamp(Comparable validTo, Object validFrom) {
+        try { return validTo.compareTo(validFrom); }
+        catch (ClassCastException exception) { return -1; }
+    }
+
+    private static void validateDraftLabels(List<Map<String, Object>> rows) {
+        for (Map<String, Object> row : rows) {
+            for (String key : List.of("product_categories", "scenes", "intents")) {
+                if (row.get(key) == null) throw new BizException("草稿分类标签尚未确认");
+            }
+        }
     }
 
     private KnowledgeRevisionConflictException conflict(Long id) {

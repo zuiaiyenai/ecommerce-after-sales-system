@@ -19,6 +19,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class KnowledgePublishServiceTest {
 
@@ -55,5 +56,42 @@ class KnowledgePublishServiceTest {
         verify(jdbc, org.mockito.Mockito.atLeast(3)).update(sql.capture(), org.mockito.ArgumentMatchers.any(Object[].class));
         assertThat(sql.getAllValues()).anyMatch(value -> value.contains("published_revision") && value.contains("review_status='PUBLISHING'"));
         assertThat(sql.getAllValues()).anyMatch(value -> value.contains("DELETE FROM knowledge_chunk") && value.contains("revision<>?"));
+    }
+
+    @Test
+    void publishWorkerIsDispatchedOnlyAfterCommit() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService async = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgePublishService service = new KnowledgePublishService(jdbc, async);
+        Map<String, Object> draft = new LinkedHashMap<>();
+        draft.put("source_type", "faq"); draft.put("product_categories", new String[0]);
+        draft.put("scenes", new String[0]); draft.put("intents", new String[0]);
+        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(42L), eq(5L))).thenReturn(6L);
+        when(jdbc.queryForList(anyString(), eq(42L), eq(6L), eq(6L))).thenReturn(List.of(draft));
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThat(service.startPublishing(42L, 5L)).isEqualTo(6L);
+            verifyNoInteractions(async);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(async).publish(42L, 6L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    void lateEmbeddingFailureAffectingNoRowDoesNotMovePublishedRevision() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.update(anyString(), org.mockito.ArgumentMatchers.any(Object[].class))).thenReturn(0);
+        KnowledgePublishService service = new KnowledgePublishService(jdbc, mock(KnowledgeIngestionAsyncService.class));
+
+        assertThat(service.markEmbeddingFailed(42L, 6L, "EMBEDDING_FAILED")).isFalse();
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).update(sql.capture(), org.mockito.ArgumentMatchers.any(Object[].class));
+        assertThat(sql.getValue()).contains("revision=? AND review_status='PUBLISHING'").doesNotContain("published_revision");
     }
 }
