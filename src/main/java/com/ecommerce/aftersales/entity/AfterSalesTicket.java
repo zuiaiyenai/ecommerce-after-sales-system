@@ -41,12 +41,22 @@ public class AfterSalesTicket {
 
     private BigDecimal refundAmount;
 
-    private String aiClassifyResult;
+    private String aiReviewAuditJson;
 
-    /** AI工单分类置信度(0~1)，表示售后类型/处理路由分类把握度。 */
-    private BigDecimal aiConfidence;
+    /** AI review confidence for the current audit decision. */
+    private BigDecimal aiReviewConfidence;
 
-    private String aiRecommendType;
+    private String aiSuggestedAfterSaleType;
+
+    private String aiReviewRequestId;
+
+    private String aiReviewResult;
+
+    private String aiReviewReason;
+
+    private LocalDateTime aiReviewTime;
+
+    private Integer manualReviewRequired;
 
     private String status;
 
