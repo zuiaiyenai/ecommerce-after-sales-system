@@ -80,4 +80,22 @@ public class AfterSalesTicket {
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
+
+    /** Compatibility alias for callers that have not migrated to aiSuggestedAfterSaleType yet. */
+    public String getAiRecommendType() {
+        return aiSuggestedAfterSaleType;
+    }
+
+    public void setAiRecommendType(String aiRecommendType) {
+        this.aiSuggestedAfterSaleType = aiRecommendType;
+    }
+
+    /** Compatibility alias for callers that have not migrated to aiReviewConfidence yet. */
+    public BigDecimal getAiConfidence() {
+        return aiReviewConfidence;
+    }
+
+    public void setAiConfidence(BigDecimal aiConfidence) {
+        this.aiReviewConfidence = aiConfidence;
+    }
 }
