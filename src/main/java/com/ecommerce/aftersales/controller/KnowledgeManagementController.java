@@ -8,7 +8,9 @@ import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
-import lombok.RequiredArgsConstructor;
+import com.ecommerce.aftersales.service.KnowledgeDraftService;
+import com.ecommerce.aftersales.service.KnowledgePublishService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,9 +30,22 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/admin/knowledge")
-@RequiredArgsConstructor
 public class KnowledgeManagementController {
     private final KnowledgeService knowledgeService;
+    private final KnowledgeDraftService draftService;
+    private final KnowledgePublishService publishService;
+
+    @Autowired
+    public KnowledgeManagementController(KnowledgeService knowledgeService, KnowledgeDraftService draftService,
+                                         KnowledgePublishService publishService) {
+        this.knowledgeService = knowledgeService;
+        this.draftService = draftService;
+        this.publishService = publishService;
+    }
+
+    public KnowledgeManagementController(KnowledgeService knowledgeService) {
+        this(knowledgeService, null, null);
+    }
 
     @PostMapping(value = "/file-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<FileImportResponse> fileImport(
@@ -56,6 +71,25 @@ public class KnowledgeManagementController {
     @GetMapping("/{id:\\d+}/draft")
     public ApiResponse<List<DraftChunkResponse>> draft(@PathVariable Long id) {
         return ApiResponse.success("Query successful", knowledgeService.draft(id));
+    }
+
+    @PutMapping("/{id:\\d+}/draft")
+    public ApiResponse<Map<String, String>> updateDraft(@PathVariable Long id, @RequestBody Map<String, Object> request) {
+        long revision = draftService.updateDraftDocument(id, longValue(request, "expectedRevision"), request);
+        return ApiResponse.success("Draft updated", Map.of("documentId", String.valueOf(id), "revision", String.valueOf(revision)));
+    }
+
+    @PutMapping("/{id:\\d+}/draft/chunks/{chunkId:\\d+}")
+    public ApiResponse<Map<String, String>> updateDraftChunk(@PathVariable Long id, @PathVariable Long chunkId,
+                                                               @RequestBody Map<String, Object> request) {
+        long revision = draftService.updateDraftChunk(id, chunkId, longValue(request, "expectedRevision"), request);
+        return ApiResponse.success("Draft chunk updated", Map.of("documentId", String.valueOf(id), "revision", String.valueOf(revision)));
+    }
+
+    @PostMapping("/{id:\\d+}/publish")
+    public ApiResponse<Map<String, String>> publish(@PathVariable Long id, @RequestBody Map<String, Object> request) {
+        long revision = publishService.startPublishing(id, longValue(request, "expectedRevision"));
+        return ApiResponse.success("Publishing started", Map.of("documentId", String.valueOf(id), "targetRevision", String.valueOf(revision)));
     }
 
     @PostMapping("/{id:\\d+}/retry")
@@ -110,5 +144,12 @@ public class KnowledgeManagementController {
             @RequestParam(defaultValue = "5") Integer topK
     ) {
         return ApiResponse.success("Retrieved", knowledgeService.testRetrieval(query, merchantCode, topK));
+    }
+
+    private static long longValue(Map<String, Object> request, String field) {
+        Object value = request.get(field);
+        if (value instanceof Number number) return number.longValue();
+        if (value == null) throw new BizException(field + " is required");
+        return Long.parseLong(String.valueOf(value));
     }
 }

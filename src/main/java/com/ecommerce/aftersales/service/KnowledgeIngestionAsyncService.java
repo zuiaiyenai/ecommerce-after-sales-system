@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -49,6 +50,7 @@ public class KnowledgeIngestionAsyncService {
     private final AgentGatewayProperties agentGatewayProperties;
     private final KnowledgeMetadataPolicy metadataPolicy;
     private final KnowledgeDraftService draftService;
+    private final ObjectProvider<KnowledgePublishService> publishServiceProvider;
 
     @Autowired
     public KnowledgeIngestionAsyncService(
@@ -56,26 +58,68 @@ public class KnowledgeIngestionAsyncService {
             RestTemplate restTemplate,
             AgentGatewayProperties agentGatewayProperties,
             KnowledgeMetadataPolicy metadataPolicy,
-            KnowledgeDraftService draftService
+            KnowledgeDraftService draftService,
+            ObjectProvider<KnowledgePublishService> publishServiceProvider
     ) {
         this.pgJdbcTemplate = pgJdbcTemplate;
         this.restTemplate = restTemplate;
         this.agentGatewayProperties = agentGatewayProperties;
         this.metadataPolicy = metadataPolicy;
         this.draftService = draftService;
+        this.publishServiceProvider = publishServiceProvider;
+    }
+
+    public KnowledgeIngestionAsyncService(JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate,
+                                          AgentGatewayProperties agentGatewayProperties, KnowledgeMetadataPolicy metadataPolicy,
+                                          KnowledgeDraftService draftService) {
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, metadataPolicy, draftService, null);
     }
 
     public KnowledgeIngestionAsyncService(
             JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate, AgentGatewayProperties agentGatewayProperties,
             KnowledgeMetadataPolicy metadataPolicy
     ) {
-        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, metadataPolicy, new KnowledgeDraftService(pgJdbcTemplate));
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, metadataPolicy, new KnowledgeDraftService(pgJdbcTemplate), null);
     }
 
     KnowledgeIngestionAsyncService(
             JdbcTemplate pgJdbcTemplate, RestTemplate restTemplate, AgentGatewayProperties agentGatewayProperties
     ) {
-        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, null, new KnowledgeDraftService(pgJdbcTemplate));
+        this(pgJdbcTemplate, restTemplate, agentGatewayProperties, null, new KnowledgeDraftService(pgJdbcTemplate), null);
+    }
+
+    @Async("knowledgeIngestionExecutor")
+    public void publish(Long documentId, long targetRevision) {
+        KnowledgePublishService publishService = publishServiceProvider == null ? null : publishServiceProvider.getIfAvailable();
+        if (publishService == null) {
+            log.warn("Skip publish without publish service, documentId={}, revision={}", documentId, targetRevision);
+            return;
+        }
+        try {
+            List<Map<String, Object>> draft = publishService.targetDraft(documentId, targetRevision);
+            List<String> texts = draft.stream().map(row -> stringValue(row.get("chunk_text"))).toList();
+            if (texts.isEmpty()) throw new IllegalStateException("EMBEDDING_EMPTY_DRAFT");
+            String baseUrl = agentGatewayProperties.getBaseUrl().replaceAll("/+$", "");
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            if (agentGatewayProperties.getInternalToken() != null && !agentGatewayProperties.getInternalToken().isBlank()) {
+                headers.set("X-Agent-Internal-Token", agentGatewayProperties.getInternalToken());
+            }
+            TraceContext.putHeader(headers);
+            Map<String, Object> response = restTemplate.postForObject(baseUrl + "/embeddings",
+                    new HttpEntity<>(Map.of("chunks", texts, "document_id", documentId), headers), Map.class);
+            Object raw = response == null ? null : response.get("embeddings");
+            if (!(raw instanceof List<?> records) || records.size() != texts.size()) throw new IllegalStateException("EMBEDDING_COUNT_MISMATCH");
+            List<List<Double>> vectors = new ArrayList<>();
+            for (Object record : records) {
+                if (!(record instanceof List<?> values) || values.size() != 1024) throw new IllegalStateException("EMBEDDING_DIMENSION_INVALID");
+                vectors.add(values.stream().map(value -> ((Number) value).doubleValue()).toList());
+            }
+            publishService.commitPublishedRevision(documentId, targetRevision, vectors);
+        } catch (Exception exception) {
+            log.error("Failed to publish knowledge documentId={}, revision={}", documentId, targetRevision, exception);
+            publishService.markEmbeddingFailed(documentId, targetRevision, "EMBEDDING_FAILED");
+        }
     }
 
     @Async("knowledgeIngestionExecutor")

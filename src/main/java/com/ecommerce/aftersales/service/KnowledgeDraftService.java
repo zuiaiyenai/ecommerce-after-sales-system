@@ -6,7 +6,7 @@ import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -20,12 +20,23 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.time.LocalDateTime;
 
 @Service
-@RequiredArgsConstructor
 public class KnowledgeDraftService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     @Qualifier("pgJdbcTemplate") private final JdbcTemplate pgJdbcTemplate;
+    private final KnowledgeMetadataPolicy metadataPolicy;
+
+    @Autowired
+    public KnowledgeDraftService(JdbcTemplate pgJdbcTemplate, KnowledgeMetadataPolicy metadataPolicy) {
+        this.pgJdbcTemplate = pgJdbcTemplate;
+        this.metadataPolicy = metadataPolicy;
+    }
+
+    public KnowledgeDraftService(JdbcTemplate pgJdbcTemplate) {
+        this(pgJdbcTemplate, null);
+    }
     public IngestionStatusResponse ingestionStatus(Long documentId) {
         List<IngestionStatusResponse> rows = pgJdbcTemplate.query("SELECT id, review_status, metadata ->> 'errorCode' error_code, metadata ->> 'errorMessage' error_message, revision, published_revision FROM knowledge_document WHERE id = ? AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'", (rs, rowNum) -> new IngestionStatusResponse(rs.getLong("id"), rs.getString("review_status"), rs.getString("error_code"), rs.getString("error_message"), rs.getLong("revision"), (Long) rs.getObject("published_revision")), documentId);
         if (rows.isEmpty()) throw new BizException(ErrorCode.NOT_FOUND, "Knowledge document not found");
@@ -34,6 +45,63 @@ public class KnowledgeDraftService {
     public List<DraftChunkResponse> draft(Long documentId) {
         return pgJdbcTemplate.query("SELECT d.id, d.chunk_index, d.heading_path, d.page_number, d.chunk_text, d.product_categories, d.scenes, d.intents, d.classification_source, d.classification_confidence, d.classification_reason, d.review_required, d.revision FROM knowledge_chunk_draft d JOIN knowledge_document kd ON kd.id = d.document_id WHERE d.document_id = ? AND COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true' ORDER BY d.chunk_index", (rs, rowNum) -> new DraftChunkResponse(rs.getLong("id"), rs.getInt("chunk_index"), strings(rs.getArray("heading_path")), (Integer) rs.getObject("page_number"), rs.getString("chunk_text"), strings(rs.getArray("product_categories")), strings(rs.getArray("scenes")), strings(rs.getArray("intents")), rs.getString("classification_source"), rs.getBigDecimal("classification_confidence"), rs.getString("classification_reason"), rs.getBoolean("review_required"), rs.getLong("revision")), documentId);
     }
+
+    @Transactional(transactionManager = "pgTransactionManager")
+    public long updateDraftDocument(Long documentId, long expectedRevision, Map<String, Object> edit) {
+        String policyVersion = string(edit.get("policyVersion"));
+        String validFrom = string(edit.get("validFrom"));
+        String validTo = string(edit.get("validTo"));
+        if (policyVersion == null || policyVersion.isBlank() || validFrom == null || validTo == null
+                || !LocalDateTime.parse(validTo).isAfter(LocalDateTime.parse(validFrom))) {
+            throw new BizException("政策版本与有效期不合法");
+        }
+        Long revision = casRevision(documentId, expectedRevision);
+        int changed = pgJdbcTemplate.update("""
+                UPDATE knowledge_document SET policy_version=?, valid_from=CAST(? AS timestamp), valid_to=CAST(? AS timestamp),
+                    updated_at=NOW() WHERE id=? AND revision=? AND review_status='REVIEW_REQUIRED'
+                """, policyVersion.trim(), validFrom, validTo, documentId, revision);
+        if (changed != 1) throw new IllegalStateException("STALE_DRAFT_TARGET");
+        pgJdbcTemplate.update("UPDATE knowledge_chunk_draft SET revision=? WHERE document_id=?", revision, documentId);
+        return revision;
+    }
+
+    @Transactional(transactionManager = "pgTransactionManager")
+    public long updateDraftChunk(Long documentId, Long chunkId, long expectedRevision, Map<String, Object> edit) {
+        Long revision = casRevision(documentId, expectedRevision);
+        pgJdbcTemplate.update("UPDATE knowledge_chunk_draft SET revision=? WHERE document_id=?", revision, documentId);
+        int changed = pgJdbcTemplate.update("""
+                UPDATE knowledge_chunk_draft SET product_categories=?::text[], scenes=?::text[], intents=?::text[], revision=?
+                WHERE id=? AND document_id=?
+                """, canonical(edit.get("productCategories"), Field.CATEGORY), canonical(edit.get("scenes"), Field.SCENE),
+                canonical(edit.get("intents"), Field.INTENT), revision, chunkId, documentId);
+        if (changed != 1) throw new IllegalArgumentException("Draft chunk not found");
+        return revision;
+    }
+
+    private Long casRevision(Long documentId, long expectedRevision) {
+        try {
+            Long revision = pgJdbcTemplate.queryForObject("""
+                    UPDATE knowledge_document SET revision=revision+1, updated_at=NOW()
+                    WHERE id=? AND revision=? AND review_status='REVIEW_REQUIRED'
+                      AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                    RETURNING revision
+                    """, Long.class, documentId, expectedRevision);
+            if (revision != null) return revision;
+        } catch (org.springframework.dao.EmptyResultDataAccessException ignored) { }
+        throw new com.ecommerce.aftersales.common.KnowledgeRevisionConflictException(expectedRevision, "REVIEW_REQUIRED");
+    }
+
+    private String[] canonical(Object raw, Field field) {
+        if (!(raw instanceof List<?> values)) return null;
+        if (metadataPolicy == null) return values.stream().filter(Objects::nonNull).map(String::valueOf).toArray(String[]::new);
+        return values.stream().filter(Objects::nonNull).map(String::valueOf).map(value -> switch (field) {
+            case CATEGORY -> metadataPolicy.normalizeProductCategory(value);
+            case SCENE -> metadataPolicy.normalizeScene(value);
+            case INTENT -> metadataPolicy.normalizeIntent(value);
+        }).filter(Objects::nonNull).toArray(String[]::new);
+    }
+
+    private enum Field { CATEGORY, SCENE, INTENT }
 
     /** Replaces only the still-current processing draft in one PostgreSQL transaction. */
     @Transactional(transactionManager = "pgTransactionManager")
