@@ -58,6 +58,8 @@ def split_by_estimated_tokens(
             for start in range(0, len(unit), hard_max_chars):
                 parts.append(unit[start : start + hard_max_chars])
             continue
+        if unit_tokens > hard_max_tokens:
+            raise ValueError("indivisible atomic unit exceeds token limit")
 
         exceeds_tokens = current and current_tokens + unit_tokens > hard_max_tokens
         exceeds_chars = current and current_chars + len(unit) > hard_max_chars

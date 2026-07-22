@@ -34,6 +34,17 @@ def test_token_estimate_treats_nfkc_equivalent_words_identically() -> None:
     assert estimate_tokens("ＡＢＣ＿１２３，退款") == 4
 
 
+def test_hard_split_rejects_indivisible_atomic_unit_over_token_limit() -> None:
+    with pytest.raises(ValueError, match="indivisible atomic unit.*token limit"):
+        split_by_estimated_tokens("\u2025", hard_max_tokens=1)
+
+
+def test_hard_split_preserves_nfkc_source_text_with_default_limit() -> None:
+    text = "\uff21\uff22\uff23\uff3f\uff11\uff12\uff13"
+
+    assert split_by_estimated_tokens(text, hard_max_tokens=800) == [text]
+
+
 def test_models_normalize_heading_paths_and_content_types_to_tuples() -> None:
     block = DocumentBlock("paragraph", "body", ["Returns"])
     chunk = StructuredChunk(
