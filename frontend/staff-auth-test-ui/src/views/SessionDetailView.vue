@@ -24,6 +24,9 @@ const actionLoading = ref('');
 const activeFilter = ref('ACTIVE');
 let ws = null;
 let wsReconnectTimer = null;
+let sessionListRefreshTimer = 0;
+const SESSION_PAGE_SIZE = 100;
+const hiddenFromActiveQueueStatuses = ['RESOLVED', 'CLOSED', 'READY_TO_CLOSE', 'AWAITING_EVALUATION'];
 
 const terminalStatuses = ['RESOLVED'];
 const filterOptions = [
@@ -39,7 +42,7 @@ const quickReplies = ['退款流程', '退款时效', '退货说明', '发货时
 const visibleSessions = computed(() => {
   return sessions.value.filter((item) => item.status !== 'CLOSED').filter((item) => {
     if (activeFilter.value === 'ACTIVE') {
-      return !terminalStatuses.includes(item.status);
+      return isActiveQueueSession(item);
     }
     if (activeFilter.value === 'COMPLETED') {
       return terminalStatuses.includes(item.status);
@@ -91,7 +94,7 @@ const emotionTrend = computed(() => {
     return [];
   }
   return items.map((message, index) => ({
-    id: message.id || `${message.createdAt || 'msg'}-${index}`,
+    id: message.messageId || `${message.createdAt || 'msg'}-${index}`,
     step: index + 1,
     label: emotionLabelText(message.emotionLabel),
     rawLabel: message.emotionLabel,
@@ -107,7 +110,9 @@ const currentEmotionSnapshot = computed(() => ({
   score: normalizeScore(session.value?.emotionScore),
   confidence: normalizeConfidence(session.value?.emotionConfidence),
   tone: emotionTone(session.value?.emotionLabel),
-  summary: emotionSummary(session.value?.emotionLabel)
+  summary: emotionSummary(session.value?.emotionLabel),
+  trend: session.value?.emotionTrend || 'FLAT',
+  riskLevel: session.value?.riskLevel || 'LOW'
 }));
 const emotionEscalationText = computed(() => {
   const items = emotionTrend.value;
@@ -127,7 +132,7 @@ const emotionEscalationText = computed(() => {
 
 async function loadPage() {
   const [page, detail, messageList] = await Promise.all([
-    getSessions(),
+    getSessions({ size: SESSION_PAGE_SIZE }),
     getSession(route.params.sessionId),
     getSessionMessages(route.params.sessionId)
   ]);
@@ -135,6 +140,32 @@ async function loadPage() {
   session.value = detail;
   messages.value = messageList;
   connectWebSocket(route.params.sessionId);
+}
+
+async function refreshSessionListSilently() {
+  try {
+    const page = await getSessions({ size: SESSION_PAGE_SIZE });
+    sessions.value = page.records || [];
+    if (shell?.sessions) {
+      shell.sessions.value = sessions.value;
+    }
+  } catch (error) {
+    // Keep the current list during transient refresh failures.
+  }
+}
+
+function isActiveQueueSession(item) {
+  return !hiddenFromActiveQueueStatuses.includes(item?.status)
+    && (Number(item?.serviceUnreadCount || 0) > 0 || !item?.serviceId);
+}
+
+function startSessionListRefreshPolling() {
+  window.clearInterval(sessionListRefreshTimer);
+  sessionListRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshSessionListSilently();
+    }
+  }, 5000);
 }
 
 function connectWebSocket(sessionId) {
@@ -147,25 +178,25 @@ function connectWebSocket(sessionId) {
     wsReconnectTimer = null;
   }
   try {
-    ws = new WebSocket('ws://127.0.0.1:8080/api/ws/chat');
+    const token = localStorage.getItem('merchant_cs_token') || '';
+    if (!token) return;
+    ws = new WebSocket(`ws://127.0.0.1:8080/api/ws/chat?token=${encodeURIComponent(token)}`);
     ws.onopen = () => {
-      ws.send(JSON.stringify({ action: 'subscribe', sessionId: Number(sessionId) }));
+      ws.send(JSON.stringify({ action: 'subscribe', sessionId: String(sessionId) }));
     };
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.action === 'message' && msg.role !== 'SERVICE') {
-          messages.value = [...messages.value, {
-            id: Date.now(),
-            sessionId: msg.sessionId,
-            senderRole: msg.role === 'USER' ? 'USER' : 'SERVICE',
-            messageType: msg.messageType,
-            content: msg.content,
-            createdAt: msg.createdAt
-          }];
+          const [messageList, detail] = await Promise.all([
+            getSessionMessages(sessionId),
+            getSession(sessionId)
+          ]);
+          messages.value = messageList;
+          session.value = detail;
         }
       } catch (e) {
-        // ignore parse errors
+        // HTTP history remains the source of truth; the next refresh will retry.
       }
     };
     ws.onclose = () => {
@@ -193,8 +224,7 @@ async function handleSend() {
   }
   sending.value = true;
   try {
-    const message = await sendSessionMessage(route.params.sessionId, draft.value.trim());
-    messages.value = [...messages.value, message];
+    await sendSessionMessage(route.params.sessionId, draft.value.trim());
     draft.value = '';
     shell?.setAction('消息已发送');
     await loadPage();
@@ -297,19 +327,56 @@ function statusTone(status) {
 }
 
 function senderLabel(role) {
-  return role === 'SERVICE' ? '客服' : '用户';
+  const normalized = String(role || '').toUpperCase();
+  if (normalized === 'SERVICE') return '客服';
+  if (normalized === 'ASSISTANT') return '智能助手';
+  if (normalized === 'SYSTEM') return '系统';
+  return '用户';
+}
+
+function messageRowClass(message) {
+  const role = String(message?.senderRole || '').toUpperCase();
+  if (role === 'SERVICE' || role === 'ASSISTANT') return 'service';
+  if (role === 'SYSTEM') return 'system';
+  return 'user';
 }
 
 function showImage(msg) {
-  return msg && msg.messageType === 'IMAGE';
+  return msg && msg.messageType === 'IMAGE' && Boolean(imageSrc(msg));
 }
 
 function imageSrc(msg) {
-  return resolveAssetUrl(msg && msg.content);
+  const raw = msg?.fileUrl || '';
+  if (!raw) {
+    return '';
+  }
+  return resolveAssetUrl(raw);
 }
 
 function fieldValue(value, fallback = '暂无') {
   return value || fallback;
+}
+
+function formatSessionTime(value) {
+  if (!value) {
+    return '';
+  }
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(text)) {
+    return text.slice(11, 16);
+  }
+  if (/^\d{2}:\d{2}/.test(text)) {
+    return text.slice(0, 5);
+  }
+  return text.slice(0, 16);
+}
+
+function trendText(trend) {
+  return ({ UP: '持续升高', DOWN: '有所缓和', FLAT: '基本平稳' })[trend] || '基本平稳';
+}
+
+function riskText(level) {
+  return ({ HIGH: '高', MEDIUM: '中', LOW: '低' })[level] || '低';
 }
 
 function emotionLabelText(label) {
@@ -390,7 +457,10 @@ function knowledgeSourceLabel(sourceType) {
 }
 
 watch(() => route.params.sessionId, loadPage);
-onMounted(loadPage);
+onMounted(() => {
+  loadPage();
+  startSessionListRefreshPolling();
+});
 onUnmounted(() => {
   if (ws) {
     ws.close();
@@ -400,6 +470,7 @@ onUnmounted(() => {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
   }
+  window.clearInterval(sessionListRefreshTimer);
 });
 </script>
 
@@ -426,10 +497,10 @@ onUnmounted(() => {
       <div class="template-conversation-list">
         <button
           v-for="item in visibleSessions"
-          :key="item.id"
+          :key="item.sessionId"
           type="button"
-          :class="['template-conversation-card', { active: Number(route.params.sessionId) === item.id }]"
-          @click="goSession(item.id)"
+          :class="['template-conversation-card', { active: String(route.params.sessionId) === String(item.sessionId) }]"
+          @click="goSession(item.sessionId)"
         >
           <span class="template-user-avatar">{{ fieldValue(item.user, '访客').slice(0, 1) }}</span>
           <span class="template-conversation-copy">
@@ -438,7 +509,7 @@ onUnmounted(() => {
             <small>{{ statusLabel(item.status) }} · {{ fieldValue(item.orderNo) }}</small>
           </span>
           <span class="template-conversation-side">
-            <time>{{ item.id === 101 ? '10:24' : item.id === 102 ? '10:21' : '10:15' }}</time>
+            <time>{{ formatSessionTime(item.lastMessageTime) }}</time>
             <i v-if="!terminalStatuses.includes(item.status)" aria-hidden="true"></i>
           </span>
         </button>
@@ -461,16 +532,16 @@ onUnmounted(() => {
       <div class="template-message-stream">
         <div
           v-for="message in messages"
-          :key="message.id"
-          :class="['template-message-row', message.senderRole === 'SERVICE' ? 'service' : 'user']"
+          :key="message.messageId"
+          :class="['template-message-row', messageRowClass(message)]"
         >
           <span class="template-user-avatar mini">{{ senderLabel(message.senderRole).slice(0, 1) }}</span>
-          <div class="template-message-content">
+          <div :class="['template-message-content', { image: showImage(message) }]">
             <img
               v-if="showImage(message)"
               :src="imageSrc(message)"
               alt="图片"
-              style="max-width:200px;max-height:200px;border-radius:8px;display:block"
+              class="template-message-image"
             />
             <p v-else>{{ message.content }}</p>
           </div>
@@ -480,7 +551,7 @@ onUnmounted(() => {
           <img
             v-if="session?.productImage"
             class="product-thumb"
-            :src="imageSrc({content: session.productImage})"
+            :src="resolveAssetUrl(session.productImage)"
             alt="商品"
           />
           <div v-else class="product-thumb">
@@ -586,6 +657,14 @@ onUnmounted(() => {
             <div class="emotion-meter">
               <span>判断置信度</span>
               <strong>{{ currentEmotionSnapshot.confidence }}%</strong>
+            </div>
+            <div class="emotion-meter">
+              <span>趋势</span>
+              <strong>{{ trendText(currentEmotionSnapshot.trend) }}</strong>
+            </div>
+            <div class="emotion-meter">
+              <span>风险</span>
+              <strong>{{ riskText(currentEmotionSnapshot.riskLevel) }}</strong>
             </div>
           </div>
         </div>
