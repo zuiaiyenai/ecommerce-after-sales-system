@@ -128,6 +128,7 @@ DocumentBlock(
 | `target_tokens` | 500 | 同章节内组合完整结构块时的理想大小 |
 | `hard_max_tokens` | 800 | 任意最终 Chunk 的硬上限 |
 | `min_merge_tokens` | 150 | 判断相邻小 Chunk 是否需要回并 |
+| `hard_max_chars` | 6400 | 防止异常长单词或估算偏差产生超大 Chunk 的安全上限 |
 | `chunking_strategy` | `structured_recursive_v1` | 可观测和后续重建所需的策略版本 |
 
 目标大小不是强制切割线。组合完整段落后略高于目标值但未超过硬上限时，可以保留完整段落。硬上限只在递归拆分和最终校验时强制执行。
@@ -197,7 +198,8 @@ DocumentBlock(
 {
   "document_id": "42",
   "document_title": "平台售后退款规则",
-  "source_type": "pdf",
+  "source_type": "after_sales_policy",
+  "source_format": "pdf",
   "source_code": "POLICY-2026",
   "file_name": "policy.pdf",
   "revision": 3,
@@ -219,7 +221,7 @@ Metadata 合并优先级：
 2. 人工修改后的草稿分类字段。
 3. Python 生成的结构信息。
 
-Python 不得覆盖 `document_id`、商家、版本、有效期等 Java 拥有的业务事实。任何可能通过 API 到达 JavaScript 的 Java `Long` ID 必须序列化为字符串。
+`source_type` 保持现有知识业务类型语义；新增的 `source_format` 才表示 `pdf`、`markdown` 或 `text`，禁止复用 `source_type` 表示文件格式。Python 不得覆盖 `document_id`、商家、版本、有效期等 Java 拥有的业务事实。任何可能通过 API 到达 JavaScript 的 Java `Long` ID 必须序列化为字符串。
 
 ## 10. Java 旧切分路径
 
