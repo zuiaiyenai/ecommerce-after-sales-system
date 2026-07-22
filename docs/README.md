@@ -6,19 +6,21 @@ Layered retrieval is disabled by default with `RAG_LAYERED_RETRIEVAL_ENABLED=fal
 
 ### Configuration
 
-Create a local Agent configuration from the example and keep real credentials out of Git:
+For Docker Compose, create the project-level interpolation file and keep real credentials out of Git:
 
 ```powershell
-Copy-Item python_agent/.env.example python_agent/.env
+Copy-Item .env.example .env
 ```
+
+Compose reads shared rollout and Reranker values from this project-level `.env` (or from the invoking shell); it does not read those values from `python_agent/.env`. When starting the Python Agent directly, separately copy `python_agent/.env.example` to `python_agent/.env`.
 
 - `PGVECTOR_DSN` is the PostgreSQL/pgvector connection string.
 - `DASHSCOPE_API_KEY` (or `BAILIAN_API_KEY`) is required for `text-embedding-v3`; the running Agent process must receive it.
 - Keep `RAG_LAYERED_RETRIEVAL_ENABLED=false` for compatibility until rollout gates pass.
-- Keep `KNOWLEDGE_MAX_FILE_BYTES=10485760` (10 MiB) identical for Java and the Agent.
+- `KNOWLEDGE_MAX_FILE_BYTES=10485760` (10 MiB) is enforced by Java at the multipart and knowledge-service upload boundaries. The Agent does not receive raw knowledge files and does not enforce this setting.
 - Leave `RERANK_PROVIDER`, `RERANK_BASE_URL`, and `RERANK_API_KEY` empty to disable external reranking. When enabled, retain `RERANK_TIMEOUT_SECONDS=3`, `RERANK_MAX_RETRIES=1`, and `RERANK_MAX_CANDIDATES=20`.
 
-`compose.yml` passes these settings to `agent` and Java. Validate its resolved settings without starting services:
+`compose.yml` passes the shared retrieval switch to Agent and Java. Validate its resolved settings without starting services:
 
 ```powershell
 docker compose config

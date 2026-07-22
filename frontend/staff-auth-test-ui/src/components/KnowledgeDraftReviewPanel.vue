@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { normalizeDraft, validateDraftForPublish } from '../api/knowledgeDraft.js';
+import { hasUnsavedDraftChanges, normalizeDraft, validateDraftForPublish } from '../api/knowledgeDraft.js';
 
 const props = defineProps({
   draft: { type: Object, required: true },
@@ -29,7 +29,13 @@ const availableLabelOptions = computed(() => {
   return Object.fromEntries(Object.entries(options).map(([field, values]) => [field, [...values].sort()]));
 });
 
-const publishErrors = computed(() => validateDraftForPublish(editable.value));
+const publishErrors = computed(() => {
+  const errors = validateDraftForPublish(editable.value);
+  if (hasUnsavedDraftChanges(props.draft, editable.value)) {
+    errors.push('请先保存所有未提交的 Draft 修改');
+  }
+  return errors;
+});
 
 function saveChunk(chunk) {
   emit('save-chunk', {

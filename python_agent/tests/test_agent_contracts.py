@@ -85,6 +85,10 @@ class AgentContractTest(unittest.TestCase):
                 "order_id": "9007199254740995",
                 "review_request_id": "review-1",
                 "verdict": "APPROVE",
+                "filter_level": "strict",
+                "reranker_succeeded": True,
+                "trusted_policy_eligible": True,
+                "policy_version": "v2",
             }
         )
 
@@ -93,6 +97,10 @@ class AgentContractTest(unittest.TestCase):
         self.assertEqual("9007199254740993", payload["ticketId"])
         self.assertEqual("9007199254740995", payload["orderId"])
         self.assertEqual("review-1", payload["reviewRequestId"])
+        self.assertEqual("strict", payload["filterLevel"])
+        self.assertTrue(payload["rerankerSucceeded"])
+        self.assertTrue(payload["trustedPolicyEligible"])
+        self.assertEqual("v2", payload["policyVersion"])
         self.assertNotIn("ticket_id", payload)
         self.assertNotIn("order_id", payload)
 
@@ -150,6 +158,18 @@ class AgentContractTest(unittest.TestCase):
         self.assertEqual("ORDER-20260714-1", result.data[0]["order_no"])
         self.assertEqual("9007199254740993", result.data[0]["existing_ticket_id"])
         self.assertNotIn("orderId", result.data[0])
+
+    def test_empty_legacy_citation_is_not_normalized_as_traceable(self) -> None:
+        retriever = Mock()
+        retriever.retrieve.return_value = {
+            "hits": [{"citation": {}}, {"citation": {"source_code": "POLICY-2"}}]
+        }
+        registry = AgentToolRegistry(java=RecordingJavaClient(), retriever=retriever, vision=Mock())
+
+        result = registry.retrieve_knowledge({"query": "refund"})
+
+        self.assertEqual([], result["hits"][0]["citations"])
+        self.assertEqual([], result["hits"][1]["citations"])
 
     def test_existing_ticket_keeps_ticket_id_separate_from_ticket_number(self) -> None:
         ticket = LangGraphAfterSalesAgent._ticket_from_existing_order(

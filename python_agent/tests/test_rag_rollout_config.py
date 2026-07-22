@@ -23,6 +23,12 @@ def test_layered_rag_rollout_defaults_are_safe(monkeypatch) -> None:
     assert reranker.max_candidates == 20
 
 
+def test_direct_pgvector_config_construction_is_fail_closed() -> None:
+    retrieval = pgvector_retriever.PgVectorConfig(dsn="postgresql://unused")
+
+    assert retrieval.layered_retrieval_enabled is False
+
+
 def test_compatibility_switch_skips_embedding_and_reranking() -> None:
     class CompatibilityRetriever(pgvector_retriever.PgVectorKnowledgeRetriever):
         def _get_query_embedding(self, _query):

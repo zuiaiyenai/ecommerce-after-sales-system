@@ -313,6 +313,7 @@ public class KnowledgeService {
             SELECT
                 d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
                 d.product_category, d.scene, d.intent, d.policy_version,
+                d.review_status, d.revision, d.published_revision, d.valid_from, d.valid_to,
                 d.tags, d.metadata, d.status, d.created_at, d.updated_at,
                 COUNT(c.id) AS chunk_count
             FROM knowledge_document d
@@ -345,6 +346,11 @@ public class KnowledgeService {
                 rs.getString("scene"),
                 rs.getString("intent"),
                 rs.getString("policy_version"),
+                rs.getString("review_status"),
+                rs.getLong("revision"),
+                (Long) rs.getObject("published_revision"),
+                rs.getTimestamp("valid_from"),
+                rs.getTimestamp("valid_to"),
                 rs.getString("tags"),
                 rs.getString("metadata"),
                 rs.getInt("status"),
@@ -367,6 +373,7 @@ public class KnowledgeService {
                 SELECT
                     d.id, d.source_type, d.source_code, d.merchant_code, d.title, d.content,
                     d.product_category, d.scene, d.intent, d.policy_version,
+                    d.review_status, d.revision, d.published_revision, d.valid_from, d.valid_to,
                     d.tags, d.metadata, d.status, d.created_at, d.updated_at,
                     COUNT(c.id) AS chunk_count
                 FROM knowledge_document d
@@ -387,6 +394,11 @@ public class KnowledgeService {
                         rs.getString("scene"),
                         rs.getString("intent"),
                         rs.getString("policy_version"),
+                        rs.getString("review_status"),
+                        rs.getLong("revision"),
+                        (Long) rs.getObject("published_revision"),
+                        rs.getTimestamp("valid_from"),
+                        rs.getTimestamp("valid_to"),
                         rs.getString("tags"),
                         rs.getString("metadata"),
                         rs.getInt("status"),
@@ -613,6 +625,11 @@ public class KnowledgeService {
             String scene,
             String intent,
             String policyVersion,
+            String reviewStatus,
+            Long revision,
+            Long publishedRevision,
+            Timestamp validFrom,
+            Timestamp validTo,
             String tagsJson,
             String metadataJson,
             Integer status,
@@ -632,6 +649,11 @@ public class KnowledgeService {
         info.setScene(scene);
         info.setIntent(intent);
         info.setPolicyVersion(policyVersion);
+        info.setReviewStatus(reviewStatus);
+        info.setRevision(revision);
+        info.setPublishedRevision(publishedRevision);
+        info.setValidFrom(validFrom == null ? null : validFrom.toLocalDateTime());
+        info.setValidTo(validTo == null ? null : validTo.toLocalDateTime());
         info.setTags(parseJsonToStringList(tagsJson));
         info.setMetadata(metadata);
         info.setStatus(status);

@@ -5,12 +5,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -32,6 +36,50 @@ class KnowledgeServiceTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void listMapsAuthoritativeReviewLifecycleFieldsFromKnowledgeDocument() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ResultSet resultSet = mock(ResultSet.class);
+        LocalDateTime validFrom = LocalDateTime.of(2026, 7, 22, 8, 0);
+        LocalDateTime validTo = LocalDateTime.of(2026, 8, 22, 8, 0);
+        when(resultSet.getLong("id")).thenReturn(9007199254740993L);
+        when(resultSet.getString("source_type")).thenReturn("after_sales_policy");
+        when(resultSet.getString("source_code")).thenReturn("POLICY-1");
+        when(resultSet.getString("merchant_code")).thenReturn("MERCHANT_DEMO");
+        when(resultSet.getString("title")).thenReturn("售后政策");
+        when(resultSet.getString("tags")).thenReturn("[]");
+        when(resultSet.getString("metadata")).thenReturn("{}");
+        when(resultSet.getInt("status")).thenReturn(1);
+        when(resultSet.getTimestamp("created_at")).thenReturn(Timestamp.valueOf(validFrom));
+        when(resultSet.getTimestamp("updated_at")).thenReturn(Timestamp.valueOf(validFrom));
+        when(resultSet.getInt("chunk_count")).thenReturn(2);
+        when(resultSet.getString("review_status")).thenReturn("REVIEW_REQUIRED");
+        when(resultSet.getLong("revision")).thenReturn(8L);
+        when(resultSet.getObject("published_revision")).thenReturn(6L);
+        when(resultSet.getTimestamp("valid_from")).thenReturn(Timestamp.valueOf(validFrom));
+        when(resultSet.getTimestamp("valid_to")).thenReturn(Timestamp.valueOf(validTo));
+        when(jdbcTemplate.query(anyString(), any(Object[].class), any(RowMapper.class))).thenAnswer(invocation -> {
+            RowMapper<KnowledgeUploadDto.KnowledgeInfo> mapper = invocation.getArgument(2);
+            return List.of(mapper.mapRow(resultSet, 0));
+        });
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, mock(KnowledgeIngestionAsyncService.class), metadataPolicy("v2.0"), tempDir.toString());
+
+        var records = service.listKnowledge(null, null, 1, 20);
+
+        assertThat(records).hasSize(1);
+        var info = records.getFirst();
+        assertThat(info.getReviewStatus()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(info.getRevision()).isEqualTo(8L);
+        assertThat(info.getPublishedRevision()).isEqualTo(6L);
+        assertThat(info.getValidFrom()).isEqualTo(validFrom);
+        assertThat(info.getValidTo()).isEqualTo(validTo);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).query(sql.capture(), any(Object[].class), any(RowMapper.class));
+        assertThat(sql.getValue()).contains("d.review_status", "d.revision", "d.published_revision", "d.valid_from", "d.valid_to");
+    }
 
     @Test
     void textImportStartsAsyncIngestionOnlyAfterThePgTransactionCommits() throws Exception {

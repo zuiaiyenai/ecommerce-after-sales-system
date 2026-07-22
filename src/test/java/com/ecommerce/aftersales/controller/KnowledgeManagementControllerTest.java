@@ -5,6 +5,7 @@ import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
+import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import com.ecommerce.aftersales.service.KnowledgeDraftService;
 import com.ecommerce.aftersales.service.KnowledgePublishService;
@@ -17,6 +18,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -24,6 +26,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -91,6 +94,27 @@ class KnowledgeManagementControllerTest {
         assertThat(statusNode.path("publishedRevision").textValue()).isEqualTo("9007199254740993");
         assertThat(chunkNode.path("chunkId").isTextual()).isTrue();
         assertThat(chunkNode.path("chunkId").textValue()).isEqualTo("9007199254740993");
+    }
+
+    @Test
+    void listReturnsAuthoritativeReviewLifecycleAndTextualDocumentId() throws Exception {
+        KnowledgeUploadDto.KnowledgeInfo info = new KnowledgeUploadDto.KnowledgeInfo();
+        info.setId(9007199254740993L);
+        info.setReviewStatus("REVIEW_REQUIRED");
+        info.setRevision(8L);
+        info.setPublishedRevision(6L);
+        info.setValidFrom(LocalDateTime.of(2026, 7, 22, 8, 0));
+        info.setValidTo(LocalDateTime.of(2026, 8, 22, 8, 0));
+        when(knowledgeService.listKnowledge(null, null, 1, 20)).thenReturn(List.of(info));
+
+        mockMvc.perform(get("/admin/knowledge/list"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].id").value("9007199254740993"))
+                .andExpect(jsonPath("$.data[0].reviewStatus").value("REVIEW_REQUIRED"))
+                .andExpect(jsonPath("$.data[0].revision").value(8))
+                .andExpect(jsonPath("$.data[0].publishedRevision").value(6))
+                .andExpect(jsonPath("$.data[0].validFrom").exists())
+                .andExpect(jsonPath("$.data[0].validTo").exists());
     }
 
     @Test

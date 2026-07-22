@@ -194,6 +194,15 @@ public class InternalAgentToolsController {
             return ApiResponse.success("status_not_reviewable", result);
         }
 
+        boolean approvalRequested = "APPROVE".equals(verdict);
+        String approvalGuardFailure = approvalRequested ? approvalGuardFailure(request, ticket) : null;
+        if (approvalGuardFailure != null) {
+            verdict = "MANUAL_REVIEW_REQUIRED";
+            request.setVerdict(verdict);
+            request.setReason("自动审核未通过可信政策门禁，已转人工复核：" + approvalGuardFailure);
+            log.warn("ai_review_approval_guard ticket_id={} review_request_id={} failure={}",
+                    ticket.getId(), request.getReviewRequestId(), approvalGuardFailure);
+        }
         boolean approve = "APPROVE".equals(verdict);
         if (approve) {
             LocalDateTime now = LocalDateTime.now();
@@ -593,6 +602,10 @@ public class InternalAgentToolsController {
         payload.put("visual_uncertain", request.getVisualUncertain());
         payload.put("policy_uncertain", request.getPolicyUncertain());
         payload.put("evidence_consistent", request.getEvidenceConsistent());
+        payload.put("filter_level", request.getFilterLevel());
+        payload.put("reranker_succeeded", request.getRerankerSucceeded());
+        payload.put("trusted_policy_eligible", request.getTrustedPolicyEligible());
+        payload.put("policy_version", request.getPolicyVersion());
         payload.put("ai_review_confidence", request.getAiReviewConfidence());
         payload.put("visual_confidence", request.getVisualConfidence());
         payload.put("knowledge_retrieval_mode", request.getKnowledgeRetrievalMode());
@@ -602,6 +615,50 @@ public class InternalAgentToolsController {
         payload.put("skill_versions", request.getSkillVersions());
         payload.put("image_review", request.getImageReview());
         return payload;
+    }
+
+    private String approvalGuardFailure(
+            InternalAgentToolDtos.SubmitAiReviewRequest request,
+            AfterSalesTicket ticket
+    ) {
+        if (!Boolean.FALSE.equals(request.getPolicyUncertain())) {
+            return "POLICY_UNCERTAIN";
+        }
+        if (!Boolean.TRUE.equals(request.getEvidenceConsistent())) {
+            return "EVIDENCE_INCONSISTENT";
+        }
+        if (!"strict".equals(request.getFilterLevel())) {
+            return "FILTER_NOT_STRICT";
+        }
+        if (!Boolean.TRUE.equals(request.getRerankerSucceeded())) {
+            return "RERANKER_NOT_SUCCEEDED";
+        }
+        if (!Boolean.TRUE.equals(request.getTrustedPolicyEligible())) {
+            return "POLICY_NOT_EXPLICITLY_TRUSTED";
+        }
+        if (!StringUtils.hasText(ticket.getPolicyVersion())
+                || !StringUtils.hasText(request.getPolicyVersion())
+                || !ticket.getPolicyVersion().trim().equals(request.getPolicyVersion().trim())) {
+            return "POLICY_VERSION_MISMATCH";
+        }
+        if (!hasTraceablePolicyCitation(request.getPolicyCitations())) {
+            return "POLICY_CITATION_INVALID";
+        }
+        return null;
+    }
+
+    private boolean hasTraceablePolicyCitation(List<Map<String, Object>> citations) {
+        if (citations == null) {
+            return false;
+        }
+        return citations.stream().anyMatch(citation -> citation != null
+                && hasTextValue(citation.get("source_code"))
+                && (hasTextValue(citation.get("chunk_id"))
+                || hasTextValue(citation.get("document_id"))));
+    }
+
+    private boolean hasTextValue(Object value) {
+        return value != null && StringUtils.hasText(String.valueOf(value));
     }
 
     private ChatSession resolveOrCreateSession(Long userId, Long sessionId, String orderId, Long ticketId) {

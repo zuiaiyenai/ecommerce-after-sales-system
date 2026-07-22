@@ -137,6 +137,8 @@ def evaluate(
     no_answer_cases = 0
     violations = 0
     filter_checked_hits = 0
+    filter_metadata_missing = 0
+    filter_safety_cases = 0
 
     for case in cases:
         hits, payload = _run_payload(runs.get(case.case_id, []))
@@ -156,10 +158,13 @@ def evaluate(
 
         has_filter_labels = bool(case.forbidden_merchant_codes or case.forbidden_policy_versions)
         if has_filter_labels:
+            filter_safety_cases += 1
             filter_checked_hits += len(hits)
             for hit in hits:
                 merchant = _hit_value(hit, "merchant_code")
                 version = _hit_value(hit, "policy_version")
+                if not merchant or not version:
+                    filter_metadata_missing += 1
                 if merchant in case.forbidden_merchant_codes or version in case.forbidden_policy_versions:
                     violations += 1
 
@@ -182,6 +187,8 @@ def evaluate(
             "filter_violation_rate": _rounded(violations / filter_checked_hits) if filter_checked_hits else 0.0,
             "filter_violation_count": violations,
             "filter_checked_hit_count": filter_checked_hits,
+            "filter_safety_case_count": filter_safety_cases,
+            "filter_metadata_missing_count": filter_metadata_missing,
             "no_answer_false_positive_rate": _rounded(no_answer_false_positives / no_answer_cases)
             if no_answer_cases
             else 0.0,
@@ -241,6 +248,20 @@ def load_cases(path: str | Path) -> list[Case]:
                 f"line {line_number} holdout requires reliable annotation: "
                 f"{sorted(RELIABLE_ANNOTATION_METHODS)}"
             )
+        forbidden_merchant_codes = {
+            str(value) for value in _require_list(row, "forbidden_merchant_codes", line_number)
+        }
+        forbidden_policy_versions = {
+            str(value) for value in _require_list(row, "forbidden_policy_versions", line_number)
+        }
+        if (
+            split == "holdout"
+            and annotation_method in RELIABLE_ANNOTATION_METHODS
+            and (not forbidden_merchant_codes or not forbidden_policy_versions)
+        ):
+            raise ValueError(
+                f"line {line_number} reliable holdout requires merchant and policy-version safety labels"
+            )
         cases.append(
             Case(
                 case_id=case_id,
@@ -248,12 +269,8 @@ def load_cases(path: str | Path) -> list[Case]:
                 filters=dict(filters),
                 relevant_chunk_ids={str(value) for value in _require_list(row, "relevant_chunk_ids", line_number)},
                 expect_no_answer=bool(row["expect_no_answer"]),
-                forbidden_merchant_codes={
-                    str(value) for value in _require_list(row, "forbidden_merchant_codes", line_number)
-                },
-                forbidden_policy_versions={
-                    str(value) for value in _require_list(row, "forbidden_policy_versions", line_number)
-                },
+                forbidden_merchant_codes=forbidden_merchant_codes,
+                forbidden_policy_versions=forbidden_policy_versions,
                 split=split,
                 annotation_method=annotation_method,
                 category=str(row.get("category") or "uncategorized").strip().lower(),
@@ -275,10 +292,36 @@ def enforce_reliable_holdout_filter_gate(cases: Sequence[Case], runs: Mapping[st
     reliable_holdout = [case for case in cases if case.is_reliable_holdout]
     if not reliable_holdout:
         return {"status": "not_applicable", "reason": "no_reliably_annotated_holdout"}
+    incomplete_labels = [
+        case.case_id
+        for case in reliable_holdout
+        if not case.forbidden_merchant_codes or not case.forbidden_policy_versions
+    ]
+    if incomplete_labels:
+        raise ValueError(
+            "reliably annotated holdout requires merchant and policy-version safety labels; "
+            f"missing for {len(incomplete_labels)} case(s)"
+        )
     report = evaluate(reliable_holdout, runs)
+    evidence = {
+        "case_count": len(reliable_holdout),
+        "filter_checked_hit_count": report["filter_checked_hit_count"],
+        "filter_metadata_missing_count": report["filter_metadata_missing_count"],
+    }
+    if report["filter_checked_hit_count"] == 0:
+        return {
+            "status": "not_applicable",
+            "reason": "no_filter_checked_hits",
+            **evidence,
+        }
+    if report["filter_metadata_missing_count"]:
+        raise ValueError(
+            "reliably annotated holdout hit is missing merchant_code or policy_version; "
+            f"missing metadata on {report['filter_metadata_missing_count']} hit(s)"
+        )
     if report["filter_violation_rate"] != 0.0:
         raise ValueError(
             "reliably annotated holdout filter_violation_rate must equal 0; "
             f"got {report['filter_violation_rate']}"
         )
-    return {"status": "passed", "filter_violation_rate": 0.0, "case_count": len(reliable_holdout)}
+    return {"status": "passed", "filter_violation_rate": 0.0, **evidence}

@@ -8,9 +8,10 @@ import KnowledgeSummaryCards from '../components/KnowledgeSummaryCards.vue';
 import {
   createKnowledgeFileImport, deleteKnowledgeLibrary, getKnowledgeDraft, getKnowledgeIngestionStatus,
   getKnowledgeLibraries, getKnowledgeMetadataOptions, publishKnowledgeDraft, retryKnowledgeIngestion,
-  updateKnowledgeDraft, updateKnowledgeDraftChunk, updateKnowledgeLibrary
+  syncKnowledgeLibrary, updateKnowledgeDraft, updateKnowledgeDraftChunk, updateKnowledgeLibrary
 } from '../api/adminConsole.js';
-import { normalizeDraft } from '../api/knowledgeDraft.js';
+import { createLatestRequestGuard, normalizeDraft } from '../api/knowledgeDraft.js';
+import { mergeKnowledgeRecord } from '../api/knowledgeRecord.js';
 
 const shell = inject('adminShell', null);
 const loading = ref(true);
@@ -31,6 +32,7 @@ const draftSaving = ref(false);
 const publishing = ref(false);
 const metadataOptions = reactive({ merchants: [], productCategories: [], scenes: [], intents: [] });
 let statusPollTimer = null;
+const statusRequestGuard = createLatestRequestGuard();
 
 const importForm = reactive({ title: '', knowledgeType: 'faq', scope: 'MERCHANT', merchantCode: 'MERCHANT_DEMO', file: null });
 const policyKnowledgeTypes = new Set(['after_sales_policy', 'refund_policy', 'exchange_rule']);
@@ -84,23 +86,34 @@ watch(selectedLibraryId, async (id) => {
 
 function getDisplayStatus(item) {
   if (item.status === 'DISABLED') return 'DISABLED';
-  return item.reviewStatus || item.ingestionStatus || 'PUBLISHED';
+  return item.reviewStatus || 'PUBLISHED';
 }
 function displayStatusLabel(status) { return statusOptions.find((item) => item.key === status)?.label || status; }
 function typeLabel(value) { return categoryOptions.find((item) => item.value === value)?.label || value || '其他'; }
 function formatDate(value) { return value ? String(value).replace('T', ' ').slice(0, 16) : '暂无时间'; }
-function clearStatusPoll() { if (statusPollTimer) clearInterval(statusPollTimer); statusPollTimer = null; }
-function updateLocalStatus(status) {
-  libraries.value = libraries.value.map((item) => item.id === status.documentId ? {
-    ...item, reviewStatus: status.reviewStatus, revision: Number(status.revision || 0),
-    publishedRevision: status.publishedRevision == null ? null : Number(status.publishedRevision), errorMessage: status.errorMessage || ''
-  } : item);
+function clearStatusPoll() {
+  if (statusPollTimer) clearTimeout(statusPollTimer);
+  statusPollTimer = null;
+  statusRequestGuard.invalidate();
 }
-function startStatusPoll() {
-  clearStatusPoll();
-  const status = selectedLibrary.value?.displayStatus;
-  if (!['PROCESSING', 'PUBLISHING'].includes(status)) return;
-  statusPollTimer = setInterval(() => refreshSelectedStatus(selectedLibraryId.value), 2000);
+function updateLocalStatus(status) {
+  libraries.value = libraries.value.map((item) => item.id === status.documentId
+    ? mergeKnowledgeRecord(item, {
+      ...item, reviewStatus: status.reviewStatus, revision: Number(status.revision || 0),
+      publishedRevision: status.publishedRevision == null ? null : Number(status.publishedRevision), errorMessage: status.errorMessage || ''
+    })
+    : item);
+}
+function startStatusPoll(id = selectedLibraryId.value) {
+  if (statusPollTimer) clearTimeout(statusPollTimer);
+  statusPollTimer = null;
+  const item = libraries.value.find((library) => library.id === id);
+  if (selectedLibraryId.value !== id || !['PROCESSING', 'PUBLISHING'].includes(getDisplayStatus(item || {}))) return;
+  statusPollTimer = setTimeout(async () => {
+    statusPollTimer = null;
+    await refreshSelectedStatus(id);
+    if (selectedLibraryId.value === id) startStatusPoll(id);
+  }, 2000);
 }
 async function loadMetadataOptions() {
   try {
@@ -115,7 +128,8 @@ async function loadPage() {
   loading.value = true; errorMessage.value = '';
   try {
     const result = await getKnowledgeLibraries();
-    libraries.value = result.records || [];
+    const currentById = new Map(libraries.value.map((item) => [item.id, item]));
+    libraries.value = (result.records || []).map((item) => mergeKnowledgeRecord(currentById.get(item.id), item));
     if (!selectedLibraryId.value || !libraries.value.some((item) => item.id === selectedLibraryId.value)) selectedLibraryId.value = libraries.value[0]?.id || null;
   } catch (error) {
     libraries.value = []; selectedLibraryId.value = null; errorMessage.value = error?.message || '知识库接口请求失败，请稍后重试';
@@ -132,13 +146,18 @@ async function loadDraft(id = selectedLibraryId.value) {
 }
 async function refreshSelectedStatus(id = selectedLibraryId.value) {
   if (!id) return;
+  const requestToken = statusRequestGuard.issue(id);
   try {
     const status = await getKnowledgeIngestionStatus(id);
-    if (selectedLibraryId.value !== id) return;
+    if (selectedLibraryId.value !== id || !statusRequestGuard.isCurrent(requestToken, id)) return;
     updateLocalStatus(status);
     if (status.reviewStatus === 'REVIEW_REQUIRED') await loadDraft(id);
     if (terminalReviewStatuses.has(status.reviewStatus)) clearStatusPoll();
-  } catch (error) { if (selectedLibraryId.value === id) errorMessage.value = error?.message || '处理状态加载失败'; }
+  } catch (error) {
+    if (selectedLibraryId.value === id && statusRequestGuard.isCurrent(requestToken, id)) {
+      errorMessage.value = error?.message || '处理状态加载失败';
+    }
+  }
 }
 function resetImportForm() { Object.assign(importForm, { title: '', knowledgeType: 'faq', scope: 'MERCHANT', merchantCode: 'MERCHANT_DEMO', file: null }); }
 async function openImport() { resetImportForm(); showImportModal.value = true; await loadMetadataOptions(); }
@@ -159,39 +178,66 @@ async function submitImport() {
   } catch (error) { errorMessage.value = error?.message || '文件上传失败，请稍后重试'; }
   finally { submitting.value = false; }
 }
-async function reloadDraftAfterConflict(error) {
+async function reloadDraftAfterConflict(error, documentId) {
   if (error?.status !== 409) return false;
+  if (selectedLibraryId.value !== documentId) return true;
   errorMessage.value = '内容已被其他管理员更新，已重新加载 Draft';
-  await refreshSelectedStatus(); await loadDraft();
+  await refreshSelectedStatus(documentId);
   return true;
 }
 async function saveDraftChunk(payload) {
-  if (!selectedLibrary.value) return;
+  if (!selectedLibrary.value || draftSaving.value) return;
+  const documentId = selectedLibrary.value.id;
   draftSaving.value = true; errorMessage.value = '';
-  try { await updateKnowledgeDraftChunk(selectedLibrary.value.id, payload.chunkId, payload); await refreshSelectedStatus(); await loadDraft(); }
-  catch (error) { if (!await reloadDraftAfterConflict(error)) errorMessage.value = error?.message || '切片保存失败'; }
+  try { await updateKnowledgeDraftChunk(documentId, payload.chunkId, payload); await refreshSelectedStatus(documentId); }
+  catch (error) { if (!await reloadDraftAfterConflict(error, documentId) && selectedLibraryId.value === documentId) errorMessage.value = error?.message || '切片保存失败'; }
   finally { draftSaving.value = false; }
 }
 async function saveDraftPolicy(payload) {
-  if (!selectedLibrary.value) return;
+  if (!selectedLibrary.value || draftSaving.value) return;
+  const documentId = selectedLibrary.value.id;
   draftSaving.value = true; errorMessage.value = '';
-  try { await updateKnowledgeDraft(selectedLibrary.value.id, payload); await refreshSelectedStatus(); await loadDraft(); }
-  catch (error) { if (!await reloadDraftAfterConflict(error)) errorMessage.value = error?.message || '政策信息保存失败'; }
+  try {
+    await updateKnowledgeDraft(documentId, payload);
+    libraries.value = libraries.value.map((item) => item.id === documentId ? {
+      ...item,
+      policyVersion: payload.policyVersion,
+      validFrom: payload.validFrom,
+      validTo: payload.validTo
+    } : item);
+    await refreshSelectedStatus(documentId);
+  }
+  catch (error) { if (!await reloadDraftAfterConflict(error, documentId) && selectedLibraryId.value === documentId) errorMessage.value = error?.message || '政策信息保存失败'; }
   finally { draftSaving.value = false; }
 }
 async function publishDraft(expectedRevision) {
-  if (!selectedLibrary.value) return;
+  if (!selectedLibrary.value || publishing.value) return;
+  const documentId = selectedLibrary.value.id;
   publishing.value = true; errorMessage.value = '';
-  try { await publishKnowledgeDraft(selectedLibrary.value.id, expectedRevision); await refreshSelectedStatus(); startStatusPoll(); shell?.setAction?.('发布任务已启动'); }
-  catch (error) { if (!await reloadDraftAfterConflict(error)) errorMessage.value = error?.message || '发布失败'; }
+  try { await publishKnowledgeDraft(documentId, expectedRevision); await refreshSelectedStatus(documentId); if (selectedLibraryId.value === documentId) startStatusPoll(documentId); shell?.setAction?.('发布任务已启动'); }
+  catch (error) { if (!await reloadDraftAfterConflict(error, documentId) && selectedLibraryId.value === documentId) errorMessage.value = error?.message || '发布失败'; }
   finally { publishing.value = false; }
 }
 async function retryIngestion() {
-  if (!selectedLibrary.value) return;
+  if (!selectedLibrary.value || actionLoading.value) return;
+  const documentId = selectedLibrary.value.id;
   actionLoading.value = 'retry'; errorMessage.value = '';
-  try { const status = await retryKnowledgeIngestion(selectedLibrary.value.id); updateLocalStatus(status); draft.value = null; startStatusPoll(); shell?.setAction?.('已重新发起文件处理'); }
-  catch (error) { errorMessage.value = error?.message || '重新处理失败'; }
+  try { const status = await retryKnowledgeIngestion(documentId); updateLocalStatus(status); if (selectedLibraryId.value === documentId) { draft.value = null; startStatusPoll(documentId); } shell?.setAction?.('已重新发起文件处理'); }
+  catch (error) { if (selectedLibraryId.value === documentId) errorMessage.value = error?.message || '重新处理失败'; }
   finally { actionLoading.value = ''; }
+}
+async function syncIngestion() {
+  if (!selectedLibrary.value || actionLoading.value) return;
+  const documentId = selectedLibrary.value.id;
+  actionLoading.value = 'sync'; errorMessage.value = '';
+  try {
+    await syncKnowledgeLibrary(documentId);
+    await refreshSelectedStatus(documentId);
+    if (selectedLibraryId.value === documentId) startStatusPoll(documentId);
+    shell?.setAction?.('已重新发起文件处理');
+  } catch (error) {
+    if (selectedLibraryId.value === documentId) errorMessage.value = error?.message || '重新处理失败';
+  } finally { actionLoading.value = ''; }
 }
 async function toggleEnabled(nextStatus) {
   if (!selectedLibrary.value) return;
@@ -222,7 +268,7 @@ onBeforeUnmount(clearStatusPoll);
     <section class="knowledge-workbench">
       <KnowledgeListPanel v-model:search="searchKeyword" v-model:status="activeStatus" v-model:category="activeCategory" v-model:source="activeSource" :items="filteredLibraries" :selected-id="selectedLibraryId" :loading="loading" :error-message="errorMessage" :status-options="statusOptions" :category-options="categoryOptions" :source-options="sourceOptions" :total="decoratedLibraries.length" @select="selectLibrary" />
       <KnowledgeDraftReviewPanel v-if="showDraftReview" :draft="draft" :status="selectedLibrary.displayStatus" :saving="draftSaving" :publishing="publishing" :policy-document="policyKnowledgeTypes.has(selectedLibrary.type)" :label-options="{ productCategories: metadataOptions.productCategories, scenes: metadataOptions.scenes, intents: metadataOptions.intents }" @save-chunk="saveDraftChunk" @save-policy="saveDraftPolicy" @publish="publishDraft" @retry="retryIngestion" />
-      <KnowledgeDetailPanel v-else-if="selectedLibrary" v-model:active-tab="activeTab" :item="selectedLibrary" :tabs="detailTabs" :action-loading="actionLoading" @retry="retryIngestion" @enable="toggleEnabled('ENABLED')" @disable="toggleEnabled('DISABLED')" @delete="removeLibrary" />
+      <KnowledgeDetailPanel v-else-if="selectedLibrary" v-model:active-tab="activeTab" :item="selectedLibrary" :tabs="detailTabs" :action-loading="actionLoading" @retry="retryIngestion" @sync="syncIngestion" @enable="toggleEnabled('ENABLED')" @disable="toggleEnabled('DISABLED')" @delete="removeLibrary" />
       <article v-else class="knowledge-no-detail"><strong>请选择一条知识</strong><p>{{ loading ? '正在加载知识库内容。' : '列表为空时，可以先上传文件。' }}</p><button type="button" class="primary-action compact" @click="openImport">上传文件</button></article>
     </section>
     <KnowledgeImportModal :show="showImportModal" :form="importForm" :category-options="categoryOptions" :merchant-options="metadataOptions.merchants" :submitting="submitting" :can-submit="canSubmitImport" @close="closeImportModal" @submit="submitImport" @file-change="handleFileChange" />

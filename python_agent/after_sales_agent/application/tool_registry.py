@@ -12,6 +12,14 @@ from ..providers.vision_review_service import VisionReviewService
 from ..utils.vision_serialization import serialize_image_review
 
 
+def _is_traceable_citation(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    source_code = str(value.get("source_code") or "").strip()
+    trace_id = str(value.get("chunk_id") or value.get("document_id") or "").strip()
+    return bool(source_code and trace_id)
+
+
 def normalize_knowledge_result(value: Any) -> Any:
     """Expose one citation-list contract at the Agent tool boundary."""
     if not isinstance(value, dict):
@@ -30,7 +38,7 @@ def normalize_knowledge_result(value: Any) -> Any:
         if not isinstance(citations, list):
             citation = hit.get("citation")
             citations = [dict(citation)] if isinstance(citation, dict) else []
-        hit["citations"] = [dict(item) for item in citations if isinstance(item, dict)]
+        hit["citations"] = [dict(item) for item in citations if _is_traceable_citation(item)]
         hit.pop("citation", None)
         normalized_hits.append(hit)
     normalized["hits"] = normalized_hits
@@ -333,6 +341,9 @@ class AgentToolRegistry:
             "visual_uncertain": "visualUncertain",
             "policy_uncertain": "policyUncertain",
             "evidence_consistent": "evidenceConsistent",
+            "filter_level": "filterLevel",
+            "reranker_succeeded": "rerankerSucceeded",
+            "trusted_policy_eligible": "trustedPolicyEligible",
             "visual_confidence": "visualConfidence",
             "risk_review_reasons": "riskReviewReasons",
             "policy_citations": "policyCitations",

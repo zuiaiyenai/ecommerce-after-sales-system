@@ -127,13 +127,26 @@ public class KnowledgeMetadataPolicy {
     }
 
     public PolicySnapshot resolvePolicySnapshot(String merchantCode) {
-        Map<String, Object> servicePolicy = currentServicePolicy(merchantCode);
+        String normalizedMerchantCode = requireKnownMerchantCode(merchantCode);
+        Map<String, Object> servicePolicy = currentServicePolicy(normalizedMerchantCode);
         String policyCode = stringValue(servicePolicy.get("policy_code"));
         String policyVersion = stringValue(servicePolicy.get("policy_version"));
-        if (policyVersion.isBlank()) {
+        if (policyCode.isBlank() || policyVersion.isBlank()) {
             throw new BizException("当前商家没有可绑定的售后政策版本");
         }
         return new PolicySnapshot(policyCode, policyVersion);
+    }
+
+    private String requireKnownMerchantCode(String merchantCode) {
+        if (merchantCode == null || merchantCode.isBlank()) {
+            throw new BizException("商家代码不是系统策略目录中的有效商家，请从管理端选项中选择");
+        }
+        String requested = merchantCode.trim().toUpperCase(Locale.ROOT);
+        boolean supported = merchantOptions().stream().anyMatch(option -> option.value().equals(requested));
+        if (!supported) {
+            throw new BizException("商家代码不是系统策略目录中的有效商家，请从管理端选项中选择");
+        }
+        return requested;
     }
 
     public boolean isVersionedKnowledgeType(String knowledgeType) {

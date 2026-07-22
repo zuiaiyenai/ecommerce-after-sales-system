@@ -11,6 +11,10 @@ defineProps({
     default: null
   },
   loading: Boolean,
+  errorMessage: {
+    type: String,
+    default: ''
+  },
   search: {
     type: String,
     default: ''
@@ -128,8 +132,8 @@ defineEmits([
     </div>
 
     <div v-else class="knowledge-empty">
-      <strong>{{ loading ? '正在加载知识条目' : '没有匹配的知识条目' }}</strong>
-      <p>{{ loading ? '请稍候，正在同步知识库状态。' : '可以调整搜索词或筛选条件后再试。' }}</p>
+      <strong>{{ loading ? '正在加载知识条目' : errorMessage ? '知识库加载失败' : '没有匹配的知识条目' }}</strong>
+      <p>{{ loading ? '请稍候，正在同步知识库状态。' : errorMessage || '可以调整搜索词或筛选条件后再试。' }}</p>
     </div>
 
     <footer class="list-foot">共 {{ total }} 条知识</footer>

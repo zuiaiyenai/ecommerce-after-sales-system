@@ -27,12 +27,50 @@ function normalizeChunk(chunk = {}, index = 0) {
 }
 
 export function normalizeDraft(draft = {}) {
-  const rawChunks = Array.isArray(draft) ? draft : draft.chunks || [];
+  const chunkCandidate = Array.isArray(draft) ? draft : draft.chunks;
+  const rawChunks = Array.isArray(chunkCandidate) ? chunkCandidate : [];
   return {
     ...(Array.isArray(draft) ? {} : draft),
     documentId: Array.isArray(draft) || draft.documentId == null ? null : normalizeKnowledgeId(draft.documentId),
     revision: Number(draft.revision || 0),
     chunks: rawChunks.map(normalizeChunk)
+  };
+}
+
+function comparableDraft(draft) {
+  const normalized = normalizeDraft(draft);
+  return {
+    policyVersion: normalized.policyVersion || '',
+    validFrom: normalized.validFrom || '',
+    validTo: normalized.validTo || '',
+    chunks: normalized.chunks.map((chunk) => ({
+      chunkId: chunk.chunkId,
+      productCategories: chunk.productCategories,
+      scenes: chunk.scenes,
+      intents: chunk.intents
+    }))
+  };
+}
+
+export function hasUnsavedDraftChanges(savedDraft, editableDraft) {
+  return JSON.stringify(comparableDraft(savedDraft)) !== JSON.stringify(comparableDraft(editableDraft));
+}
+
+export function createLatestRequestGuard() {
+  let generation = 0;
+  return {
+    issue(documentId) {
+      generation += 1;
+      return { documentId: String(documentId), generation };
+    },
+    invalidate() {
+      generation += 1;
+    },
+    isCurrent(token, documentId) {
+      return Boolean(token)
+        && token.generation === generation
+        && token.documentId === String(documentId);
+    }
   };
 }
 

@@ -72,7 +72,7 @@ def test_jsonl_contract_and_filter_gate_require_reliable_holdout(tmp_path) -> No
             "relevant_chunk_ids": ["A"],
             "expect_no_answer": False,
             "forbidden_merchant_codes": ["M2"],
-            "forbidden_policy_versions": [],
+            "forbidden_policy_versions": ["v1"],
             "split": "smoke",
             "annotation_method": "legacy_smoke",
             "category": "colloquial",
@@ -84,7 +84,7 @@ def test_jsonl_contract_and_filter_gate_require_reliable_holdout(tmp_path) -> No
             "relevant_chunk_ids": ["B"],
             "expect_no_answer": False,
             "forbidden_merchant_codes": ["M2"],
-            "forbidden_policy_versions": [],
+            "forbidden_policy_versions": ["v1"],
             "split": "holdout",
             "annotation_method": "dual_annotated",
             "category": "policy",
@@ -100,7 +100,7 @@ def test_jsonl_contract_and_filter_gate_require_reliable_holdout(tmp_path) -> No
     with pytest.raises(ValueError, match="filter_violation_rate"):
         enforce_reliable_holdout_filter_gate(
             cases,
-            {"holdout-1": [{"chunk_id": "X", "merchant_code": "M2"}]},
+            {"holdout-1": [{"chunk_id": "X", "merchant_code": "M2", "policy_version": "v2"}]},
         )
 
 
@@ -126,3 +126,77 @@ def test_jsonl_contract_rejects_holdout_without_reliable_annotation(tmp_path) ->
 
     with pytest.raises(ValueError, match="reliable annotation"):
         load_cases(dataset)
+
+
+@pytest.mark.parametrize(
+    ("forbidden_merchants", "forbidden_versions"),
+    [([], ["v1"]), (["M2"], [])],
+)
+def test_reliable_holdout_requires_both_filter_safety_labels(
+    tmp_path,
+    forbidden_merchants,
+    forbidden_versions,
+) -> None:
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_text(
+        json.dumps(
+            {
+                "case_id": "unsafe-holdout",
+                "query": "安全标注不完整",
+                "filters": {"merchant_code": "M1", "policy_version": "v2"},
+                "relevant_chunk_ids": ["A"],
+                "expect_no_answer": False,
+                "forbidden_merchant_codes": forbidden_merchants,
+                "forbidden_policy_versions": forbidden_versions,
+                "split": "holdout",
+                "annotation_method": "dual_annotated",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="merchant and policy-version safety labels"):
+        load_cases(dataset)
+
+
+def test_filter_gate_is_not_applicable_without_checked_hits() -> None:
+    cases = [
+        Case(
+            "h1",
+            relevant_chunk_ids={"A"},
+            split="holdout",
+            annotation_method="dual_annotated",
+            forbidden_merchant_codes={"M2"},
+            forbidden_policy_versions={"v1"},
+        )
+    ]
+
+    gate = enforce_reliable_holdout_filter_gate(cases, {"h1": {"hits": []}})
+
+    assert gate == {
+        "status": "not_applicable",
+        "reason": "no_filter_checked_hits",
+        "case_count": 1,
+        "filter_checked_hit_count": 0,
+        "filter_metadata_missing_count": 0,
+    }
+
+
+def test_filter_gate_rejects_hits_missing_required_safety_metadata() -> None:
+    cases = [
+        Case(
+            "h1",
+            relevant_chunk_ids={"A"},
+            split="holdout",
+            annotation_method="adjudicated",
+            forbidden_merchant_codes={"M2"},
+            forbidden_policy_versions={"v1"},
+        )
+    ]
+
+    with pytest.raises(ValueError, match="missing merchant_code or policy_version"):
+        enforce_reliable_holdout_filter_gate(
+            cases,
+            {"h1": {"hits": [{"chunk_id": "A", "merchant_code": "M1"}]}},
+        )

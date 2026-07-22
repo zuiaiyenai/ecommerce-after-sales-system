@@ -443,7 +443,7 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertIn("AS1783562492249", result["assistant_reply"])
         self.assertIn("人工复核", result["assistant_reply"])
         self.assertIn("review_images", tools.calls)
-        self.assertIn("retrieve_knowledge", tools.calls)
+        self.assertNotIn("retrieve_knowledge", tools.calls)
         self.assertIn("submit_ai_review", tools.calls)
         self.assertIn("handoff_to_human", tools.calls)
         self.assertLess(tools.calls.index("submit_ai_review"), tools.calls.index("handoff_to_human"))
@@ -470,7 +470,7 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertIn("AS1783564161927", result["assistant_reply"])
         self.assertIn("人工复核", result["assistant_reply"])
         self.assertIn("review_images", tools.calls)
-        self.assertIn("retrieve_knowledge", tools.calls)
+        self.assertNotIn("retrieve_knowledge", tools.calls)
         self.assertIn("handoff_to_human", tools.calls)
         self.assertIn("submit_ai_review", tools.calls)
 
@@ -580,6 +580,10 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual([], tools.create_arguments["evidence_needed"])
         self.assertTrue(tools.create_arguments["evidence_consistent"])
         self.assertEqual(0.95, tools.create_arguments["visual_confidence"])
+        self.assertEqual("strict", tools.create_arguments["filter_level"])
+        self.assertTrue(tools.create_arguments["reranker_succeeded"])
+        self.assertTrue(tools.create_arguments["trusted_policy_eligible"])
+        self.assertEqual("v2", tools.create_arguments["policy_version"])
 
     def test_keyword_only_policy_hit_cannot_auto_authorize_when_dense_results_exist(self) -> None:
         tools = FakeKeywordOnlyPolicyTools()
@@ -687,6 +691,7 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
                 "product_name": "蓝牙降噪耳机",
                 "product_category": "数码",
                 "merchant_code": "MERCHANT_DEMO",
+                "policy_version": "2026-07-02-v3",
                 "after_sales_applied_at": "2026-07-20T09:00:00+08:00",
             },
         )
@@ -699,6 +704,27 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual("after_sales_policy", arguments["source_type"])
         self.assertEqual("2026-07-02-v3", arguments["policy_version"])
         self.assertEqual("2026-07-20T09:00:00+08:00", arguments["as_of_time"])
+
+    def test_ticket_without_policy_snapshot_does_not_use_history_summary_version(self) -> None:
+        agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
+        state = {
+            "user_id": "1",
+            "message": "申请退款",
+            "history_summary": {"policy_version": "forged-summary-version"},
+        }
+        order = {
+            "merchant_code": "MERCHANT_DEMO",
+            "product_category": "数码",
+            "after_sales_applied_at": "2026-07-20T09:00:00+08:00",
+        }
+
+        action = agent._retrieve_policy_action(state, order)
+
+        self.assertEqual("tool_call", action["action"])
+        self.assertEqual("submit_ai_review", action["tool_name"])
+        self.assertEqual("MANUAL_REVIEW_REQUIRED", action["tool_arguments"]["verdict"])
+        self.assertIsNone(action["tool_arguments"]["policy_version"])
+        self.assertTrue(action["need_human"])
 
     def test_historical_order_policy_explanation_uses_order_creation_time(self) -> None:
         agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
@@ -826,6 +852,31 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
             LangGraphAfterSalesAgent._trusted_policy_hits(
                 {**strict_knowledge, "hits": [{**trusted_hit, "citations": []}]},
                 order,
+            ),
+        )
+        for malformed_citations in (
+            [{}],
+            [{"source_code": "POLICY-2"}],
+            [{"chunk_id": "C-2"}],
+            [{"source_code": " ", "document_id": "D-2"}],
+        ):
+            with self.subTest(citations=malformed_citations):
+                self.assertEqual(
+                    [],
+                    LangGraphAfterSalesAgent._trusted_policy_hits(
+                        {
+                            **strict_knowledge,
+                            "hits": [{**trusted_hit, "citations": malformed_citations}],
+                        },
+                        order,
+                    ),
+                )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                strict_knowledge,
+                {**order, "policy_version": None},
+                {"policy_version": "v2"},
             ),
         )
         self.assertEqual(

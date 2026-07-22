@@ -927,7 +927,6 @@ class LangGraphAfterSalesAgent:
         trusted_policy_hits = self._trusted_policy_hits(
             knowledge,
             order,
-            state.get("history_summary"),
         )
         has_attachments = bool(state.get("attachments"))
 
@@ -1010,6 +1009,10 @@ class LangGraphAfterSalesAgent:
             "visual_confidence": visual_confidence,
             "risk_review_reasons": risk_review_reasons,
             "knowledge_retrieval_mode": knowledge.get("mode") if isinstance(knowledge, dict) else None,
+            "filter_level": knowledge.get("filter_level") if isinstance(knowledge, dict) else None,
+            "reranker_succeeded": knowledge.get("reranker_succeeded") is True if isinstance(knowledge, dict) else False,
+            "trusted_policy_eligible": bool(auto_approved and trusted_policy_hits),
+            "policy_version": str(order.get("policy_version") or "").strip() or None,
             "policy_match_score": best_policy_score,
             "skill_versions": state.get("skill_versions") or {},
             "policy_citations": self._policy_citations(trusted_policy_hits if auto_approved else policy_hits),
@@ -1094,8 +1097,34 @@ class LangGraphAfterSalesAgent:
             }
         scene = self._scene_for_reason(reason)
         intent = self._intent_for_type(after_sales_type)
-        history_summary = state.get("history_summary") if isinstance(state.get("history_summary"), dict) else {}
-        policy_version = order.get("policy_version") or history_summary.get("policy_version")
+        policy_version = str(order.get("policy_version") or "").strip()
+        if not policy_version:
+            return {
+                "action": "tool_call",
+                "tool_name": "submit_ai_review",
+                "tool_arguments": {
+                    "user_id": state.get("user_id"),
+                    "session_id": state.get("session_id"),
+                    "ticket_id": state.get("ticket_id"),
+                    "review_request_id": state.get("review_request_id"),
+                    "order_id": order.get("order_id") or state.get("order_id_hint"),
+                    "verdict": "MANUAL_REVIEW_REQUIRED",
+                    "ai_review_confidence": 0.0,
+                    "reason": "工单缺少创建时保存的政策版本，禁止自动审核，需人工复核。",
+                    "evidence_needed": [],
+                    "visual_uncertain": False,
+                    "policy_uncertain": True,
+                    "evidence_consistent": False,
+                    "visual_confidence": 0.0,
+                    "risk_review_reasons": ["missing_ticket_policy_snapshot"],
+                    "policy_citations": [],
+                    "policy_version": None,
+                    "image_review": None,
+                },
+                "assistant_reply": "",
+                "need_human": True,
+                "evidence_needed": [],
+            }
         query_parts = [
             self._conversation_issue_text(state),
             str(order.get("product_name") or ""),
@@ -1150,8 +1179,7 @@ class LangGraphAfterSalesAgent:
         order_created_at = order.get("create_time")
         if str(order_created_at or "").strip():
             tool_arguments["as_of_time"] = order_created_at
-        history_summary = state.get("history_summary") if isinstance(state.get("history_summary"), dict) else {}
-        policy_version = order.get("policy_version") or history_summary.get("policy_version")
+        policy_version = order.get("policy_version")
         if str(policy_version or "").strip():
             tool_arguments["policy_version"] = policy_version
         return {
@@ -1853,11 +1881,7 @@ class LangGraphAfterSalesAgent:
         merchant_code = str(order.get("merchant_code") or "").strip()
         if not merchant_code:
             return []
-        expected_policy_version = str(
-            order.get("policy_version")
-            or (history_summary or {}).get("policy_version")
-            or ""
-        ).strip()
+        expected_policy_version = str(order.get("policy_version") or "").strip()
         business_time = LangGraphAfterSalesAgent._parse_offset_time(
             order.get("after_sales_applied_at") or order.get("create_time")
         )
@@ -1871,7 +1895,9 @@ class LangGraphAfterSalesAgent:
             if hit.get("relaxation_level") != "strict":
                 continue
             citations = hit.get("citations")
-            if not isinstance(citations, list) or not any(isinstance(item, dict) for item in citations):
+            if not isinstance(citations, list) or not any(
+                LangGraphAfterSalesAgent._is_traceable_citation(item) for item in citations
+            ):
                 continue
             metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
             if str(hit.get("source_type") or metadata.get("source_type") or "") != "after_sales_policy":
@@ -1961,8 +1987,20 @@ class LangGraphAfterSalesAgent:
         for hit in hits[:5]:
             explicit = hit.get("citations")
             if isinstance(explicit, list):
-                citations.extend(dict(item) for item in explicit if isinstance(item, dict))
+                citations.extend(
+                    dict(item)
+                    for item in explicit
+                    if LangGraphAfterSalesAgent._is_traceable_citation(item)
+                )
         return citations
+
+    @staticmethod
+    def _is_traceable_citation(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        source_code = str(value.get("source_code") or "").strip()
+        trace_id = str(value.get("chunk_id") or value.get("document_id") or "").strip()
+        return bool(source_code and trace_id)
 
     @staticmethod
     def _policy_summary(knowledge: Any) -> str:

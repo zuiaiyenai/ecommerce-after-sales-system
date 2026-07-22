@@ -17,7 +17,7 @@ JSONL 每行必须包含：
 
 - `split=holdout`
 - `annotation_method=dual_annotated`，或争议复核后的 `annotation_method=adjudicated`
-- 明确的相关 Chunk、禁止商家和禁止政策版本标注
+- 明确的相关 Chunk、非空的禁止商家和禁止政策版本安全标注
 
 ## 指标口径
 
@@ -31,7 +31,7 @@ JSONL 每行必须包含：
 - p50/p95 latency：每条检索端到端耗时分位数。
 - 单次 Rerank 成本：`RERANK_COST_PER_CALL` 配置的每次调用估算均值，不等同于供应商账单。
 
-安全门禁只对可靠标注 Holdout 要求 `filter_violation_rate == 0`。smoke 集不设置 Recall 硬阈值。
+安全门禁只对可靠标注 Holdout 生效。它先要求每个案例同时具有商家和政策版本安全标注、至少存在一个可检查命中，并要求每个命中都携带 `merchant_code` 与 `policy_version`；证据不足时返回 `not_applicable` 或失败，不会把零样本记为通过。证据完整后才要求 `filter_violation_rate == 0`。smoke 集不设置 Recall 硬阈值。
 
 ## 运行方式
 
@@ -44,12 +44,15 @@ python tools/evaluate_rag_recall.py --dataset python_agent/evaluation/rag_retrie
 配置 PostgreSQL、Embedding 和 Rerank 后运行真实消融：
 
 ```powershell
+$env:RAG_LAYERED_RETRIEVAL_ENABLED = 'true'
 python tools/evaluate_rag_recall.py --dataset python_agent/evaluation/rag_retrieval_cases.jsonl --mode all
 ```
 
+非 dry-run 会在任何 Provider/数据库访问前校验该开关，并拒绝把兼容检索结果标记为 Dense、Keyword、RRF 或 Rerank。
+
 真实运行会生成 `docs/rag-recall-baseline.json` 和本文件的指标表。JSON/Markdown 报告包含样本规模、类别与 split 分布、标注方法、运行时间、模型/阈值配置、每个模式的聚合指标、每个 case 的计数型 trace 和局限说明。
 
-Retriever trace 固定提供：`filter_level`、Dense/Keyword/RRF/Rerank 候选数、`retrieval_mode`、各阶段延迟和 `fallback_reason`。日志只记录安全化的 `query_id`、模式和计数；Query 原文、document ID 和商家自由文本不得进入日志或 Prometheus label。
+Retriever trace 固定提供：`filter_level`、Dense/Keyword/RRF/Rerank 候选数、`retrieval_mode`、各阶段延迟和 `fallback_reason`。默认 trace 在 Retriever 源头按白名单序列化，不包含 Query 派生 token、过滤条件对象或商家/政策版本自由值；日志只记录安全化的 `query_id`、模式和计数，Query 原文、document ID 和商家自由文本不得进入日志或 Prometheus label。
 
 ## 当前局限
 

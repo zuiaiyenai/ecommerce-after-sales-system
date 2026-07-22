@@ -5,11 +5,11 @@ spring:
 
 app:
   knowledge:
-    # 10 MiB; must match KNOWLEDGE_MAX_FILE_BYTES supplied to the Python Agent.
-    max-file-bytes: 10485760
+    # Java is the upload boundary and enforces this limit.
+    max-file-bytes: ${KNOWLEDGE_MAX_FILE_BYTES:10485760}
   rag:
     # Keep the layered retriever disabled until migration, backfill and offline gates pass.
-    layered-retrieval-enabled: false
+    layered-retrieval-enabled: ${RAG_LAYERED_RETRIEVAL_ENABLED:false}
   async:
     knowledge-ingestion:
       core-pool-size: 2

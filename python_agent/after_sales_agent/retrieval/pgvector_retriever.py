@@ -41,9 +41,7 @@ RERANK_THRESHOLDS = {
 @dataclass(frozen=True)
 class PgVectorConfig:
     dsn: str
-    # None keeps direct unit-test fixtures on their existing injected behavior.
-    # Real process configuration is always resolved by from_env(), whose default is false.
-    layered_retrieval_enabled: bool | None = None
+    layered_retrieval_enabled: bool = False
     dimensions: int = 1024
     top_k: int = 5
     embedding_model: str = "text-embedding-v3"
@@ -771,26 +769,48 @@ class PgVectorKnowledgeRetriever:
         finalized["trusted_policy_eligible"] = bool(trusted_policy_eligible)
         finalized["failure_reason"] = failure_reason
 
-        trace = finalized.get("trace")
-        if not isinstance(trace, dict):
-            trace = {}
-        stage_latency = trace.get("stage_latency_ms")
+        raw_trace = finalized.get("trace")
+        if not isinstance(raw_trace, dict):
+            raw_trace = {}
+        stage_latency = raw_trace.get("stage_latency_ms")
         if not isinstance(stage_latency, dict):
             stage_latency = {}
-        if "vector_latency_ms" in trace and "vector" not in stage_latency:
-            stage_latency["vector"] = trace["vector_latency_ms"]
-        trace["stage_latency_ms"] = stage_latency
-        trace["filter_level"] = plan.level
-        trace["reranker_succeeded"] = bool(reranker_succeeded)
-        trace["threshold"] = resolved_threshold
-        trace["failure_reason"] = failure_reason
-        trace.setdefault("dense_candidate_count", 0)
-        trace.setdefault("keyword_candidate_count", 0)
-        trace.setdefault("rrf_candidate_count", 0)
-        trace.setdefault("rerank_candidate_count", 0)
-        trace.setdefault("retrieval_mode", str(finalized.get("mode") or "unknown"))
-        trace.setdefault("fallback_reason", failure_reason)
-        trace["trusted_policy_eligible"] = bool(trusted_policy_eligible)
+        safe_stage_latency = {
+            str(stage): float(duration)
+            for stage, duration in stage_latency.items()
+            if stage in {"embedding", "vector", "keyword", "rrf", "reranker", "total"}
+            and isinstance(duration, (int, float))
+            and math.isfinite(float(duration))
+            and float(duration) >= 0
+        }
+        if (
+            "vector_latency_ms" in raw_trace
+            and "vector" not in safe_stage_latency
+            and isinstance(raw_trace["vector_latency_ms"], (int, float))
+        ):
+            safe_stage_latency["vector"] = max(0.0, float(raw_trace["vector_latency_ms"]))
+        trace = {
+            "stage_latency_ms": safe_stage_latency,
+            "filter_level": plan.level,
+            "reranker_succeeded": bool(reranker_succeeded),
+            "threshold": resolved_threshold,
+            "failure_reason": failure_reason,
+            "dense_candidate_count": cls._safe_trace_count(raw_trace.get("dense_candidate_count")),
+            "keyword_candidate_count": cls._safe_trace_count(raw_trace.get("keyword_candidate_count")),
+            "rrf_candidate_count": cls._safe_trace_count(raw_trace.get("rrf_candidate_count")),
+            "rerank_candidate_count": cls._safe_trace_count(raw_trace.get("rerank_candidate_count")),
+            "retrieval_mode": cls._safe_trace_name(
+                raw_trace.get("retrieval_mode"), str(finalized.get("mode") or "unknown")
+            ),
+            "fallback_reason": cls._safe_trace_name(raw_trace.get("fallback_reason"), failure_reason),
+            "trusted_policy_eligible": bool(trusted_policy_eligible),
+        }
+        fallback_level = raw_trace.get("fallback_level")
+        if fallback_level in {"strict", "category_relaxed", "scene_relaxed", "category_and_scene_relaxed", "intent_relaxed"}:
+            trace["fallback_level"] = fallback_level
+        reranker_failure = cls._safe_trace_name(raw_trace.get("reranker_failure_reason"), None)
+        if reranker_failure is not None:
+            trace["reranker_failure_reason"] = reranker_failure
         finalized["trace"] = trace
 
         for hit in hits:
@@ -802,6 +822,20 @@ class PgVectorKnowledgeRetriever:
             else:
                 hit.setdefault("trusted_policy_eligible", False)
         return finalized
+
+    @staticmethod
+    def _safe_trace_count(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _safe_trace_name(value: Any, default: str | None) -> str | None:
+        candidate = str(value).strip() if value is not None else ""
+        if candidate and len(candidate) <= 64 and all(char.isalnum() or char == "_" for char in candidate):
+            return candidate
+        return default
 
     @classmethod
     def _finalize_ablation_result(

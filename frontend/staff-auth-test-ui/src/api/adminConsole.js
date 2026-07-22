@@ -1,4 +1,5 @@
-import { buildKnowledgePath, normalizeKnowledgeId } from './knowledgeId';
+import { buildKnowledgePath, normalizeKnowledgeId } from './knowledgeId.js';
+import { mapKnowledgeRecord } from './knowledgeRecord.js';
 
 const BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080');
 const TOKEN_KEY = 'admin_console_token';
@@ -46,38 +47,6 @@ async function request(path, options = {}) {
     throw error;
   }
   return payload.data;
-}
-
-function mapKnowledgeRecord(item) {
-  return {
-    id: normalizeKnowledgeId(item.id),
-    code: item.sourceCode,
-    name: item.title,
-    type: item.sourceType,
-    status: item.status === 1 ? 'ENABLED' : 'DISABLED',
-    description: item.content || '',
-    merchantCode: item.merchantCode || '',
-    productCategory: item.productCategory || '',
-    scene: item.scene || '',
-    intent: item.intent || '',
-    policyVersion: item.policyVersion || '',
-    validFrom: item.validFrom || '',
-    validTo: item.validTo || '',
-    tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
-    updatedAt: item.updatedAt,
-    createdAt: item.createdAt,
-    chunkCount: item.chunkCount || 0,
-    ingestionStatus: item.ingestionStatus || 'SUCCESS',
-    reviewStatus: item.reviewStatus || item.ingestionStatus || 'PUBLISHED',
-    revision: Number(item.revision || 0),
-    publishedRevision: item.publishedRevision == null ? null : Number(item.publishedRevision),
-    ingestionSourceType: item.ingestionSourceType || 'TEXT',
-    fileName: item.fileName || '',
-    fileUrl: item.fileUrl || '',
-    errorMessage: item.errorMessage || '',
-    scope: item.scope || 'MERCHANT',
-    metadata: item.metadata || {}
-  };
 }
 
 export async function loginAdmin(credentials) {

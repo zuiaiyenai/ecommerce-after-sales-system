@@ -23,8 +23,8 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:activeTab',
-  'edit',
   'retry',
+  'sync',
   'enable',
   'disable',
   'delete'
@@ -49,6 +49,10 @@ const previewContent = computed(() => {
   return `${rawContent.value.slice(0, 520)}...`;
 });
 
+const retryableStatuses = new Set(['PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED']);
+const canRetry = computed(() => retryableStatuses.has(props.item?.reviewStatus));
+const canSync = computed(() => props.item?.reviewStatus === 'PUBLISHED');
+
 const infoItems = computed(() => {
   if (!props.item) {
     return [];
@@ -59,6 +63,11 @@ const infoItems = computed(() => {
     { label: '来源类型', value: props.item.sourceLabel },
     { label: '适用范围', value: props.item.scopeLabel },
     { label: '商户代码', value: props.item.merchantCode || 'GLOBAL' },
+    { label: '商品品类', value: props.item.productCategory || '通用' },
+    { label: '售后场景', value: props.item.scene || '通用' },
+    { label: '用户意图', value: props.item.intent || '通用' },
+    { label: '政策版本', value: props.item.policyVersion || '未指定' },
+    { label: '标签', value: props.item.tags || '无' },
     { label: 'Chunk 数', value: props.item.chunkCount || 0 }
   ];
 });
@@ -164,8 +173,10 @@ const processingRecords = computed(() => {
         </div>
 
         <div class="detail-actions">
-          <button type="button" class="primary-action compact" @click="$emit('edit')">编辑内容</button>
-          <button type="button" class="ghost-mini" :disabled="actionLoading === 'sync'" @click="$emit('retry')">
+          <button v-if="canRetry" type="button" class="ghost-mini" :disabled="actionLoading === 'retry'" @click="$emit('retry')">
+            {{ actionLoading === 'retry' ? '重试中' : '重试失败处理' }}
+          </button>
+          <button v-if="canSync" type="button" class="ghost-mini" :disabled="actionLoading === 'sync'" @click="$emit('sync')">
             {{ actionLoading === 'sync' ? '重新处理中' : '重新处理' }}
           </button>
           <button
@@ -209,7 +220,10 @@ const processingRecords = computed(() => {
         <div class="content-card">
           <header>
             <h3>处理记录</h3>
-            <button type="button" class="ghost-mini" :disabled="actionLoading === 'sync'" @click="$emit('retry')">
+            <button v-if="canRetry" type="button" class="ghost-mini" :disabled="actionLoading === 'retry'" @click="$emit('retry')">
+              {{ actionLoading === 'retry' ? '重试中' : '重试失败处理' }}
+            </button>
+            <button v-else-if="canSync" type="button" class="ghost-mini" :disabled="actionLoading === 'sync'" @click="$emit('sync')">
               {{ actionLoading === 'sync' ? '处理中' : '重新处理' }}
             </button>
           </header>

@@ -102,6 +102,11 @@ def run_mode(
         )
         latency_ms = round((time.perf_counter() - case_started) * 1000, 3)
         trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+        if trace.get("retrieval_mode") == "compatibility":
+            raise RuntimeError(
+                f"ablation mode {mode} reached the compatibility path; "
+                "set RAG_LAYERED_RETRIEVAL_ENABLED=true"
+            )
         rerank_called = mode == "rerank" and int(trace.get("rerank_candidate_count") or 0) > 0
         runs[case.case_id] = {
             "hits": result.get("hits") or [],
@@ -126,6 +131,15 @@ def run_mode(
         "runs": runs,
         "runtime_seconds": round(time.perf_counter() - started, 3),
     }
+
+
+def require_layered_retrieval(retriever: Any) -> None:
+    config = getattr(retriever, "config", None)
+    if getattr(config, "layered_retrieval_enabled", False) is not True:
+        raise RuntimeError(
+            "real ablation requires RAG_LAYERED_RETRIEVAL_ENABLED=true; "
+            "the compatibility path cannot be reported as dense/keyword/rrf/rerank"
+        )
 
 
 def _configuration() -> dict[str, Any]:
@@ -226,6 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     load_agent_env()
     retriever = PgVectorKnowledgeRetriever()
+    require_layered_retrieval(retriever)
     selected_modes = MODES if args.mode == "all" else (args.mode,)
     mode_reports: dict[str, Any] = {}
     mode_runs: dict[str, dict[str, Any]] = {}

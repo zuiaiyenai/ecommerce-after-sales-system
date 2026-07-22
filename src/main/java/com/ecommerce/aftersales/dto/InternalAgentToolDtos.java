@@ -105,6 +105,10 @@ public final class InternalAgentToolDtos {
         private Boolean visualUncertain;
         private Boolean policyUncertain;
         private Boolean evidenceConsistent;
+        private String filterLevel;
+        private Boolean rerankerSucceeded;
+        private Boolean trustedPolicyEligible;
+        private String policyVersion;
         private BigDecimal visualConfidence;
         private String knowledgeRetrievalMode;
         private BigDecimal policyMatchScore;

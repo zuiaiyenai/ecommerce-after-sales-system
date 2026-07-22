@@ -27,6 +27,10 @@ PgVectorConfig = retriever_module.PgVectorConfig
 PgVectorKnowledgeRetriever = retriever_module.PgVectorKnowledgeRetriever
 
 
+def layered_config(**kwargs):
+    return PgVectorConfig(layered_retrieval_enabled=True, **kwargs)
+
+
 class PgVectorRetrievalTest(unittest.TestCase):
     def assert_degraded_contract(self, result, *, mode: str, filter_level: str, failure_reason: str) -> None:
         self.assertEqual(mode, result["mode"])
@@ -45,7 +49,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
             self.assertFalse(hit["trusted_policy_eligible"])
 
     def test_empty_query_uses_stable_degraded_contract(self) -> None:
-        result = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(query="  ")
+        result = PgVectorKnowledgeRetriever(layered_config(dsn="", embedding_api_key="")).retrieve(query="  ")
 
         self.assert_degraded_contract(
             result,
@@ -55,7 +59,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         )
 
     def test_missing_dsn_policy_query_uses_stable_degraded_contract(self) -> None:
-        result = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(
+        result = PgVectorKnowledgeRetriever(layered_config(dsn="", embedding_api_key="")).retrieve(
             query="refund policy",
             source_type="after_sales_policy",
         )
@@ -77,7 +81,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                     "trace": {},
                 }
 
-        result = LocalRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(
+        result = LocalRetriever(layered_config(dsn="", embedding_api_key="")).retrieve(
             query="help",
             source_type="faq",
         )
@@ -91,7 +95,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         )
 
     def test_missing_psycopg_dependency_uses_stable_degraded_contract(self) -> None:
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
 
         with patch.dict(sys.modules, {"psycopg": None}):
             result = retriever.retrieve(query="refund", source_type="after_sales_policy")
@@ -117,7 +121,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 }
 
         result = _retrieve_with_fake_psycopg(
-            EmbeddingFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            EmbeddingFailureRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake")),
             source_type="after_sales_policy",
         )
 
@@ -138,7 +142,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
 
         result = _retrieve_with_fake_psycopg(
-            EmbeddingFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            EmbeddingFailureRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake")),
             source_type="after_sales_policy",
         )
 
@@ -158,7 +162,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 raise RuntimeError("database unavailable")
 
         result = _retrieve_with_fake_psycopg(
-            PgFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            PgFailureRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake")),
             source_type="after_sales_policy",
         )
 
@@ -172,7 +176,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_relaxed_vector_error_uses_current_plan_stable_degraded_contract(self) -> None:
         class RelaxedVectorFailureRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
-                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                super().__init__(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
                 self.vector_calls = 0
 
             def _embed(self, _text):
@@ -205,7 +209,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_relaxed_lexical_error_uses_current_plan_stable_degraded_contract(self) -> None:
         class RelaxedLexicalFailureRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
-                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                super().__init__(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
                 self.lexical_calls = 0
 
             def _embed(self, _text):
@@ -238,7 +242,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_relaxed_keyword_database_error_preserves_lexical_failure_contract(self) -> None:
         class RelaxedKeywordFailureRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
-                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                super().__init__(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
                 self.keyword_calls = 0
 
             def _embed(self, _text):
@@ -280,7 +284,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
 
         result = _retrieve_with_fake_psycopg(
-            EmptyRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            EmptyRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake")),
             source_type="faq",
             product_category="headphone",
             scene="quality_issue",
@@ -298,7 +302,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         class CachedEmbeddingRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
                 super().__init__(
-                    PgVectorConfig(
+                    layered_config(
                         dsn="",
                         embedding_api_key="",
                         embedding_cache_ttl_seconds=300,
@@ -336,7 +340,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_vector_filter_includes_global_knowledge_without_crossing_other_merchants(self) -> None:
         cursor = _CapturingCursor()
         psycopg = types.SimpleNamespace(connect=lambda _dsn: _FakeConnection(cursor))
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
 
         hits = retriever._vector_search(
             psycopg_module=psycopg,
@@ -362,7 +366,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         old_psycopg = sys.modules.get("psycopg")
         sys.modules["psycopg"] = fake_psycopg
         try:
-            retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+            retriever = PgVectorKnowledgeRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
             result = retriever._lexical_fallback(query="退款规则", merchant_code="MERCHANT_DEMO")
         finally:
             if old_psycopg is None:
@@ -385,7 +389,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_dense_and_keyword_share_published_revision_merchant_and_validity_filters(self) -> None:
         as_of_time = datetime(2026, 7, 21, 12, 30)
         dense_cursor = _CapturingCursor()
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
         retriever._vector_search(
             psycopg_module=types.SimpleNamespace(connect=lambda _dsn: _FakeConnection(dense_cursor)),
             embedding=[0.0],
@@ -464,7 +468,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
             0.91,
         )
         dense_cursor = _CapturingCursor(rows=[row])
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
         dense = retriever._vector_search(
             psycopg_module=types.SimpleNamespace(connect=lambda _dsn: _FakeConnection(dense_cursor)),
             embedding=[0.0],
@@ -599,6 +603,76 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 self.assertEqual([], reranker.calls)
                 self.assertFalse(result["trusted_policy_eligible"])
 
+    def test_dense_empty_strict_result_never_calls_keyword_rrf_or_reranker(self) -> None:
+        class CountingPipelineRetriever(_PipelineRetriever):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.vector_calls = 0
+                self.keyword_calls = 0
+
+            def _vector_search(self, **kwargs):
+                self.vector_calls += 1
+                return super()._vector_search(**kwargs)
+
+            def _lexical_fallback(self, **kwargs):
+                self.keyword_calls += 1
+                return super()._lexical_fallback(**kwargs)
+
+        reranker = _FakeReranker(score=0.99)
+        retriever = CountingPipelineRetriever(reranker=reranker, dense=False, keyword=True)
+
+        result = _retrieve_with_fake_psycopg(
+            retriever,
+            source_type="faq",
+            product_category="missing-category",
+            retrieval_mode="dense",
+        )
+
+        self.assertEqual("dense", result["mode"])
+        self.assertTrue(result["no_answer"])
+        self.assertEqual(1, retriever.vector_calls)
+        self.assertEqual(0, retriever.keyword_calls)
+        self.assertEqual([], reranker.calls)
+        self.assertEqual(0, result["trace"]["keyword_candidate_count"])
+        self.assertEqual(0, result["trace"]["rrf_candidate_count"])
+        self.assertEqual(0, result["trace"]["rerank_candidate_count"])
+
+    def test_runtime_trace_drops_query_tokens_and_free_filter_values(self) -> None:
+        class UnsafeCompatibilityRetriever(PgVectorKnowledgeRetriever):
+            def _lexical_fallback(self, **kwargs):
+                return {
+                    "mode": "lexical_fallback",
+                    "query": kwargs["query"],
+                    "hits": [],
+                    "trace": {
+                        "tokens": ["secret-query-token"],
+                        "filters": {"merchant_code": "secret-merchant"},
+                        "strict_filters": {"policy_version": "secret-version"},
+                        "fallback_attempts": [{"filters": {"merchant_code": "secret-merchant"}}],
+                        "top_k": 5,
+                    },
+                }
+
+        result = UnsafeCompatibilityRetriever(
+            PgVectorConfig(
+                dsn="postgresql://unused",
+                layered_retrieval_enabled=False,
+                embedding_api_key="unused",
+            )
+        ).retrieve(
+            query="secret-query-token",
+            merchant_code="secret-merchant",
+            policy_version="secret-version",
+        )
+
+        serialized_trace = str(result["trace"])
+        self.assertNotIn("secret-query-token", serialized_trace)
+        self.assertNotIn("secret-merchant", serialized_trace)
+        self.assertNotIn("secret-version", serialized_trace)
+        self.assertNotIn("tokens", result["trace"])
+        self.assertNotIn("filters", result["trace"])
+        self.assertNotIn("fallback_attempts", result["trace"])
+
     def test_retrieval_rejects_unknown_ablation_mode_before_provider_access(self) -> None:
         retriever = _PipelineRetriever(
             reranker=_FakeReranker(score=0.8),
@@ -650,7 +724,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
 
     def test_keyword_only_policy_hit_stays_untrusted_when_other_dense_hit_exists(self) -> None:
         retriever = PgVectorKnowledgeRetriever(
-            PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"),
+            layered_config(dsn="postgresql://unused", embedding_api_key="fake"),
             reranker=_FakeReranker(score=0.99),
         )
         plan = retriever._strict_filter_plan(
@@ -725,7 +799,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
 
     def test_local_fallback_uses_scene_aliases_for_damage(self) -> None:
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key=""))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="", embedding_api_key=""))
 
         result = retriever._local_knowledge_fallback(
             query="耳机外壳破裂 破损照片 售后证据",
@@ -745,7 +819,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         )
 
     def test_local_fallback_finds_repo_knowledge_when_cwd_is_python_agent(self) -> None:
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key=""))
+        retriever = PgVectorKnowledgeRetriever(layered_config(dsn="", embedding_api_key=""))
         old_cwd = pathlib.Path.cwd()
         try:
             os.chdir(RETRIEVER_PATH.parents[1])
@@ -765,7 +839,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_retrieve_relaxes_category_and_scene_after_empty_strict_recall(self) -> None:
         class RelaxingRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
-                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                super().__init__(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
                 self.vector_calls: list[tuple[str | None, str | None]] = []
 
             def _embed(self, text: str) -> list[float]:
@@ -827,7 +901,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def test_retrieve_preserves_scene_before_global_relaxation(self) -> None:
         class SceneFirstRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
-                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                super().__init__(layered_config(dsn="postgresql://unused", embedding_api_key="fake"))
                 self.vector_calls: list[tuple[str | None, str | None]] = []
 
             def _embed(self, text: str) -> list[float]:
@@ -898,7 +972,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         sys.modules["psycopg"] = types.SimpleNamespace()
         try:
             result = KeywordRelaxingRetriever(
-                PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")
+                layered_config(dsn="postgresql://unused", embedding_api_key="fake")
             ).retrieve(
                 query="quality question",
                 merchant_code="M1",
@@ -951,7 +1025,7 @@ class _FakeReranker:
 class _PipelineRetriever(PgVectorKnowledgeRetriever):
     def __init__(self, *, reranker, dense: bool, keyword: bool, candidate_count: int = 1) -> None:
         super().__init__(
-            PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"),
+            layered_config(dsn="postgresql://unused", embedding_api_key="fake"),
             reranker=reranker,
         )
         self.dense_enabled = dense

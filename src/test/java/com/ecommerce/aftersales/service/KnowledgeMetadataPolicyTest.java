@@ -49,6 +49,24 @@ class KnowledgeMetadataPolicyTest {
                 ));
     }
 
+    @Test
+    void policySnapshotRejectsMissingUnknownMerchantAndMissingVersion() {
+        KnowledgeMetadataPolicy validPolicy = policy("2026-07-02-v3");
+
+        assertThatThrownBy(() -> validPolicy.resolvePolicySnapshot(null))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("有效商家");
+        assertThatThrownBy(() -> validPolicy.resolvePolicySnapshot(" "))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("有效商家");
+        assertThatThrownBy(() -> validPolicy.resolvePolicySnapshot("UNKNOWN_MERCHANT"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("有效商家");
+        assertThatThrownBy(() -> policy("").resolvePolicySnapshot("MERCHANT_DEMO"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("政策版本");
+    }
+
     private KnowledgeMetadataPolicy policy(String version) {
         AgentPolicyCatalogService catalogService = mock(AgentPolicyCatalogService.class);
         when(catalogService.getCatalog()).thenReturn(Map.of(
