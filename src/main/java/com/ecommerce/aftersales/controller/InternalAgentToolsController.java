@@ -7,7 +7,6 @@ import com.ecommerce.aftersales.dto.InternalAgentToolDtos;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
-import com.ecommerce.aftersales.entity.MessageNotice;
 import com.ecommerce.aftersales.entity.OrderInfo;
 import com.ecommerce.aftersales.entity.OrderItem;
 import com.ecommerce.aftersales.entity.ProductInfo;
@@ -16,18 +15,24 @@ import com.ecommerce.aftersales.entity.TicketLog;
 import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
-import com.ecommerce.aftersales.mapper.MessageNoticeMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
 import com.ecommerce.aftersales.mapper.TicketAttachmentMapper;
 import com.ecommerce.aftersales.mapper.TicketLogMapper;
+import com.ecommerce.aftersales.service.AiReviewStatusCacheService;
+import com.ecommerce.aftersales.service.AiReviewManualHandoffService;
+import com.ecommerce.aftersales.service.AiReviewUserNotificationService;
 import com.ecommerce.aftersales.service.AgentPolicyCatalogService;
+import com.ecommerce.aftersales.service.AgentGatewayMetrics;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,12 +45,14 @@ import org.springframework.web.bind.annotation.RestController;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 @RestController
 @RequiredArgsConstructor
+@Slf4j
 @RequestMapping("/internal/agent-tools")
 public class InternalAgentToolsController {
 
@@ -59,8 +66,11 @@ public class InternalAgentToolsController {
     private final TicketLogMapper ticketLogMapper;
     private final ChatSessionMapper chatSessionMapper;
     private final ChatMessageMapper chatMessageMapper;
-    private final MessageNoticeMapper messageNoticeMapper;
     private final AgentPolicyCatalogService agentPolicyCatalogService;
+    private final AiReviewStatusCacheService aiReviewStatusCacheService;
+    private final AiReviewManualHandoffService aiReviewManualHandoffService;
+    private final AiReviewUserNotificationService aiReviewUserNotificationService;
+    private final AgentGatewayMetrics metrics;
     private final ObjectMapper objectMapper;
 
     @Value("${app.agent.internal-token:}")
@@ -110,6 +120,18 @@ public class InternalAgentToolsController {
         return ApiResponse.success("ok", ticket == null ? null : toTicketResult(ticket, true));
     }
 
+    @GetMapping("/aftersales/ticket")
+    public ApiResponse<InternalAgentToolDtos.TicketResult> afterSalesTicket(
+            @RequestHeader(value = "X-Agent-Internal-Token", required = false) String token,
+            @RequestParam Long userId,
+            @RequestParam Long ticketId,
+            @RequestParam(required = false) String orderId
+    ) {
+        verifyInternalToken(token);
+        AfterSalesTicket ticket = resolveOwnedTicket(userId, ticketId, orderId);
+        return ApiResponse.success("ok", toTicketResult(ticket, true));
+    }
+
     @GetMapping("/policies/merchant")
     public ApiResponse<Map<String, Object>> merchantPolicy(
             @RequestHeader(value = "X-Agent-Internal-Token", required = false) String token,
@@ -119,86 +141,174 @@ public class InternalAgentToolsController {
         return ApiResponse.success("ok", agentPolicyCatalogService.getMerchantPolicy(normalizeMerchantCode(merchantCode)));
     }
 
-    @PostMapping("/aftersales/create")
+    @PostMapping("/aftersales/review")
     @Transactional(rollbackFor = Exception.class)
-    public ApiResponse<InternalAgentToolDtos.TicketResult> createAfterSales(
+    public ApiResponse<InternalAgentToolDtos.TicketResult> submitAiReview(
             @RequestHeader(value = "X-Agent-Internal-Token", required = false) String token,
-            @RequestBody InternalAgentToolDtos.CreateTicketRequest request
+            @RequestBody InternalAgentToolDtos.SubmitAiReviewRequest request
     ) {
         verifyInternalToken(token);
         requireUser(request.getUserId());
-        OrderInfo order = resolveOwnedOrder(request.getUserId(), request.getOrderId());
-        validateOrderCanCreateAfterSales(order);
-        AfterSalesTicket existing = findOpenTicket(order.getId());
-        if (existing != null) {
-            // 如果售后单已存在，但AI判断通过且当前状态是PENDING，则更新为PROCESSING
-            boolean aiRecommendApprove = Boolean.TRUE.equals(request.getAutoApproved());
-            if (aiRecommendApprove && "PENDING".equals(existing.getStatus())) {
-                String aiSuggestionReason = aiSuggestionReason(request.getAiClassifyResult());
-                existing.setStatus("PROCESSING");
-                existing.setPriority(0);
-                existing.setAuditOpinion(shortText("AI 建议通过：" + firstNonBlank(aiSuggestionReason, "符合当前售后规则，已进入处理中，等待人工最终处理"), 500));
-                existing.setAuditTime(LocalDateTime.now());
-                existing.setExpectedCompleteTime(LocalDateTime.now().plusHours(12));
-                existing.setUpdateTime(LocalDateTime.now());
-                afterSalesTicketMapper.updateById(existing);
-                bindSessionToTicket(request.getSessionId(), existing);
-                addTicketLog(existing.getId(), "PENDING", "PROCESSING", "AI_RECOMMEND_APPROVE", existing.getAuditOpinion());
-                return ApiResponse.success("updated_to_processing", toTicketResult(existing, false));
+        if (request.getTicketId() == null) {
+            throw new BizException(400, "ticketId is required");
+        }
+        if (!StringUtils.hasText(request.getReviewRequestId())) {
+            throw new BizException(400, "reviewRequestId is required");
+        }
+        String verdict = Optional.ofNullable(request.getVerdict()).orElse("").trim().toUpperCase();
+        if ("MANUAL_REVIEW".equals(verdict)) {
+            verdict = "MANUAL_REVIEW_REQUIRED";
+        }
+        if (!List.of("APPROVE", "MANUAL_REVIEW_REQUIRED").contains(verdict)) {
+            throw new BizException(400, "verdict must be APPROVE or MANUAL_REVIEW_REQUIRED");
+        }
+
+        AfterSalesTicket ticket = resolveOwnedTicket(request.getUserId(), request.getTicketId(), request.getOrderId());
+        if (request.getReviewRequestId().equals(ticket.getAiReviewRequestId())) {
+            metrics.recordAiReviewApply("idempotent");
+            log.info("ai_review_apply ticket_id={} review_request_id={} transition=idempotent failure_class=none",
+                    ticket.getId(), request.getReviewRequestId());
+            InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
+            result.setVerdict(ticket.getAiReviewResult());
+            result.setAiReviewResult(ticket.getAiReviewResult());
+            result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+            result.setReviewRequestId(ticket.getAiReviewRequestId());
+            result.setReviewApplied(true);
+            result.setIdempotentReplay(true);
+            return ApiResponse.success("idempotent_replay", result);
+        }
+
+        String previousStatus = ticket.getStatus();
+        if (!List.of("PENDING", "PENDING_REVIEW").contains(previousStatus)) {
+            metrics.recordAiReviewApply("stale");
+            log.info("ai_review_apply ticket_id={} review_request_id={} transition=stale failure_class=STATUS_CHANGED",
+                    ticket.getId(), request.getReviewRequestId());
+            InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
+            result.setVerdict(verdict);
+            result.setAiReviewResult(ticket.getAiReviewResult());
+            result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+            result.setReviewRequestId(request.getReviewRequestId());
+            result.setReviewApplied(false);
+            result.setIdempotentReplay(false);
+            result.setReviewRejectReason("STATUS_CHANGED");
+            return ApiResponse.success("status_not_reviewable", result);
+        }
+
+        boolean approve = "APPROVE".equals(verdict);
+        if (approve) {
+            LocalDateTime now = LocalDateTime.now();
+            int changed = afterSalesTicketMapper.applyAiApprovalIfPending(
+                    ticket.getId(),
+                    request.getReviewRequestId(),
+                    shortText(request.getReason(), 500),
+                    writeJson(reviewAuditPayload(request)),
+                    normalizeScore(request.getAiReviewConfidence()),
+                    now,
+                    now.plusHours(12)
+            );
+            if (changed == 0) {
+                return staleReviewResult(request, verdict, ticket.getId());
             }
-            bindSessionToTicket(request.getSessionId(), existing);
-            return ApiResponse.success("existing", toTicketResult(existing, true));
+            ticket = afterSalesTicketMapper.selectById(ticket.getId());
+            aiReviewUserNotificationService.notifyReviewApproved(ticket);
+            addTicketLog(ticket.getId(), previousStatus, "PROCESSING", "AI_REVIEW_APPROVE", firstNonBlank(request.getReason(), "AI初审通过，进入处理中"));
+        } else {
+            AiReviewManualHandoffService.ManualHandoffResult handoff = aiReviewManualHandoffService.markManualRequired(
+                    ticket.getId(),
+                    request.getReviewRequestId(),
+                    request.getReason(),
+                    "AGENT_TOOL",
+                    writeJson(reviewAuditPayload(request)),
+                    normalizeScore(request.getAiReviewConfidence())
+            );
+            if (!handoff.applied() && !handoff.idempotentReplay()) {
+                return staleReviewResult(request, verdict, ticket.getId());
+            }
+            ticket = handoff.ticket();
+            if (handoff.idempotentReplay()) {
+                metrics.recordAiReviewApply("idempotent");
+                log.info("ai_review_apply ticket_id={} review_request_id={} transition=idempotent failure_class=none",
+                        ticket.getId(), request.getReviewRequestId());
+                InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
+                result.setVerdict(ticket.getAiReviewResult());
+                result.setAiReviewResult(ticket.getAiReviewResult());
+                result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+                result.setReviewRequestId(ticket.getAiReviewRequestId());
+                result.setReviewApplied(true);
+                result.setIdempotentReplay(true);
+                return ApiResponse.success("idempotent_replay", result);
+            }
         }
+        bindSessionToTicket(request.getSessionId(), ticket, request.getUserId());
+        Long reviewedTicketId = ticket.getId();
+        runAfterCommit(() -> {
+            aiReviewStatusCacheService.cacheStatus(reviewedTicketId, approve ? "PROCESSING" : "MANUAL_REQUIRED");
+            metrics.recordAiReviewApply(approve ? "applied" : "manual_required");
+            log.info("ai_review_apply ticket_id={} review_request_id={} transition={} failure_class=none",
+                    reviewedTicketId, request.getReviewRequestId(), approve ? "applied" : "manual_required");
+        });
 
-        ProductInfo product = firstProduct(order.getId()).orElse(null);
-        AfterSalesTicket ticket = new AfterSalesTicket();
-        ticket.setTicketNo("AS" + System.currentTimeMillis());
-        ticket.setOrderId(order.getId());
-        ticket.setOrderNo(order.getOrderNo());
-        ticket.setUserId(order.getUserId());
-        ticket.setMerchantId(order.getMerchantId());
-        ticket.setMerchantCode(normalizeMerchantCode(order.getMerchantCode()));
-        ticket.setPolicyCode(request.getPolicyCode());
-        ticket.setPolicyVersion(request.getPolicyVersion());
-        ticket.setProductName(product == null ? "售后商品" : product.getProductName());
-        ticket.setAfterSaleType(normalizeAfterSalesType(request.getAfterSalesType()));
-        ticket.setReason(normalizeReason(request.getReason()));
-        ticket.setReasonDetail(shortText(firstNonBlank(request.getReasonDetail(), request.getDescription(), "AI 售后申请"), 500));
-        ticket.setDescription(shortText(request.getDescription(), 1000));
-        ticket.setRefundAmount(resolveRefundAmount(request.getRefundAmount(), order));
-        ticket.setAiClassifyResult(shortText(writeJson(request.getAiClassifyResult()), 200));
-        ticket.setAiConfidence(normalizeScore(request.getAiConfidence()));
-        ticket.setAiRecommendType(normalizeAfterSalesType(firstNonBlank(request.getAiRecommendType(), ticket.getAfterSaleType())));
-        boolean aiRecommendApprove = Boolean.TRUE.equals(request.getAutoApproved());
-        String aiSuggestionReason = aiSuggestionReason(request.getAiClassifyResult());
-        ticket.setStatus(aiRecommendApprove ? "PROCESSING" : "PENDING");
-        ticket.setPriority(aiRecommendApprove ? 0 : 1);
-        ticket.setAuditOpinion(aiRecommendApprove
-                ? shortText("AI 建议通过：" + firstNonBlank(aiSuggestionReason, "符合当前售后规则，已进入处理中，等待人工最终处理"), 500)
-                : shortText(firstNonBlank(aiSuggestionReason, "AI 已创建售后申请，等待人工审核或补充凭证"), 500));
-        if (aiRecommendApprove) {
-            ticket.setAuditTime(LocalDateTime.now());
-        }
-        ticket.setExpectedCompleteTime(LocalDateTime.now().plusHours(aiRecommendApprove ? 12 : 24));
-        ticket.setDeleted(0);
-        afterSalesTicketMapper.insert(ticket);
-        bindSessionToTicket(request.getSessionId(), ticket);
-
-        saveAttachments(ticket.getId(), request.getEvidenceUrls());
-        addTicketLog(ticket.getId(), null, "PENDING", "AI_SUBMIT", "用户已提交售后申请，进入待审核");
-        if (aiRecommendApprove) {
-            addTicketLog(ticket.getId(), "PENDING", "PROCESSING", "AI_RECOMMEND_APPROVE", ticket.getAuditOpinion());
-        }
-        createNotice(order.getUserId(), "售后申请已创建", "您的售后申请 " + ticket.getTicketNo() + " 已创建", ticket.getId());
-        return ApiResponse.success("created", toTicketResult(ticket, false));
+        InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
+        result.setVerdict(verdict);
+        result.setAiReviewResult(verdict);
+        result.setAiReviewStatus(reviewStatus(verdict));
+        result.setReviewRequestId(request.getReviewRequestId());
+        result.setReviewApplied(true);
+        result.setIdempotentReplay(false);
+        return ApiResponse.success(approve ? "review_approved" : "review_manual", result);
     }
 
-    private void bindSessionToTicket(Long sessionId, AfterSalesTicket ticket) {
+    private ApiResponse<InternalAgentToolDtos.TicketResult> staleReviewResult(
+            InternalAgentToolDtos.SubmitAiReviewRequest request,
+            String verdict,
+            Long ticketId
+    ) {
+        AfterSalesTicket current = afterSalesTicketMapper.selectById(ticketId);
+        if (current != null && request.getReviewRequestId().equals(current.getAiReviewRequestId())) {
+            metrics.recordAiReviewApply("idempotent");
+            log.info("ai_review_apply ticket_id={} review_request_id={} transition=idempotent failure_class=none",
+                    ticketId, request.getReviewRequestId());
+            InternalAgentToolDtos.TicketResult replay = toTicketResult(current, false);
+            replay.setVerdict(current.getAiReviewResult());
+            replay.setAiReviewResult(current.getAiReviewResult());
+            replay.setAiReviewStatus(reviewStatus(current.getAiReviewResult()));
+            replay.setReviewRequestId(current.getAiReviewRequestId());
+            replay.setReviewApplied(true);
+            replay.setIdempotentReplay(true);
+            return ApiResponse.success("idempotent_replay", replay);
+        }
+        if (current != null) {
+            addTicketLog(
+                    current.getId(),
+                    current.getStatus(),
+                    current.getStatus(),
+                    "AI_REVIEW_STALE",
+                    "AI初审结果未应用，工单状态已变化或已由其他审核请求处理。requestId="
+                            + shortText(request.getReviewRequestId(), 64)
+            );
+        }
+        InternalAgentToolDtos.TicketResult result = current == null
+                ? new InternalAgentToolDtos.TicketResult()
+                : toTicketResult(current, false);
+        result.setVerdict(verdict);
+        result.setAiReviewResult(current == null ? null : current.getAiReviewResult());
+        result.setAiReviewStatus(current == null ? "PENDING" : reviewStatus(current.getAiReviewResult()));
+        result.setReviewRequestId(request.getReviewRequestId());
+        result.setReviewApplied(false);
+        result.setIdempotentReplay(false);
+        result.setReviewRejectReason(current == null ? "TICKET_NOT_FOUND" : "STALE_REVIEW");
+        metrics.recordAiReviewApply("stale");
+        log.info("ai_review_apply ticket_id={} review_request_id={} transition=stale failure_class={}",
+                ticketId, request.getReviewRequestId(), result.getReviewRejectReason());
+        return ApiResponse.success("stale_review", result);
+    }
+
+    private void bindSessionToTicket(Long sessionId, AfterSalesTicket ticket, Long userId) {
         if (sessionId == null || ticket == null) {
             return;
         }
         ChatSession session = chatSessionMapper.selectById(sessionId);
-        if (session == null || !ticket.getUserId().equals(session.getUserId())) {
+        if (session == null || !userId.equals(session.getUserId())) {
             return;
         }
         session.setTicketId(ticket.getId());
@@ -207,6 +317,35 @@ public class InternalAgentToolsController {
         session.setMerchantCode(ticket.getMerchantCode());
         session.setUpdateTime(LocalDateTime.now());
         chatSessionMapper.updateById(session);
+    }
+
+    private void applySessionBusinessContext(ChatSession session, Long userId, String orderId, Long ticketId) {
+        if (session == null || userId == null) {
+            return;
+        }
+        Long effectiveTicketId = ticketId == null ? session.getTicketId() : ticketId;
+        if (effectiveTicketId != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(effectiveTicketId);
+            if (ticket == null || !userId.equals(ticket.getUserId())) {
+                throw new BizException(404, "ticket not found");
+            }
+            session.setTicketId(ticket.getId());
+            session.setOrderId(ticket.getOrderId());
+            session.setMerchantId(ticket.getMerchantId());
+            session.setMerchantCode(normalizeMerchantCode(ticket.getMerchantCode()));
+            return;
+        }
+        String effectiveOrderId = StringUtils.hasText(orderId)
+                ? orderId
+                : session.getOrderId() == null ? null : String.valueOf(session.getOrderId());
+        if (StringUtils.hasText(effectiveOrderId)) {
+            OrderInfo order = resolveOwnedOrder(userId, effectiveOrderId);
+            session.setOrderId(order.getId());
+            session.setMerchantId(order.getMerchantId());
+            session.setMerchantCode(normalizeMerchantCode(order.getMerchantCode()));
+        } else if (!StringUtils.hasText(session.getMerchantCode())) {
+            session.setMerchantCode(DEFAULT_MERCHANT_CODE);
+        }
     }
 
     @PostMapping("/sessions/message")
@@ -219,12 +358,14 @@ public class InternalAgentToolsController {
         requireUser(request.getUserId());
         ChatSession session = resolveOrCreateSession(request.getUserId(), request.getSessionId(), request.getOrderId(), request.getTicketId());
         assertSessionOwner(session, request.getUserId());
+        applySessionBusinessContext(session, request.getUserId(), request.getOrderId(), request.getTicketId());
 
         ChatMessage message = new ChatMessage();
         message.setSessionId(session.getId());
         message.setRole(normalizeRole(request.getRole()));
-        message.setContent(firstNonBlank(request.getContent(), ""));
-        message.setMessageType(firstNonBlank(request.getMessageType(), "TEXT"));
+        message.setMessageType(normalizeMessageType(request.getMessageType()));
+        message.setFileUrl(resolveMessageFileUrl(message.getMessageType(), request.getFileUrl()));
+        message.setContent(resolveMessageContent(message.getMessageType(), firstNonBlank(request.getContent(), "")));
         message.setConfidence(normalizeScore(request.getConfidence()));
         message.setEmotionLabel(request.getEmotionLabel());
         message.setEmotionScore(normalizeScore(request.getEmotionScore()));
@@ -236,8 +377,13 @@ public class InternalAgentToolsController {
         message.setKnowledgeTraceJson(request.getKnowledgeTraceJson());
         chatMessageMapper.insert(message);
 
-        session.setUserQuery(shortText(message.getContent(), 500));
-        session.setUpdateTime(LocalDateTime.now());
+        session.setUserHidden(0);
+        if ("USER".equalsIgnoreCase(message.getRole()) && StringUtils.hasText(message.getContent())) {
+            session.setUserQuery(shortText(message.getContent(), 500));
+        } else if (!StringUtils.hasText(session.getUserQuery())) {
+            session.setUserQuery(shortText(message.getContent(), 500));
+        }
+        session.setUpdateTime(message.getCreateTime() == null ? LocalDateTime.now() : message.getCreateTime());
         chatSessionMapper.updateById(session);
 
         InternalAgentToolDtos.MessageResult result = new InternalAgentToolDtos.MessageResult();
@@ -256,6 +402,7 @@ public class InternalAgentToolsController {
         requireUser(request.getUserId());
         ChatSession session = resolveOrCreateSession(request.getUserId(), request.getSessionId(), request.getOrderId(), request.getTicketId());
         assertSessionOwner(session, request.getUserId());
+        applySessionBusinessContext(session, request.getUserId(), request.getOrderId(), request.getTicketId());
         session.setMode("HUMAN");
         session.setStatus("WAITING");
         session.setTicketId(request.getTicketId() == null ? session.getTicketId() : request.getTicketId());
@@ -264,6 +411,8 @@ public class InternalAgentToolsController {
         session.setEmotionConfidence(normalizeScore(request.getEmotionConfidence()));
         session.setUserQuery(shortText(firstNonBlank(request.getSummary(), "AI 建议转人工"), 500));
         session.setResolved(0);
+        session.setUserHidden(0);
+        session.setUpdateTime(LocalDateTime.now());
         chatSessionMapper.updateById(session);
         return ApiResponse.success("ok", toSessionResult(session));
     }
@@ -284,6 +433,19 @@ public class InternalAgentToolsController {
         append.setMessageType("TEXT");
         append.setContent(firstNonBlank(request.getAssistantReply(), "请补充必要售后凭证后继续处理。"));
         return appendMessage(token, append);
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 
     private void verifyInternalToken(String token) {
@@ -318,11 +480,27 @@ public class InternalAgentToolsController {
         return order;
     }
 
-    private void validateOrderCanCreateAfterSales(OrderInfo order) {
-        String status = Optional.ofNullable(order.getStatus()).orElse("");
-        if (!List.of("PAID", "SHIPPED", "RECEIVED", "COMPLETED", "CLOSED").contains(status)) {
-            throw new BizException(400, "current order status does not allow after-sales");
+    private AfterSalesTicket resolveOwnedTicket(Long userId, Long ticketId, String orderId) {
+        requireUser(userId);
+        if (ticketId == null) {
+            throw new BizException(400, "ticketId is required");
         }
+        AfterSalesTicket ticket = afterSalesTicketMapper.selectById(ticketId);
+        if (ticket == null || !userId.equals(ticket.getUserId())) {
+            throw new BizException(404, "ticket not found");
+        }
+        if (StringUtils.hasText(orderId)) {
+            Long numericOrderId = parseLongOrNull(orderId);
+            if (numericOrderId != null && !numericOrderId.equals(ticket.getOrderId())) {
+                OrderInfo order = resolveOwnedOrder(userId, orderId);
+                if (!order.getId().equals(ticket.getOrderId())) {
+                    throw new BizException(404, "ticket not found");
+                }
+            } else if (numericOrderId == null && !orderId.equals(ticket.getOrderNo())) {
+                throw new BizException(404, "ticket not found");
+            }
+        }
+        return ticket;
     }
 
     private AfterSalesTicket findOpenTicket(Long orderId) {
@@ -345,13 +523,14 @@ public class InternalAgentToolsController {
 
     private InternalAgentToolDtos.OrderSummary toOrderSummary(OrderInfo order) {
         InternalAgentToolDtos.OrderSummary summary = new InternalAgentToolDtos.OrderSummary();
-        summary.setId(order.getId());
+        summary.setOrderId(order.getId());
         summary.setOrderNo(order.getOrderNo());
         summary.setUserId(order.getUserId());
         summary.setMerchantId(order.getMerchantId());
         summary.setMerchantCode(normalizeMerchantCode(order.getMerchantCode()));
         summary.setStatus(order.getStatus());
         summary.setAmount(firstPositive(order.getPayAmount(), order.getTotalAmount(), BigDecimal.ZERO));
+        summary.setCreateTime(order.getCreateTime());
         firstProduct(order.getId()).ifPresent(product -> {
             summary.setProductName(product.getProductName());
             summary.setCategory(product.getCategory());
@@ -367,17 +546,62 @@ public class InternalAgentToolsController {
 
     private InternalAgentToolDtos.TicketResult toTicketResult(AfterSalesTicket ticket, boolean existing) {
         InternalAgentToolDtos.TicketResult result = new InternalAgentToolDtos.TicketResult();
-        result.setId(ticket.getId());
+        result.setTicketId(ticket.getId());
         result.setTicketNo(ticket.getTicketNo());
         result.setOrderId(ticket.getOrderId());
         result.setOrderNo(ticket.getOrderNo());
         result.setUserId(ticket.getUserId());
+        result.setMerchantId(ticket.getMerchantId());
         result.setMerchantCode(ticket.getMerchantCode());
         result.setStatus(ticket.getStatus());
         result.setAfterSalesType(ticket.getAfterSaleType());
         result.setRefundAmount(ticket.getRefundAmount());
         result.setExisting(existing);
+        result.setProductName(ticket.getProductName());
+        result.setPolicyVersion(ticket.getPolicyVersion());
+        result.setAfterSalesAppliedAt(ticket.getCreateTime());
+        result.setAiReviewResult(ticket.getAiReviewResult());
+        result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+        result.setReviewRequestId(ticket.getAiReviewRequestId());
+        result.setReviewApplied(ticket.getAiReviewRequestId() != null);
+        result.setIdempotentReplay(false);
+        result.setEvidenceUrls(ticketAttachmentMapper.selectList(new LambdaQueryWrapper<TicketAttachment>()
+                        .eq(TicketAttachment::getTicketId, ticket.getId())
+                        .orderByAsc(TicketAttachment::getSortOrder))
+                .stream()
+                .map(TicketAttachment::getFileUrl)
+                .filter(StringUtils::hasText)
+                .toList());
         return result;
+    }
+
+    private String reviewStatus(String verdict) {
+        if ("APPROVE".equals(verdict)) {
+            return "APPROVED";
+        }
+        if ("MANUAL_REVIEW_REQUIRED".equals(verdict) || "MANUAL_REVIEW".equals(verdict)) {
+            return "MANUAL_REQUIRED";
+        }
+        return "PENDING";
+    }
+
+    private Map<String, Object> reviewAuditPayload(InternalAgentToolDtos.SubmitAiReviewRequest request) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("verdict", request.getVerdict());
+        payload.put("reason", request.getReason());
+        payload.put("evidence_needed", request.getEvidenceNeeded());
+        payload.put("visual_uncertain", request.getVisualUncertain());
+        payload.put("policy_uncertain", request.getPolicyUncertain());
+        payload.put("evidence_consistent", request.getEvidenceConsistent());
+        payload.put("ai_review_confidence", request.getAiReviewConfidence());
+        payload.put("visual_confidence", request.getVisualConfidence());
+        payload.put("knowledge_retrieval_mode", request.getKnowledgeRetrievalMode());
+        payload.put("policy_match_score", request.getPolicyMatchScore());
+        payload.put("risk_review_reasons", request.getRiskReviewReasons());
+        payload.put("policy_citations", request.getPolicyCitations());
+        payload.put("skill_versions", request.getSkillVersions());
+        payload.put("image_review", request.getImageReview());
+        return payload;
     }
 
     private ChatSession resolveOrCreateSession(Long userId, Long sessionId, String orderId, Long ticketId) {
@@ -420,6 +644,7 @@ public class InternalAgentToolsController {
         session.setStatus("ACTIVE");
         session.setResolved(0);
         session.setDeleted(0);
+        session.setUserHidden(0);
         session.setUserQuery("AI 售后咨询");
         chatSessionMapper.insert(session);
         return session;
@@ -441,26 +666,6 @@ public class InternalAgentToolsController {
         return result;
     }
 
-    private void saveAttachments(Long ticketId, List<String> urls) {
-        if (urls == null || urls.isEmpty()) {
-            return;
-        }
-        int sort = 0;
-        for (String url : urls) {
-            if (!StringUtils.hasText(url)) {
-                continue;
-            }
-            TicketAttachment attachment = new TicketAttachment();
-            attachment.setTicketId(ticketId);
-            attachment.setFileUrl(url);
-            attachment.setFileType("IMAGE");
-            attachment.setFileName(url.substring(url.lastIndexOf('/') + 1));
-            attachment.setFileSize(0L);
-            attachment.setSortOrder(sort++);
-            ticketAttachmentMapper.insert(attachment);
-        }
-    }
-
     private void addTicketLog(Long ticketId, String oldStatus, String newStatus, String action, String content) {
         TicketLog log = new TicketLog();
         log.setTicketId(ticketId);
@@ -471,29 +676,6 @@ public class InternalAgentToolsController {
         log.setAction(action);
         log.setContent(content);
         ticketLogMapper.insert(log);
-    }
-
-    private void createNotice(Long userId, String title, String content, Long ticketId) {
-        MessageNotice notice = new MessageNotice();
-        notice.setUserId(userId);
-        notice.setTitle(title);
-        notice.setContent(content);
-        notice.setNoticeType("AFTER_SALE");
-        notice.setRefType("TICKET");
-        notice.setRefId(ticketId);
-        notice.setIsRead(0);
-        messageNoticeMapper.insert(notice);
-    }
-
-    private BigDecimal resolveRefundAmount(BigDecimal requested, OrderInfo order) {
-        BigDecimal orderAmount = firstPositive(order.getPayAmount(), order.getTotalAmount(), BigDecimal.ZERO);
-        if (requested == null || requested.compareTo(BigDecimal.ZERO) <= 0) {
-            return orderAmount;
-        }
-        if (orderAmount.compareTo(BigDecimal.ZERO) > 0 && requested.compareTo(orderAmount) > 0) {
-            throw new BizException(400, "refund amount exceeds order amount");
-        }
-        return requested;
     }
 
     private BigDecimal firstPositive(BigDecimal... values) {
@@ -518,22 +700,30 @@ public class InternalAgentToolsController {
         return value.compareTo(BigDecimal.ONE) > 0 ? BigDecimal.ONE : value;
     }
 
-    private String normalizeAfterSalesType(String type) {
-        String value = firstNonBlank(type, "RETURN_REFUND").trim().toUpperCase();
-        return switch (value) {
-            case "REFUND", "REFUND_ONLY" -> "REFUND_ONLY";
-            case "REISSUE", "RESEND", "EXCHANGE" -> "REISSUE";
-            case "PARTIAL_REFUND" -> "PARTIAL_REFUND";
-            default -> "RETURN_REFUND";
-        };
+    private String normalizeMessageType(String messageType) {
+        String normalized = StringUtils.hasText(messageType) ? messageType.trim().toUpperCase() : "TEXT";
+        return List.of("TEXT", "IMAGE", "FILE").contains(normalized) ? normalized : "TEXT";
     }
 
-    private String normalizeReason(String reason) {
-        String value = firstNonBlank(reason, "QUALITY").trim().toUpperCase();
-        return switch (value) {
-            case "DAMAGE", "LOGISTICS", "OTHER", "QUALITY" -> value;
-            default -> "OTHER";
-        };
+    private String resolveMessageFileUrl(String messageType, String fileUrl) {
+        if (!List.of("IMAGE", "FILE").contains(normalizeMessageType(messageType))) {
+            return null;
+        }
+        if (StringUtils.hasText(fileUrl)) {
+            return fileUrl.trim();
+        }
+        throw new BizException("图片或文件消息必须提供 fileUrl");
+    }
+
+    private String resolveMessageContent(String messageType, String content) {
+        String normalized = normalizeMessageType(messageType);
+        if ("IMAGE".equals(normalized)) {
+            return StringUtils.hasText(content) ? content : "[图片]";
+        }
+        if ("FILE".equals(normalized)) {
+            return StringUtils.hasText(content) ? content : "文件";
+        }
+        return content == null ? "" : content;
     }
 
     private String normalizeRole(String role) {
@@ -577,20 +767,6 @@ public class InternalAgentToolsController {
         } catch (JsonProcessingException exception) {
             return "{}";
         }
-    }
-
-    private String aiSuggestionReason(Map<String, Object> payload) {
-        if (payload == null || payload.isEmpty()) {
-            return "";
-        }
-        Object reason = payload.get("reason");
-        if (reason == null) {
-            reason = payload.get("ai_suggestion_reason");
-        }
-        if (reason == null) {
-            reason = payload.get("suggestionReason");
-        }
-        return reason == null ? "" : String.valueOf(reason);
     }
 
     private Long parseLongOrNull(String value) {

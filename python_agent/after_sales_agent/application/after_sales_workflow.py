@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from contextvars import ContextVar
 import base64
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -1082,12 +1083,12 @@ class LangGraphAfterSalesAgent:
         reason = self._reason_type(state)
         after_sales_type = self._after_sales_type(state)
         category = order.get("category") or order.get("product_category")
-        merchant_code = order.get("merchant_code") or "MERCHANT_DEMO"
+        merchant_code = str(order.get("merchant_code") or "").strip()
         as_of_time = order.get("after_sales_applied_at") or order.get("create_time")
-        if not str(as_of_time or "").strip():
+        if not merchant_code or not str(as_of_time or "").strip():
             return {
                 "action": "human_handoff",
-                "assistant_reply": "当前售后申请缺少可验证的业务发生时间，无法安全匹配当时生效的政策，我会转交人工客服复核。",
+                "assistant_reply": "当前售后申请缺少可验证的商家或业务发生时间，无法安全匹配当时生效的政策，我会转交人工客服复核。",
                 "need_human": True,
                 "evidence_needed": [],
             }
@@ -1128,7 +1129,7 @@ class LangGraphAfterSalesAgent:
         reason = self._reason_type(state)
         product_name = str(order.get("product_name") or "")
         category = order.get("category") or order.get("product_category") or ""
-        merchant_code = order.get("merchant_code") or "MERCHANT_DEMO"
+        merchant_code = str(order.get("merchant_code") or "").strip() or None
         message = self._conversation_issue_text(state)
         query_parts = [
             message,
@@ -1138,17 +1139,25 @@ class LangGraphAfterSalesAgent:
             self._rag_query_expansion(reason, self._after_sales_type(state)),
             "售后证据要求 凭证模板 需要什么照片",
         ]
+        tool_arguments = {
+            "user_id": state.get("user_id"),
+            "query": " ".join(p for p in query_parts if p).strip(),
+            "merchant_code": merchant_code,
+            "product_category": category if category else None,
+            "scene": self._scene_for_reason(reason),
+            "top_k": 5,
+        }
+        order_created_at = order.get("create_time")
+        if str(order_created_at or "").strip():
+            tool_arguments["as_of_time"] = order_created_at
+        history_summary = state.get("history_summary") if isinstance(state.get("history_summary"), dict) else {}
+        policy_version = order.get("policy_version") or history_summary.get("policy_version")
+        if str(policy_version or "").strip():
+            tool_arguments["policy_version"] = policy_version
         return {
             "action": "tool_call",
             "tool_name": "retrieve_knowledge",
-            "tool_arguments": {
-                "user_id": state.get("user_id"),
-                "query": " ".join(p for p in query_parts if p).strip(),
-                "merchant_code": merchant_code,
-                "product_category": category if category else None,
-                "scene": self._scene_for_reason(reason),
-                "top_k": 5,
-            },
+            "tool_arguments": tool_arguments,
             "need_human": False,
             "evidence_needed": [],
         }
@@ -1849,6 +1858,11 @@ class LangGraphAfterSalesAgent:
             or (history_summary or {}).get("policy_version")
             or ""
         ).strip()
+        business_time = LangGraphAfterSalesAgent._parse_offset_time(
+            order.get("after_sales_applied_at") or order.get("create_time")
+        )
+        if not expected_policy_version or business_time is None:
+            return []
         minimum_score = float(os.getenv("RAG_AUTO_APPROVE_MIN_SCORE", "0.65"))
         trusted: list[dict[str, Any]] = []
         for hit in LangGraphAfterSalesAgent._policy_hits(knowledge):
@@ -1856,13 +1870,26 @@ class LangGraphAfterSalesAgent:
                 continue
             if hit.get("relaxation_level") != "strict":
                 continue
+            citations = hit.get("citations")
+            if not isinstance(citations, list) or not any(isinstance(item, dict) for item in citations):
+                continue
             metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
             if str(hit.get("source_type") or metadata.get("source_type") or "") != "after_sales_policy":
                 continue
             if str(hit.get("merchant_code") or metadata.get("merchant_code") or "") != merchant_code:
                 continue
             policy_version = str(hit.get("policy_version") or metadata.get("policy_version") or "").strip()
-            if expected_policy_version and policy_version != expected_policy_version:
+            if policy_version != expected_policy_version:
+                continue
+            valid_from = LangGraphAfterSalesAgent._parse_policy_bound(
+                hit.get("valid_from") or metadata.get("valid_from"),
+                business_time,
+            )
+            valid_to = LangGraphAfterSalesAgent._parse_policy_bound(
+                hit.get("valid_to") or metadata.get("valid_to"),
+                business_time,
+            )
+            if valid_from is None or valid_to is None or not (valid_from <= business_time < valid_to):
                 continue
             try:
                 hit_threshold = float(hit.get("threshold", knowledge.get("threshold", minimum_score)))
@@ -1872,6 +1899,34 @@ class LangGraphAfterSalesAgent:
                 continue
             trusted.append(hit)
         return trusted
+
+    @staticmethod
+    def _parse_offset_time(raw: Any) -> datetime | None:
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        value = raw.strip()
+        normalized = f"{value[:-1]}+00:00" if value.endswith(("Z", "z")) else value
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed
+
+    @staticmethod
+    def _parse_policy_bound(raw: Any, business_time: datetime) -> datetime | None:
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        value = raw.strip()
+        normalized = f"{value[:-1]}+00:00" if value.endswith(("Z", "z")) else value
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            parsed = parsed.replace(tzinfo=business_time.tzinfo)
+        return parsed
 
     @staticmethod
     def _policy_hit_score(hit: dict[str, Any]) -> float:
@@ -1904,16 +1959,9 @@ class LangGraphAfterSalesAgent:
     def _policy_citations(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         citations: list[dict[str, Any]] = []
         for hit in hits[:5]:
-            citations.append(
-                {
-                    "source_type": hit.get("source_type"),
-                    "source_code": hit.get("source_code"),
-                    "title": hit.get("title"),
-                    "score": hit.get("score"),
-                    "rerank_score": hit.get("rerank_score"),
-                    "metadata": hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {},
-                }
-            )
+            explicit = hit.get("citations")
+            if isinstance(explicit, list):
+                citations.extend(dict(item) for item in explicit if isinstance(item, dict))
         return citations
 
     @staticmethod

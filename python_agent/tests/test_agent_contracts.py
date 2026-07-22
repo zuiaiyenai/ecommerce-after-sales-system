@@ -239,15 +239,25 @@ class AgentContractTest(unittest.TestCase):
         as_of_schema = specs["retrieve_knowledge"]["input_schema"]["properties"]["as_of_time"]
         self.assertEqual("string", as_of_schema["type"])
         self.assertEqual("date-time", as_of_schema["format"])
+        self.assertEqual(
+            "string",
+            specs["retrieve_knowledge"]["input_schema"]["properties"]["policy_version"]["type"],
+        )
 
     def test_retrieve_knowledge_parses_timezone_aware_as_of_time(self) -> None:
         retriever = Mock()
-        retriever.retrieve.return_value = {"hits": []}
+        retriever.retrieve.return_value = {
+            "hits": [{"citation": {"chunk_id": 7, "source_code": "POLICY-2"}}]
+        }
         registry = AgentToolRegistry(java=Mock(), retriever=retriever, vision=Mock())
 
         result = registry.call(
             "retrieve_knowledge",
-            {"query": "退款政策", "as_of_time": "2026-07-21T10:15:00+08:00"},
+            {
+                "query": "退款政策",
+                "policy_version": "v2",
+                "as_of_time": "2026-07-21T10:15:00+08:00",
+            },
         )
 
         self.assertTrue(result.ok)
@@ -255,6 +265,46 @@ class AgentContractTest(unittest.TestCase):
         self.assertIsInstance(parsed, datetime)
         self.assertEqual(timedelta(hours=8), parsed.utcoffset())
         self.assertEqual("2026-07-21T10:15:00+08:00", parsed.isoformat())
+        self.assertEqual("v2", retriever.retrieve.call_args.kwargs["policy_version"])
+        self.assertEqual(
+            [{"chunk_id": 7, "source_code": "POLICY-2"}],
+            result.data["hits"][0]["citations"],
+        )
+        self.assertNotIn("citation", result.data["hits"][0])
+
+    def test_knowledge_admin_passes_explicit_policy_context_without_inventing_time(self) -> None:
+        retriever = Mock()
+        retriever.retrieve.return_value = {
+            "query": "refund",
+            "mode": "hybrid_reranked",
+            "filter_level": "strict",
+            "reranker_succeeded": True,
+            "trusted_policy_eligible": True,
+            "hits": [{
+                "source_type": "after_sales_policy",
+                "citation": {"chunk_id": 7, "source_code": "POLICY-2"},
+            }],
+        }
+        service = KnowledgeAdminService(retriever=retriever)
+
+        result = service.retrieve({
+            "query": "refund",
+            "policy_version": "v2",
+            "as_of_time": "2026-07-21T10:15:00+08:00",
+        })
+
+        kwargs = retriever.retrieve.call_args.kwargs
+        self.assertEqual("v2", kwargs["policy_version"])
+        self.assertEqual("2026-07-21T10:15:00+08:00", kwargs["as_of_time"].isoformat())
+        self.assertTrue(result["reranker_succeeded"])
+        self.assertTrue(result["trusted_policy_eligible"])
+        self.assertEqual(
+            [{"chunk_id": 7, "source_code": "POLICY-2"}],
+            result["hits"][0]["citations"],
+        )
+
+        service.retrieve({"query": "faq"})
+        self.assertIsNone(retriever.retrieve.call_args.kwargs["as_of_time"])
 
     def test_retrieve_knowledge_rejects_naive_or_invalid_as_of_time(self) -> None:
         retriever = Mock()

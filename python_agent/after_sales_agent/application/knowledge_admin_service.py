@@ -9,6 +9,7 @@ from after_sales_agent.application.knowledge_ingestion_service import (
     KnowledgeIngestionService,
     KnowledgeParseError,
 )
+from after_sales_agent.application.tool_registry import AgentToolRegistry, normalize_knowledge_result
 from after_sales_agent.retrieval.pgvector_retriever import PgVectorConfig, PgVectorKnowledgeRetriever
 
 
@@ -44,17 +45,20 @@ class KnowledgeAdminService:
     def retrieve(self, data: dict[str, Any]) -> dict[str, Any]:
         sources = data.get("sources") if isinstance(data.get("sources"), list) else []
         source_type = sources[0] if len(sources) == 1 else data.get("source_type")
-        result = self.retriever.retrieve(
+        result = normalize_knowledge_result(self.retriever.retrieve(
             query=str(data.get("query") or ""),
             merchant_code=data.get("merchant_code"),
             product_category=data.get("product_category"),
             scene=data.get("scene"),
             intent=data.get("intent"),
             source_type=source_type,
+            policy_version=data.get("policy_version"),
+            as_of_time=AgentToolRegistry._parse_as_of_time(data.get("as_of_time")),
             top_k=data.get("top_k"),
-        )
+        ))
         hits = [
             {
+                **hit,
                 "source_type": hit.get("metadata", {}).get("source_type") or hit.get("source_type"),
                 "source_code": hit.get("source_code"),
                 "title": hit.get("title"),
@@ -71,6 +75,12 @@ class KnowledgeAdminService:
             "retrieval_mode": result.get("mode") or "pgvector",
             "total_hits": len(hits),
             "hits": hits,
+            "filter_level": result.get("filter_level"),
+            "reranker_succeeded": result.get("reranker_succeeded") is True,
+            "trusted_policy_eligible": result.get("trusted_policy_eligible") is True,
+            "threshold": result.get("threshold"),
+            "no_answer": result.get("no_answer") is True,
+            "failure_reason": result.get("failure_reason"),
             "trace": result.get("trace") or {},
         }
 

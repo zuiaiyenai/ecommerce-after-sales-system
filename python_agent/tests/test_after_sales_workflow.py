@@ -293,9 +293,16 @@ class FakeDamageImageTools:
                             "threshold": 0.75,
                             "trusted_policy_eligible": True,
                             "relaxation_level": "strict",
+                            "citations": [{
+                                "chunk_id": "POLICY-DIGITAL-DAMAGE-1",
+                                "source_code": "POLICY-DIGITAL-DAMAGE",
+                            }],
                             "metadata": {
                                 "merchant_code": "MERCHANT_DEMO",
                                 "source_type": "after_sales_policy",
+                                "policy_version": "v2",
+                                "valid_from": "2026-07-01T00:00:00+08:00",
+                                "valid_to": "2026-08-01T00:00:00+08:00",
                                 "default_evidence": ["商品问题照片", "问题描述"],
                             },
                         }
@@ -311,6 +318,7 @@ class FakeDamageImageTools:
                 "product_name": "蓝牙降噪耳机",
                 "product_category": "数码",
                 "merchant_code": "MERCHANT_DEMO",
+                "policy_version": "v2",
                 "create_time": "2026-07-20T09:00:00+08:00",
                 "status": "PENDING_REVIEW",
             })
@@ -692,6 +700,34 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual("2026-07-02-v3", arguments["policy_version"])
         self.assertEqual("2026-07-20T09:00:00+08:00", arguments["as_of_time"])
 
+    def test_historical_order_policy_explanation_uses_order_creation_time(self) -> None:
+        agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
+
+        action = agent._retrieve_evidence_action(
+            {"user_id": "1", "message": "购买时的退货政策是什么"},
+            {
+                "product_name": "蓝牙降噪耳机",
+                "product_category": "数码",
+                "merchant_code": "MERCHANT_DEMO",
+                "create_time": "2026-06-01T10:30:00+08:00",
+                "policy_version": "2026-06-v1",
+            },
+        )
+
+        arguments = action["tool_arguments"]
+        self.assertEqual("2026-06-01T10:30:00+08:00", arguments["as_of_time"])
+        self.assertEqual("2026-06-v1", arguments["policy_version"])
+
+    def test_general_faq_retrieval_does_not_invent_business_time(self) -> None:
+        agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
+
+        action = agent._retrieve_evidence_action(
+            {"user_id": "1", "message": "一般需要哪些售后凭证"},
+            {"merchant_code": "MERCHANT_DEMO"},
+        )
+
+        self.assertNotIn("as_of_time", action["tool_arguments"])
+
     def test_policy_retrieval_without_verified_business_time_fails_safe(self) -> None:
         agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
 
@@ -704,15 +740,41 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertTrue(action["need_human"])
         self.assertNotIn("tool_name", action)
 
+    def test_policy_retrieval_without_java_owned_merchant_fails_safe(self) -> None:
+        agent = LangGraphAfterSalesAgent(tools=FakeTools(), llm=FakeLlm())
+
+        action = agent._retrieve_policy_action(
+            {"user_id": "1", "message": "申请退款"},
+            {
+                "product_category": "数码",
+                "policy_version": "v2",
+                "after_sales_applied_at": "2026-07-20T09:00:00+08:00",
+            },
+        )
+
+        self.assertEqual("human_handoff", action["action"])
+        self.assertTrue(action["need_human"])
+        self.assertNotIn("tool_name", action)
+
     def test_only_strict_high_score_same_merchant_policy_can_authorize_auto_review(self) -> None:
-        order = {"merchant_code": "MERCHANT_DEMO"}
+        order = {
+            "merchant_code": "MERCHANT_DEMO",
+            "policy_version": "v2",
+            "after_sales_applied_at": "2026-07-20T09:00:00+08:00",
+        }
         trusted_hit = {
             "source_type": "after_sales_policy",
             "rerank_score": 0.82,
             "threshold": 0.75,
             "trusted_policy_eligible": True,
             "relaxation_level": "strict",
-            "metadata": {"merchant_code": "MERCHANT_DEMO"},
+            "citations": [{"source_code": "POLICY-2", "chunk_id": "C-2"}],
+            "metadata": {
+                "merchant_code": "MERCHANT_DEMO",
+                "policy_version": "v2",
+                "valid_from": "2026-07-01T00:00:00",
+                "valid_to": "2026-08-01T00:00:00",
+            },
         }
         strict_knowledge = {
             "mode": "hybrid_reranked",
@@ -749,7 +811,49 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual(
             [],
             LangGraphAfterSalesAgent._trusted_policy_hits(
-                {**strict_knowledge, "hits": [{**trusted_hit, "metadata": {"merchant_code": "OTHER"}}]},
+                {
+                    **strict_knowledge,
+                    "hits": [{
+                        **trusted_hit,
+                        "metadata": {**trusted_hit["metadata"], "merchant_code": "OTHER"},
+                    }],
+                },
+                order,
+            ),
+        )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                {**strict_knowledge, "hits": [{**trusted_hit, "citations": []}]},
+                order,
+            ),
+        )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                {
+                    **strict_knowledge,
+                    "hits": [{
+                        **trusted_hit,
+                        "metadata": {
+                            **trusted_hit["metadata"],
+                            "valid_to": "2026-07-20T09:00:00+08:00",
+                        },
+                    }],
+                },
+                order,
+            ),
+        )
+        self.assertEqual(
+            [],
+            LangGraphAfterSalesAgent._trusted_policy_hits(
+                {
+                    **strict_knowledge,
+                    "hits": [{
+                        **trusted_hit,
+                        "metadata": {**trusted_hit["metadata"], "policy_version": "v1"},
+                    }],
+                },
                 order,
             ),
         )
@@ -774,6 +878,36 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
                 order,
             ),
         )
+
+    def test_rrf_degraded_policy_hit_is_not_trusted(self) -> None:
+        knowledge = {
+            "mode": "hybrid_rrf_degraded",
+            "filter_level": "strict",
+            "reranker_succeeded": False,
+            "trusted_policy_eligible": True,
+            "relaxation_level": "strict",
+            "hits": [{
+                "source_type": "after_sales_policy",
+                "rerank_score": 0.99,
+                "threshold": 0.75,
+                "merchant_code": "MERCHANT_DEMO",
+                "policy_version": "v2",
+                "trusted_policy_eligible": True,
+                "relaxation_level": "strict",
+                "citations": [{"source_code": "POLICY-2"}],
+            }],
+        }
+
+        hits = LangGraphAfterSalesAgent._trusted_policy_hits(
+            knowledge,
+            {
+                "merchant_code": "MERCHANT_DEMO",
+                "policy_version": "v2",
+                "after_sales_applied_at": "2026-07-20T09:00:00+08:00",
+            },
+        )
+
+        self.assertEqual([], hits)
 
     def test_decision_confidence_is_calibrated_from_visual_and_policy_evidence(self) -> None:
         strong_policy = [{"rerank_score": 0.8}]

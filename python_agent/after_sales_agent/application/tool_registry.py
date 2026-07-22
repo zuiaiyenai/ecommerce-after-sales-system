@@ -12,6 +12,31 @@ from ..providers.vision_review_service import VisionReviewService
 from ..utils.vision_serialization import serialize_image_review
 
 
+def normalize_knowledge_result(value: Any) -> Any:
+    """Expose one citation-list contract at the Agent tool boundary."""
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    hits = value.get("hits")
+    if not isinstance(hits, list):
+        return normalized
+    normalized_hits: list[Any] = []
+    for raw_hit in hits:
+        if not isinstance(raw_hit, dict):
+            normalized_hits.append(raw_hit)
+            continue
+        hit = dict(raw_hit)
+        citations = hit.get("citations")
+        if not isinstance(citations, list):
+            citation = hit.get("citation")
+            citations = [dict(citation)] if isinstance(citation, dict) else []
+        hit["citations"] = [dict(item) for item in citations if isinstance(item, dict)]
+        hit.pop("citation", None)
+        normalized_hits.append(hit)
+    normalized["hits"] = normalized_hits
+    return normalized
+
+
 @dataclass(frozen=True)
 class ToolResult:
     ok: bool
@@ -97,6 +122,10 @@ class AgentToolRegistry:
                 "low",
                 True,
                 properties={
+                    "policy_version": {
+                        "type": "string",
+                        "description": "Java-owned policy version snapshot for historical policy lookup.",
+                    },
                     "as_of_time": {
                         "type": "string",
                         "format": "date-time",
@@ -176,7 +205,7 @@ class AgentToolRegistry:
         )
 
     def retrieve_knowledge(self, args: dict[str, Any]) -> Any:
-        return self.retriever.retrieve(
+        return normalize_knowledge_result(self.retriever.retrieve(
             query=str(args.get("query") or ""),
             merchant_code=args.get("merchant_code"),
             product_category=args.get("product_category"),
@@ -186,7 +215,7 @@ class AgentToolRegistry:
             policy_version=args.get("policy_version"),
             as_of_time=self._parse_as_of_time(args.get("as_of_time")),
             top_k=args.get("top_k"),
-        )
+        ))
 
     @staticmethod
     def _parse_as_of_time(raw: Any) -> datetime | None:
