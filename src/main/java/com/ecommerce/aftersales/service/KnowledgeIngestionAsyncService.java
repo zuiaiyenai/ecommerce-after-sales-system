@@ -35,7 +35,7 @@ public class KnowledgeIngestionAsyncService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Set<String> PARSE_ERROR_CODES = Set.of(
             "UNSUPPORTED_FILE_TYPE", "PDF_ENCRYPTED", "PDF_TEXT_LAYER_MISSING", "FILE_DECODE_FAILED",
-            "DOCUMENT_CONTENT_EMPTY", "DOCUMENT_CHUNKING_FAILED"
+            "DOCUMENT_CONTENT_EMPTY", "DOCUMENT_CHUNKING_FAILED", "FILE_TOO_LARGE"
     );
 
     @Qualifier("pgJdbcTemplate")

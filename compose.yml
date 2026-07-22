@@ -82,6 +82,7 @@ services:
       VISION_DISK_CACHE_PATH: /app/.runtime/vision-cache.sqlite3
       AGENT_HOST: 0.0.0.0
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-local-dev-agent-token}
+      KNOWLEDGE_PARSE_MAX_REQUEST_BYTES: ${KNOWLEDGE_PARSE_MAX_REQUEST_BYTES:-15029592}
     expose: ["8000"]
     volumes: ["agent-cache:/app/.runtime"]
     depends_on:

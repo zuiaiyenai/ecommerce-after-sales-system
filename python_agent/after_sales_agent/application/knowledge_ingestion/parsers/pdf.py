@@ -4,6 +4,7 @@ from collections import defaultdict
 from io import BytesIO
 import math
 import re
+from typing import Any
 import unicodedata
 
 from pypdf import PdfReader
@@ -30,10 +31,12 @@ def extract_pdf_pages(content: bytes) -> list[tuple[int, str]]:
         reader = PdfReader(BytesIO(content))
         if reader.is_encrypted:
             raise KnowledgeParseError("PDF_ENCRYPTED")
-        pages = [
-            (page_number, page.extract_text() or "")
-            for page_number, page in enumerate(reader.pages, start=1)
-        ]
+        pages: list[tuple[int, str]] = []
+        for page_number, page in enumerate(reader.pages, start=1):
+            text = page.extract_text() or ""
+            if not text.strip() and _page_has_non_text_content(page):
+                raise KnowledgeParseError("PDF_TEXT_LAYER_MISSING")
+            pages.append((page_number, text))
     except KnowledgeParseError:
         raise
     except (PdfReadError, OSError, ValueError) as exc:
@@ -44,6 +47,26 @@ def extract_pdf_pages(content: bytes) -> list[tuple[int, str]]:
     if not any(text.strip() for _, text in pages):
         raise KnowledgeParseError("PDF_TEXT_LAYER_MISSING")
     return pages
+
+
+def _page_has_non_text_content(page: Any) -> bool:
+    contents = page.get_contents()
+    if contents is not None and contents.get_data().strip():
+        return True
+
+    resources = page.get("/Resources")
+    if resources is None:
+        return False
+    resources = resources.get_object() if hasattr(resources, "get_object") else resources
+    xobjects = resources.get("/XObject") if hasattr(resources, "get") else None
+    if xobjects is None:
+        return False
+    xobjects = xobjects.get_object() if hasattr(xobjects, "get_object") else xobjects
+    for candidate in xobjects.values() if hasattr(xobjects, "values") else ():
+        candidate = candidate.get_object() if hasattr(candidate, "get_object") else candidate
+        if hasattr(candidate, "get") and str(candidate.get("/Subtype")) == "/Image":
+            return True
+    return False
 
 
 def parse_pdf(content: bytes) -> tuple[list[tuple[int, str]], list[DocumentBlock]]:

@@ -91,6 +91,86 @@ def _invoke_parse_route(monkeypatch: pytest.MonkeyPatch, payload: dict[str, obje
     return sent
 
 
+def _invoke_post_route(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    path: str,
+    body: bytes,
+    general_limit: int,
+    knowledge_parse_limit: int,
+) -> list[tuple[dict[str, object], int]]:
+    handler = object.__new__(http_server.AgentApiHandler)
+    handler.path = path
+    handler.headers = {
+        "Content-Length": str(len(body)),
+        "X-Agent-Internal-Token": "knowledge-token",
+    }
+    handler.rfile = io.BytesIO(body)
+    sent: list[tuple[dict[str, object], int]] = []
+    handler._send_json = lambda value, *, status=200: sent.append((value, status))
+    monkeypatch.setattr(http_server, "AGENT_INTERNAL_TOKEN", "knowledge-token")
+    monkeypatch.setattr(http_server, "AGENT_MAX_REQUEST_BYTES", general_limit)
+    monkeypatch.setattr(http_server, "KNOWLEDGE_PARSE_MAX_REQUEST_BYTES", knowledge_parse_limit)
+    handler.do_POST()
+    return sent
+
+
+def test_knowledge_parse_default_request_limit_covers_java_max_file_and_json_envelope() -> None:
+    max_file_bytes = 10 * 1024 * 1024
+    encoded_bytes = 4 * ((max_file_bytes + 2) // 3)
+
+    assert http_server.KNOWLEDGE_PARSE_JSON_ENVELOPE_BYTES == 1024 * 1024
+    assert http_server.DEFAULT_KNOWLEDGE_PARSE_MAX_REQUEST_BYTES == (
+        encoded_bytes + http_server.KNOWLEDGE_PARSE_JSON_ENVELOPE_BYTES
+    )
+
+
+def test_knowledge_parse_route_uses_dedicated_request_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps(_parse_payload(file_name="policy.txt", content=b"refund policy")).encode("utf-8")
+    assert len(body) > 64
+
+    sent = _invoke_post_route(
+        monkeypatch,
+        path="/api/knowledge/parse",
+        body=body,
+        general_limit=64,
+        knowledge_parse_limit=len(body),
+    )
+
+    assert sent[0][1] == 200
+    assert sent[0][0]["content"] == "refund policy"
+
+
+def test_knowledge_parse_route_returns_stable_file_too_large_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps(_parse_payload(file_name="policy.txt", content=b"refund policy")).encode("utf-8")
+    limit = len(body) - 1
+
+    sent = _invoke_post_route(
+        monkeypatch,
+        path="/api/knowledge/parse",
+        body=body,
+        general_limit=64,
+        knowledge_parse_limit=limit,
+    )
+
+    assert sent == [({"error": "FILE_TOO_LARGE", "max_bytes": limit}, 413)]
+
+
+def test_non_parse_route_keeps_general_request_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps({"query": "refund policy"}).encode("utf-8")
+    limit = len(body) - 1
+
+    sent = _invoke_post_route(
+        monkeypatch,
+        path="/api/knowledge/retrieve",
+        body=body,
+        general_limit=limit,
+        knowledge_parse_limit=len(body) + 100,
+    )
+
+    assert sent == [({"error": "request_too_large", "max_bytes": limit}, 413)]
+
+
 def test_markdown_sections_keep_heading_path_and_unknown_metadata_requires_review() -> None:
     service = KnowledgeIngestionService(classifier=FakeClassifier({"scenes": ["made_up"]}))
 

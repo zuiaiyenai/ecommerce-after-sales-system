@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.config.AgentGatewayProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
@@ -64,6 +65,12 @@ class KnowledgeIngestionAsyncServiceTest {
         Map<String, Object> body = (Map<String, Object>) request.getValue().getBody();
         assertThat(body.get("allowed_metadata")).isEqualTo(Map.of(
                 "product_categories", List.of("headphone"), "scenes", List.of("quality_issue"), "intents", List.of("refund")));
+        String encodedContent = String.valueOf(body.get("content_base64"));
+        long jsonEnvelopeBytes = new ObjectMapper().writeValueAsBytes(body).length - encodedContent.length();
+        long maxFileBytes = 10L * 1024 * 1024;
+        long maxEncodedBytes = 4L * ((maxFileBytes + 2L) / 3L);
+        assertThat(jsonEnvelopeBytes).isLessThanOrEqualTo(1024L * 1024);
+        assertThat(maxEncodedBytes + jsonEnvelopeBytes).isLessThanOrEqualTo(15_029_592L);
     }
 
     @Test
@@ -239,7 +246,7 @@ class KnowledgeIngestionAsyncServiceTest {
 
     @Test
     void structuredParserErrorsRemainStableAcrossTheJavaBoundary() throws Exception {
-        for (String code : List.of("DOCUMENT_CONTENT_EMPTY", "DOCUMENT_CHUNKING_FAILED")) {
+        for (String code : List.of("DOCUMENT_CONTENT_EMPTY", "DOCUMENT_CHUNKING_FAILED", "FILE_TOO_LARGE")) {
             JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
             RestTemplate restTemplate = mock(RestTemplate.class);
             KnowledgeMetadataPolicy policy = mock(KnowledgeMetadataPolicy.class);
@@ -250,8 +257,9 @@ class KnowledgeIngestionAsyncServiceTest {
                     "productCategories", List.of(), "scenes", List.of(), "intents", List.of()));
             when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
                     "id", 42L, "source_type", "after_sales_policy", "merchant_code", "MERCHANT_DEMO", "metadata", "{}")));
+            HttpStatus status = "FILE_TOO_LARGE".equals(code) ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.UNPROCESSABLE_ENTITY;
             when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenThrow(
-                    HttpClientErrorException.create(HttpStatus.UNPROCESSABLE_ENTITY, "unprocessable", HttpHeaders.EMPTY,
+                    HttpClientErrorException.create(status, "parse failed", HttpHeaders.EMPTY,
                             ("{\"error\":\"" + code + "\",\"message\":\"parse failed\"}").getBytes(), null));
             Path file = tempDir.resolve(code + ".txt");
             Files.writeString(file, "text");

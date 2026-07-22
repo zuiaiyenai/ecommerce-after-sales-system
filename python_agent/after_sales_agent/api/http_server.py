@@ -52,6 +52,14 @@ MODEL_PREWARM_SERVICE = LocalModelPrewarmService()
 TRACE_HISTORY: deque[dict[str, object]] = deque(maxlen=120)
 AGENT_INTERNAL_TOKEN = resolve_agent_internal_token()
 AGENT_MAX_REQUEST_BYTES = max(1024, int(os.getenv("AGENT_MAX_REQUEST_BYTES", str(2 * 1024 * 1024))))
+KNOWLEDGE_PARSE_JSON_ENVELOPE_BYTES = 1024 * 1024
+DEFAULT_KNOWLEDGE_PARSE_MAX_REQUEST_BYTES = (
+    4 * (((10 * 1024 * 1024) + 2) // 3) + KNOWLEDGE_PARSE_JSON_ENVELOPE_BYTES
+)
+KNOWLEDGE_PARSE_MAX_REQUEST_BYTES = max(
+    1024,
+    int(os.getenv("KNOWLEDGE_PARSE_MAX_REQUEST_BYTES", str(DEFAULT_KNOWLEDGE_PARSE_MAX_REQUEST_BYTES))),
+)
 AGENT_CORS_ALLOW_ORIGIN = os.getenv("AGENT_CORS_ALLOW_ORIGIN", "").strip()
 
 
@@ -108,6 +116,12 @@ def read_http_request_body(headers: Any, stream: Any, *, max_bytes: int) -> byte
         body.extend(chunk)
         if stream.read(2) != b"\r\n":
             raise RequestBodyReadError("invalid_chunk_terminator")
+
+
+def request_body_limit(path: str) -> int:
+    if urlparse(path).path == "/api/knowledge/parse":
+        return KNOWLEDGE_PARSE_MAX_REQUEST_BYTES
+    return AGENT_MAX_REQUEST_BYTES
 
 
 class BoundedAgentHttpServer(ThreadingHTTPServer):
@@ -411,10 +425,13 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             self._raw_request_body = read_http_request_body(
                 self.headers,
                 self.rfile,
-                max_bytes=AGENT_MAX_REQUEST_BYTES,
+                max_bytes=request_body_limit(self.path),
             )
         except RequestBodyReadError as exc:
-            payload: dict[str, Any] = {"error": exc.error}
+            error = exc.error
+            if error == "request_too_large" and urlparse(self.path).path == "/api/knowledge/parse":
+                error = "FILE_TOO_LARGE"
+            payload: dict[str, Any] = {"error": error}
             if exc.max_bytes is not None:
                 payload["max_bytes"] = exc.max_bytes
             self._send_json(payload, status=exc.status)
@@ -456,7 +473,7 @@ class AgentApiHandler(BaseHTTPRequestHandler):
     def _read_json_body(self) -> dict[str, Any]:
         raw_body = getattr(self, "_raw_request_body", None)
         if raw_body is None:
-            raw_body = read_http_request_body(self.headers, self.rfile, max_bytes=AGENT_MAX_REQUEST_BYTES)
+            raw_body = read_http_request_body(self.headers, self.rfile, max_bytes=request_body_limit(self.path))
         body = raw_body.decode("utf-8")
         return json.loads(body or "{}")
 
