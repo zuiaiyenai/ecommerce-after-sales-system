@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import logging
+import random
+import threading
+import time
+from typing import Any, AsyncIterator, Iterator, Protocol
+
+import httpx
+
+
+logger = logging.getLogger(__name__)
+
+
+class LLMError(RuntimeError):
+    retryable = False
+
+
+class LLMTimeoutError(LLMError):
+    retryable = True
+
+
+class LLMRateLimitError(LLMError):
+    retryable = True
+
+
+class LLMAuthenticationError(LLMError):
+    pass
+
+
+class LLMInvalidRequestError(LLMError):
+    pass
+
+
+class LLMProviderUnavailableError(LLMError):
+    retryable = True
+
+
+class LLMContextLengthError(LLMInvalidRequestError):
+    pass
+
+
+class LLMResponseParseError(LLMError):
+    pass
+
+
+class LLMStreamInterruptedError(LLMError):
+    retryable = True
+
+
+class LLMConcurrencyLimitError(LLMError):
+    retryable = True
+
+
+class LLMCircuitOpenError(LLMProviderUnavailableError):
+    pass
+
+
+class LLMClient(Protocol):
+    provider: str
+    model: str
+
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]: ...
+    def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]: ...
+    def close(self) -> None: ...
+
+
+class AsyncLLMClient(Protocol):
+    """Reserved boundary for a future async service; no sync implementation is wrapped here."""
+    provider: str
+    model: str
+
+    async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]: ...
+    def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> AsyncIterator[dict[str, Any]]: ...
+    async def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    provider: str
+    base_url: str
+    api_key: str
+    model: str
+    connect_timeout: float
+    read_timeout: float
+    write_timeout: float
+    pool_timeout: float
+    total_timeout: float
+    max_concurrent: int
+    max_queue_wait: float
+    max_connections: int
+    max_keepalive_connections: int
+    keepalive_expiry: float
+    max_retries: int
+    retry_base_delay: float
+    retry_max_delay: float
+    circuit_failure_threshold: int
+    circuit_recovery_seconds: float
+    ollama_keep_alive: str = "30m"
+
+
+class CircuitBreaker:
+    def __init__(self, threshold: int, recovery_seconds: float) -> None:
+        self.threshold = max(1, threshold)
+        self.recovery_seconds = max(0.1, recovery_seconds)
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._opened_at: float | None = None
+        self._probe_running = False
+
+    def before_call(self) -> None:
+        with self._lock:
+            if self._opened_at is None:
+                return
+            if time.monotonic() - self._opened_at < self.recovery_seconds or self._probe_running:
+                raise LLMCircuitOpenError("LLM provider circuit is open")
+            self._probe_running = True
+
+    def success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+            self._probe_running = False
+
+    def failure(self) -> None:
+        with self._lock:
+            self._probe_running = False
+            self._failures += 1
+            if self._failures >= self.threshold:
+                self._opened_at = time.monotonic()
+
+
+class BaseHTTPModelClient:
+    def __init__(self, config: ProviderConfig, client: httpx.Client | None = None) -> None:
+        self.config = config
+        self.provider = config.provider
+        self.model = config.model
+        self._semaphore = threading.BoundedSemaphore(max(1, config.max_concurrent))
+        self._circuit = CircuitBreaker(config.circuit_failure_threshold, config.circuit_recovery_seconds)
+        self._owns_client = client is None
+        self._client = client or httpx.Client(
+            base_url=config.base_url.rstrip("/"),
+            timeout=httpx.Timeout(connect=config.connect_timeout, read=config.read_timeout, write=config.write_timeout, pool=config.pool_timeout),
+            limits=httpx.Limits(max_connections=config.max_connections, max_keepalive_connections=config.max_keepalive_connections, keepalive_expiry=config.keepalive_expiry),
+            headers={"Authorization": f"Bearer {config.api_key}"} if config.api_key else {},
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def _acquire(self) -> float:
+        started = time.monotonic()
+        if not self._semaphore.acquire(timeout=self.config.max_queue_wait):
+            raise LLMConcurrencyLimitError("LLM request queue wait timeout")
+        return (time.monotonic() - started) * 1000
+
+    def _request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        queue_ms = self._acquire()
+        started = time.monotonic()
+        try:
+            self._circuit.before_call()
+            for attempt in range(self.config.max_retries + 1):
+                try:
+                    response = self._client.post(path, json=payload, timeout=self.config.total_timeout)
+                    if response.status_code >= 400:
+                        raise self._classify_status(response)
+                    result = response.json()
+                    self._circuit.success()
+                    logger.info("llm_call provider=%s model=%s queue_ms=%.1f total_ms=%.1f retries=%d", self.provider, self.model, queue_ms, (time.monotonic() - started) * 1000, attempt)
+                    return result
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    error: LLMError = LLMTimeoutError("LLM request timed out") if isinstance(exc, httpx.TimeoutException) else LLMProviderUnavailableError("LLM network unavailable")
+                except json.JSONDecodeError as exc:
+                    raise LLMResponseParseError("LLM response is not valid JSON") from exc
+                except LLMError as exc:
+                    error = exc
+                if not error.retryable or attempt >= self.config.max_retries:
+                    if error.retryable:
+                        self._circuit.failure()
+                    raise error
+                delay = min(self.config.retry_max_delay, self.config.retry_base_delay * (2 ** attempt))
+                delay *= random.uniform(0.5, 1.5)
+                logger.warning("llm_retry provider=%s model=%s attempt=%d error=%s", self.provider, self.model, attempt + 1, error.__class__.__name__)
+                time.sleep(delay)
+            raise LLMProviderUnavailableError("LLM request failed")
+        finally:
+            self._semaphore.release()
+
+    @staticmethod
+    def _classify_status(response: httpx.Response) -> LLMError:
+        status = response.status_code
+        detail = response.text[:500].lower()
+        if status in (401, 403):
+            return LLMAuthenticationError(f"LLM authentication failed (HTTP {status})")
+        if status == 429:
+            return LLMRateLimitError("LLM rate limit exceeded")
+        if status in (502, 503, 504) or status >= 500:
+            return LLMProviderUnavailableError(f"LLM provider unavailable (HTTP {status})")
+        if "context" in detail and ("length" in detail or "token" in detail):
+            return LLMContextLengthError("LLM context length exceeded")
+        return LLMInvalidRequestError(f"LLM request rejected (HTTP {status})")
+
+
+class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]:
+        payload = {"model": self.model, "messages": messages, "stream": False, **kwargs}
+        if tools:
+            payload["tools"] = tools
+        return self._request("/v1/chat/completions", payload)
+
+    def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        payload = {"model": self.model, "messages": messages, "stream": True, **kwargs}
+        if tools:
+            payload["tools"] = tools
+        self._circuit.before_call()
+        queue_ms = self._acquire()
+        emitted = False
+        started = time.monotonic()
+        try:
+            with self._client.stream("POST", "/v1/chat/completions", json=payload, timeout=self.config.total_timeout) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise self._classify_status(response)
+                for line in response.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise LLMStreamInterruptedError("Invalid LLM stream event") from exc
+                    if not emitted:
+                        logger.info("llm_first_token provider=%s model=%s queue_ms=%.1f first_token_ms=%.1f", self.provider, self.model, queue_ms, (time.monotonic() - started) * 1000)
+                        emitted = True
+                    yield event
+            self._circuit.success()
+        except GeneratorExit:
+            raise
+        except (httpx.HTTPError, LLMError) as exc:
+            self._circuit.failure()
+            if isinstance(exc, LLMError):
+                raise
+            raise LLMStreamInterruptedError("LLM stream interrupted") from exc
+        finally:
+            self._semaphore.release()
+
+
+class OllamaHTTPClient(BaseHTTPModelClient):
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]:
+        options = {"temperature": kwargs.pop("temperature", 0.2), "num_predict": kwargs.pop("max_tokens", 600)}
+        payload = {"model": self.model, "messages": messages, "stream": False, "format": kwargs.pop("response_format", "json"), "keep_alive": self.config.ollama_keep_alive, "options": options}
+        if tools:
+            payload["tools"] = tools
+        return self._request("/api/chat", payload)
+
+    def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        raise LLMInvalidRequestError("Ollama streaming is not exposed by the current Agent HTTP protocol")
+
+
+class FallbackLLMClient:
+    def __init__(self, primary: LLMClient, fallback: LLMClient | None) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.provider = primary.provider
+        self.model = primary.model
+
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return self.primary.chat(messages, tools, **kwargs)
+        except (LLMTimeoutError, LLMRateLimitError, LLMProviderUnavailableError, LLMConcurrencyLimitError) as exc:
+            if self.fallback is None:
+                raise
+            logger.warning("llm_fallback from_provider=%s to_provider=%s reason=%s", self.primary.provider, self.fallback.provider, exc.__class__.__name__)
+            return self.fallback.chat(messages, tools, **kwargs)
+
+    def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        # Only fall back before the first chunk; replaying after output starts duplicates content.
+        try:
+            iterator = self.primary.stream_chat(messages, tools, **kwargs)
+            first = next(iterator)
+        except StopIteration:
+            return
+        except (LLMTimeoutError, LLMRateLimitError, LLMProviderUnavailableError, LLMConcurrencyLimitError):
+            if self.fallback is None:
+                raise
+            yield from self.fallback.stream_chat(messages, tools, **kwargs)
+            return
+        yield first
+        yield from iterator
+
+    def close(self) -> None:
+        self.primary.close()
+        if self.fallback is not None:
+            self.fallback.close()
