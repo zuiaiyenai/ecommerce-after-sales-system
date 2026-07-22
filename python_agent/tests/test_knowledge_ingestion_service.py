@@ -72,6 +72,10 @@ def _parse_payload(*, file_name: str, content: bytes) -> dict[str, object]:
     }
 
 
+def _oversized_table_content() -> bytes:
+    return ("# Limits\n\n|" + ("header " * 800) + "|\n|---|\n|value|").encode("utf-8")
+
+
 def _invoke_parse_route(monkeypatch: pytest.MonkeyPatch, payload: dict[str, object], token: str | None) -> list[tuple[dict[str, object], int]]:
     body = json.dumps(payload).encode("utf-8")
     handler = object.__new__(http_server.AgentApiHandler)
@@ -230,6 +234,8 @@ def test_empty_or_non_dict_model_response_is_not_marked_as_available(response: o
         ("policy.docx", b"not supported", "UNSUPPORTED_FILE_TYPE"),
         ("broken.pdf", b"not a PDF", "FILE_DECODE_FAILED"),
         ("encrypted.pdf", _pdf_bytes("protected", encrypted=True), "PDF_ENCRYPTED"),
+        ("empty.md", b"", "DOCUMENT_CONTENT_EMPTY"),
+        ("empty.txt", b"", "DOCUMENT_CONTENT_EMPTY"),
     ],
 )
 def test_parse_rejects_unsupported_and_unreadable_documents(file_name: str, content: bytes, error: str) -> None:
@@ -237,6 +243,16 @@ def test_parse_rejects_unsupported_and_unreadable_documents(file_name: str, cont
         KnowledgeIngestionService().parse(
             file_name=file_name,
             content=content,
+            knowledge_type="faq",
+            allowed_metadata={},
+        )
+
+
+def test_parse_wraps_expected_chunker_errors_with_stable_code() -> None:
+    with pytest.raises(KnowledgeParseError, match="DOCUMENT_CHUNKING_FAILED"):
+        KnowledgeIngestionService().parse(
+            file_name="limits.md",
+            content=_oversized_table_content(),
             knowledge_type="faq",
             allowed_metadata={},
         )
@@ -266,7 +282,8 @@ def test_text_pdf_chunks_keep_structured_source_page_range() -> None:
 
 
 def test_parse_uses_structured_chunks_without_fixed_overlap() -> None:
-    content = "# Returns\n\n" + ("Complete paragraph. " * 300) + "\n\n# Exchanges\n\nExchange body."
+    returns_body = "".join(f"Sentence {index}. " for index in range(600))
+    content = "# Returns\n\n" + returns_body + "\n\n# Exchanges\n\nExchange body."
     result = KnowledgeIngestionService(classifier=FakeClassifier({})).parse(
         file_name="policy.md",
         content=content.encode("utf-8"),
@@ -274,10 +291,17 @@ def test_parse_uses_structured_chunks_without_fixed_overlap() -> None:
         allowed_metadata={},
     )
 
-    assert len(result.chunks) > 1
+    return_chunks = [chunk for chunk in result.chunks if chunk.heading_path == ["Returns"]]
+    assert len(return_chunks) > 1
+    assert "".join(chunk.text for chunk in return_chunks) == returns_body
     assert result.chunks[-1].heading_path == ["Exchanges"]
-    assert all(chunk.metadata["chunking_strategy"] == "structured_recursive_v1" for chunk in result.chunks)
-    assert all(chunk.metadata["estimated_tokens"] <= 800 for chunk in result.chunks)
+    for chunk in result.chunks:
+        assert chunk.metadata["page_start"] is None
+        assert chunk.metadata["page_end"] is None
+        assert chunk.metadata["content_types"] == ["paragraph"]
+        assert isinstance(chunk.metadata["estimated_tokens"], int)
+        assert 0 < chunk.metadata["estimated_tokens"] <= 800
+        assert chunk.metadata["chunking_strategy"] == "structured_recursive_v1"
 
 
 def test_markdown_and_txt_do_not_fake_page_one() -> None:
@@ -359,6 +383,9 @@ def test_knowledge_parse_route_accepts_real_internal_token(monkeypatch: pytest.M
         ("broken.pdf", b"not a PDF", "FILE_DECODE_FAILED", 422),
         ("encrypted.pdf", _pdf_bytes("protected", encrypted=True), "PDF_ENCRYPTED", 422),
         ("scan.pdf", _pdf_bytes(""), "PDF_TEXT_LAYER_MISSING", 422),
+        ("empty.md", b"", "DOCUMENT_CONTENT_EMPTY", 422),
+        ("empty.txt", b"", "DOCUMENT_CONTENT_EMPTY", 422),
+        ("limits.md", _oversized_table_content(), "DOCUMENT_CHUNKING_FAILED", 422),
     ],
 )
 def test_knowledge_parse_route_maps_parse_errors_without_internal_details(

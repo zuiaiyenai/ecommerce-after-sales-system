@@ -93,7 +93,15 @@ class KnowledgeIngestionService:
             blocks = parse_plain_text(parsed_content)
         else:
             raise KnowledgeParseError("UNSUPPORTED_FILE_TYPE")
-        return suffix[1:], parsed_content, self._chunker.chunk(blocks)
+        if not blocks:
+            raise KnowledgeParseError("DOCUMENT_CONTENT_EMPTY")
+        try:
+            chunks = self._chunker.chunk(blocks)
+        except ValueError as exc:
+            raise KnowledgeParseError("DOCUMENT_CHUNKING_FAILED") from exc
+        if not chunks:
+            raise KnowledgeParseError("DOCUMENT_CONTENT_EMPTY")
+        return suffix[1:], parsed_content, chunks
 
     @staticmethod
     def _decode_text(content: bytes) -> str:

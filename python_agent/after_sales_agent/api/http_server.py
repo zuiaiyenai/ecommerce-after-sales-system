@@ -715,6 +715,8 @@ class AgentApiHandler(BaseHTTPRequestHandler):
                 "PDF_ENCRYPTED": 422,
                 "PDF_TEXT_LAYER_MISSING": 422,
                 "FILE_DECODE_FAILED": 422,
+                "DOCUMENT_CONTENT_EMPTY": 422,
+                "DOCUMENT_CHUNKING_FAILED": 422,
             }
             self._send_json({"error": error if error in statuses else "FILE_DECODE_FAILED"}, status=statuses.get(error, 422))
         except (UnicodeDecodeError, json.JSONDecodeError):
