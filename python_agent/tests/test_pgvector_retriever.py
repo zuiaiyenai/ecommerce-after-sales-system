@@ -235,6 +235,39 @@ class PgVectorRetrievalTest(unittest.TestCase):
             failure_reason="LEXICAL_ERROR",
         )
 
+    def test_relaxed_keyword_database_error_preserves_lexical_failure_contract(self) -> None:
+        class RelaxedKeywordFailureRetriever(PgVectorKnowledgeRetriever):
+            def __init__(self) -> None:
+                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                self.keyword_calls = 0
+
+            def _embed(self, _text):
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                return []
+
+            def _keyword_search(self, **_kwargs):
+                self.keyword_calls += 1
+                if self.keyword_calls == 1:
+                    return []
+                raise RuntimeError("relaxed keyword database unavailable")
+
+        result = _retrieve_with_fake_psycopg(
+            RelaxedKeywordFailureRetriever(),
+            source_type="faq",
+            product_category="headphone",
+            scene="quality_issue",
+        )
+
+        self.assertEqual([], result["hits"])
+        self.assert_degraded_contract(
+            result,
+            mode="lexical_error",
+            filter_level="category_relaxed",
+            failure_reason="LEXICAL_ERROR",
+        )
+
     def test_exhausted_relaxed_plans_use_stable_degraded_contract(self) -> None:
         class EmptyRetriever(PgVectorKnowledgeRetriever):
             def _embed(self, _text):

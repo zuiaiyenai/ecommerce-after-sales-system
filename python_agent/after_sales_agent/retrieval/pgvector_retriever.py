@@ -484,6 +484,22 @@ class PgVectorKnowledgeRetriever:
                     failure_reason="LEXICAL_ERROR",
                 )
             lexical = self._apply_filter_contract(lexical, plan)
+            if lexical.get("failure_reason") == "LEXICAL_ERROR":
+                lexical_trace = lexical.setdefault("trace", {})
+                lexical_trace.update(
+                    {
+                        "strict_filters": strict_filters,
+                        "filters": relaxed_filters,
+                        "fallback_level": plan.level,
+                        "fallback_attempts": attempts,
+                        "vector_latency_ms": vector_latency_ms,
+                    }
+                )
+                return self._finalize_result(
+                    lexical,
+                    plan=plan,
+                    failure_reason="LEXICAL_ERROR",
+                )
             attempts.append(
                 {
                     "level": plan.level,
