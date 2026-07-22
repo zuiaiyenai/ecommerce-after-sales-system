@@ -93,20 +93,7 @@ class StructuredChunker:
                 )
             else:
                 units_to_emit = [unit]
-            pieces.extend(
-                _Piece(
-                    DocumentBlock(
-                        block.block_type,
-                        emitted,
-                        block.heading_path,
-                        block.page_start,
-                        block.page_end,
-                        block.splittable,
-                    )
-                )
-                for emitted in units_to_emit
-                if emitted.strip()
-            )
+            pieces.extend(self._pieces_for_parts(block, units_to_emit))
         return pieces
 
     def _smallest_units(self, block: DocumentBlock) -> list[str]:
@@ -174,25 +161,38 @@ class StructuredChunker:
         ]
 
     def _fallback_piece_split(self, block: DocumentBlock) -> list[_Piece]:
-        return [
-            _Piece(
-                DocumentBlock(
-                    block.block_type,
-                    part,
-                    block.heading_path,
-                    block.page_start,
-                    block.page_end,
-                    block.splittable,
-                ),
-                combineable=False,
+        parts = split_by_estimated_tokens(
+            block.text,
+            self.config.hard_max_tokens,
+            self.config.hard_max_chars,
+        )
+        return self._pieces_for_parts(block, parts, combineable=False)
+
+    def _pieces_for_parts(
+        self,
+        block: DocumentBlock,
+        parts: Sequence[str],
+        *,
+        combineable: bool = True,
+    ) -> list[_Piece]:
+        pieces: list[_Piece] = []
+        for part in parts:
+            if not part.strip():
+                raise ValueError("whitespace run exceeds character limit")
+            pieces.append(
+                _Piece(
+                    DocumentBlock(
+                        block.block_type,
+                        part,
+                        block.heading_path,
+                        block.page_start,
+                        block.page_end,
+                        block.splittable,
+                    ),
+                    combineable=combineable,
+                )
             )
-            for part in split_by_estimated_tokens(
-                block.text,
-                self.config.hard_max_tokens,
-                self.config.hard_max_chars,
-            )
-            if part.strip()
-        ]
+        return pieces
 
     def _combine_adjacent(self, pieces: Sequence[_Piece]) -> list[_Candidate]:
         candidates: list[_Candidate] = []

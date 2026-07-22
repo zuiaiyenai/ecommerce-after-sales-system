@@ -145,3 +145,19 @@ def test_oversized_code_split_preserves_blank_and_indented_lines() -> None:
     assert "".join(chunk.text for chunk in chunks) == text
     assert all(chunk.text.endswith("\n") for chunk in chunks)
     assert all(chunk.estimated_tokens <= config.hard_max_tokens for chunk in chunks)
+
+
+@pytest.mark.parametrize("block_type", ["code", "list"])
+def test_rejects_unattachable_oversized_whitespace_runs(block_type: str) -> None:
+    config = ChunkingConfig(
+        target_tokens=4,
+        hard_max_tokens=8,
+        hard_max_chars=10,
+        min_merge_tokens=2,
+    )
+    whitespace_run = " " * (config.hard_max_chars + 1)
+    text = f"first\n{whitespace_run}\nsecond\n"
+    block = DocumentBlock(block_type, text, ("Whitespace",))
+
+    with pytest.raises(ValueError, match="whitespace run.*character limit"):
+        StructuredChunker(config).chunk([block])
