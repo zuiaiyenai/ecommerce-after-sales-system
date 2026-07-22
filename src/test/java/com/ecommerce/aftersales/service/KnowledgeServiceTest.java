@@ -20,6 +20,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -107,11 +108,16 @@ class KnowledgeServiceTest {
             assertThat(synchronizations).hasSize(1);
 
             synchronizations.getFirst().afterCommit();
-            verify(asyncService).processTextImport(42L, request.getContent());
+            verify(asyncService).processTextImport(42L, request.getContent(), 1L);
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
+        ArgumentCaptor<String> insertSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(insertSql.capture(), eq(Long.class), any(Object[].class));
+        assertThat(insertSql.getValue())
+                .contains("review_status", "revision", "published_revision")
+                .contains("'PROCESSING'", "1", "NULL");
     }
 
     @Test
@@ -152,7 +158,36 @@ class KnowledgeServiceTest {
         assertThat(String.valueOf(values[10]))
                 .contains("\"owner\":\"after-sales\"")
                 .contains("\"ingestionStatus\":\"PROCESSING\"");
-        verify(asyncService).processTextImport(77L, request.getContent());
+        verify(asyncService).processTextImport(77L, request.getContent(), 1L);
+    }
+
+    @Test
+    void compatibilityFileImportInitializesProcessingRevisionAndDispatchesRevisionOneAfterCommit() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(43L);
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString());
+        MockMultipartFile file = new MockMultipartFile("file", "policy.md", "text/markdown", "# policy".getBytes());
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.createFileImport("Policy", "faq", "MERCHANT", "MERCHANT_DEMO", "ENABLED",
+                    "FAQ-43", null, null, null, List.of(), file);
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).processFileImport(eq(43L), anyString(), eq("policy.md"), eq(1L));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+
+        ArgumentCaptor<String> insertSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(insertSql.capture(), eq(Long.class), any(Object[].class));
+        assertThat(insertSql.getValue())
+                .contains("review_status", "revision", "published_revision")
+                .contains("'PROCESSING'", "1", "NULL");
     }
 
     @Test
@@ -199,6 +234,55 @@ class KnowledgeServiceTest {
                 .contains("\"owner\":\"new\"")
                 .doesNotContain("\"deleted\":true");
         assertThat(sql.getAllValues()).anyMatch(value -> value.contains("UPDATE knowledge_chunk kc"));
+        verifyNoInteractions(asyncService);
+    }
+
+    @Test
+    void contentUpdateAtomicallyClaimsRevisionAndDispatchesOnlyAfterCommit() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = spy(new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v3.0"), tempDir.toString()));
+        KnowledgeUploadDto.KnowledgeInfo current = currentKnowledge(4L, "PUBLISHED");
+        doReturn(current).when(service).getKnowledgeById(42L);
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(5L);
+        KnowledgeUploadDto.UpdateRequest request = new KnowledgeUploadDto.UpdateRequest();
+        request.setContent("new body");
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.updateKnowledge(42L, request);
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).processTextImport(42L, "new body", 5L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+
+        ArgumentCaptor<String> claimSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(claimSql.capture(), eq(Long.class), any(Object[].class));
+        assertThat(claimSql.getValue())
+                .contains("revision = revision + 1", "review_status = 'PROCESSING'", "content = ?", "RETURNING revision")
+                .contains("review_status IN", "- 'errorCode' - 'errorMessage'")
+                .doesNotContain("published_revision =");
+    }
+
+    @Test
+    void contentUpdateClaimFailureReturnsConflictWithoutDispatchingWorker() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = spy(new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v3.0"), tempDir.toString()));
+        doReturn(currentKnowledge(4L, "PUBLISHED")).when(service).getKnowledgeById(42L);
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenThrow(new org.springframework.dao.EmptyResultDataAccessException(1));
+        KnowledgeUploadDto.UpdateRequest request = new KnowledgeUploadDto.UpdateRequest();
+        request.setContent("new body");
+
+        assertThatThrownBy(() -> service.updateKnowledge(42L, request))
+                .isInstanceOf(com.ecommerce.aftersales.common.KnowledgeRevisionConflictException.class);
         verifyNoInteractions(asyncService);
     }
 
@@ -377,6 +461,55 @@ class KnowledgeServiceTest {
     }
 
     @Test
+    void reindexClaimsTextRevisionAndDispatchesTheExplicitRevisionAfterCommit() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = new KnowledgeService(jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString());
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class))).thenReturn(List.of(43L));
+        when(jdbcTemplate.queryForList(startsWith("SELECT COALESCE"), eq(String.class), eq(43L))).thenReturn(List.of("TEXT"));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(43L))).thenReturn(10L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.reindexAll();
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).reprocessDocument(43L, 10L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        ArgumentCaptor<String> claimSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(claimSql.capture(), eq(Long.class), eq(43L));
+        assertThat(claimSql.getValue()).contains("revision = revision + 1", "review_status = 'PROCESSING'")
+                .contains("ingestionSourceType", "'FILE'", "'TEXT'")
+                .doesNotContain("published_revision =");
+    }
+
+    @Test
+    void syncTextDocumentClaimsRevisionBeforeDispatchingTheWorker() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = spy(new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString()));
+        doReturn(currentKnowledge(10L, "PUBLISHED")).when(service).getKnowledgeById(43L);
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(43L))).thenReturn(11L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.syncKnowledge(43L);
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).reprocessDocument(43L, 11L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
     void reindexDoesNotDispatchWhenAFileClaimIsStaleOrDeleted() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
@@ -416,7 +549,19 @@ class KnowledgeServiceTest {
                 "merchants", Map.of("MERCHANT_DEMO", Map.of(), "MERCHANT_001", Map.of())
         ));
         when(policyCatalogService.getMerchantPolicy(any()))
-                .thenReturn(Map.of("service_policy", Map.of("policy_version", policyVersion)));
+                .thenReturn(Map.of("service_policy", Map.of(
+                        "policy_code", "AFTER_SALES_POLICY", "policy_version", policyVersion)));
         return new KnowledgeMetadataPolicy(policyCatalogService);
     }
+
+    private KnowledgeUploadDto.KnowledgeInfo currentKnowledge(long revision, String reviewStatus) {
+        KnowledgeUploadDto.KnowledgeInfo current = new KnowledgeUploadDto.KnowledgeInfo();
+        current.setSourceType("faq");
+        current.setMerchantCode("MERCHANT_DEMO");
+        current.setMetadata(Map.of("scope", "MERCHANT", "errorCode", "OLD", "errorMessage", "old"));
+        current.setRevision(revision);
+        current.setReviewStatus(reviewStatus);
+        return current;
+    }
+
 }

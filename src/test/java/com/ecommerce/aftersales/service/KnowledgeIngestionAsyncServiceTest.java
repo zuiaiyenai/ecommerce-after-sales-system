@@ -85,7 +85,7 @@ class KnowledgeIngestionAsyncServiceTest {
         KnowledgeIngestionAsyncService service = new KnowledgeIngestionAsyncService(
                 jdbcTemplate, restTemplate, properties, policy, draftService);
 
-        service.processTextImport(42L, "功能异常时提供问题凭证。");
+        service.processTextImport(42L, "功能异常时提供问题凭证。", 7L);
 
         ArgumentCaptor<HttpEntity> request = ArgumentCaptor.forClass(HttpEntity.class);
         verify(restTemplate).postForObject(eq("http://agent.internal/knowledge/parse"), request.capture(), eq(Map.class));
@@ -212,17 +212,13 @@ class KnowledgeIngestionAsyncServiceTest {
     }
 
     @Test
-    void legacyNoRevisionEntryPointDoesNotReprocessFileDocuments() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
-        RestTemplate restTemplate = mock(RestTemplate.class);
-        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
-        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
-                "id", 42L, "content", "", "metadata", "{\"ingestionSourceType\":\"FILE\"}")));
-
-        new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, new AgentGatewayProperties(), mock(KnowledgeMetadataPolicy.class), draftService)
-                .reprocessDocument(42L);
-
-        verifyNoInteractions(restTemplate, draftService);
+    void workersExposeOnlyExplicitRevisionEntryPoints() {
+        assertThat(java.util.Arrays.stream(KnowledgeIngestionAsyncService.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("processTextImport"))
+                .map(java.lang.reflect.Method::getParameterCount)).containsExactly(3);
+        assertThat(java.util.Arrays.stream(KnowledgeIngestionAsyncService.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("reprocessDocument"))
+                .map(java.lang.reflect.Method::getParameterCount)).containsExactly(2);
     }
 
     @Test
@@ -317,4 +313,5 @@ class KnowledgeIngestionAsyncServiceTest {
         verify(publishService).commitPublishedRevision(eq(42L), eq(6L), any());
         verify(publishService, never()).markEmbeddingFailed(any(), any(Long.class), anyString());
     }
+
 }

@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
 import com.ecommerce.aftersales.common.enums.ErrorCode;
 import com.ecommerce.aftersales.config.KnowledgeUploadProperties;
 import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
@@ -118,7 +119,7 @@ public class KnowledgeService {
                 metadata
         );
 
-        runAfterCommit(() -> asyncService.processTextImport(documentId, request.getContent()));
+        runAfterCommit(() -> asyncService.processTextImport(documentId, request.getContent(), 1L));
         return Map.of(
                 "documentId", documentId,
                 "ingestionStatus", "PROCESSING",
@@ -176,7 +177,8 @@ public class KnowledgeService {
         runAfterCommit(() -> asyncService.processFileImport(
                 documentId,
                 storedFile.storagePath().toString(),
-                storedFile.fileName()
+                storedFile.fileName(),
+                1L
         ));
         return Map.of(
                 "documentId", documentId,
@@ -435,49 +437,68 @@ public class KnowledgeService {
         String normalizedPolicyVersion = policyVersionProvided
                 ? metadataPolicy.resolvePolicyVersion(current.getSourceType(), effectiveMerchantCode)
                 : null;
-        pgJdbcTemplate.update(
-                """
-                UPDATE knowledge_document
-                SET title = COALESCE(?, title),
-                    merchant_code = COALESCE(?, merchant_code),
-                    status = COALESCE(?, status),
-                    product_category = CASE WHEN ? THEN ? ELSE product_category END,
-                    scene = CASE WHEN ? THEN ? ELSE scene END,
-                    intent = CASE WHEN ? THEN ? ELSE intent END,
-                    policy_version = CASE WHEN ? THEN ? ELSE policy_version END,
-                    tags = CASE WHEN ? THEN ?::jsonb ELSE tags END,
-                    metadata = ?::jsonb,
-                    updated_at = NOW()
-                WHERE id = ?
-                """,
-                request.getTitle(),
-                normalizeOptional(request.getMerchantCode()),
-                request.getStatus(),
-                productCategoryProvided,
-                normalizedProductCategory,
-                sceneProvided,
-                normalizedScene,
-                intentProvided,
-                normalizedIntent,
-                policyVersionProvided,
-                normalizedPolicyVersion,
-                tagsProvided,
-                toNullableJson(normalizeTags(request.getTags())),
-                toJson(metadata),
-                id
-        );
-
-        if (request.getContent() != null) {
+        if (request.getContent() == null) {
+            pgJdbcTemplate.update(
+                    """
+                    UPDATE knowledge_document
+                    SET title = COALESCE(?, title),
+                        merchant_code = COALESCE(?, merchant_code),
+                        status = COALESCE(?, status),
+                        product_category = CASE WHEN ? THEN ? ELSE product_category END,
+                        scene = CASE WHEN ? THEN ? ELSE scene END,
+                        intent = CASE WHEN ? THEN ? ELSE intent END,
+                        policy_version = CASE WHEN ? THEN ? ELSE policy_version END,
+                        tags = CASE WHEN ? THEN ?::jsonb ELSE tags END,
+                        metadata = ?::jsonb,
+                        updated_at = NOW()
+                    WHERE id = ?
+                    """,
+                    request.getTitle(), normalizeOptional(request.getMerchantCode()), request.getStatus(),
+                    productCategoryProvided, normalizedProductCategory, sceneProvided, normalizedScene,
+                    intentProvided, normalizedIntent, policyVersionProvided, normalizedPolicyVersion,
+                    tagsProvided, toNullableJson(normalizeTags(request.getTags())), toJson(metadata), id
+            );
+        } else {
             metadata.put("ingestionStatus", "PROCESSING");
             metadata.put("ingestionSourceType", "TEXT");
-            metadata.put("errorMessage", null);
-            pgJdbcTemplate.update(
-                    "UPDATE knowledge_document SET content = ?, metadata = ?::jsonb, updated_at = NOW() WHERE id = ?",
-                    request.getContent(),
-                    toJson(metadata),
-                    id
-            );
-            runAfterCommit(() -> asyncService.processTextImport(id, request.getContent()));
+            metadata.remove("errorCode");
+            metadata.remove("errorMessage");
+            Long targetRevision;
+            try {
+                targetRevision = pgJdbcTemplate.queryForObject(
+                        """
+                        UPDATE knowledge_document
+                        SET title = COALESCE(?, title),
+                            merchant_code = COALESCE(?, merchant_code),
+                            status = COALESCE(?, status),
+                            product_category = CASE WHEN ? THEN ? ELSE product_category END,
+                            scene = CASE WHEN ? THEN ? ELSE scene END,
+                            intent = CASE WHEN ? THEN ? ELSE intent END,
+                            policy_version = CASE WHEN ? THEN ? ELSE policy_version END,
+                            tags = CASE WHEN ? THEN ?::jsonb ELSE tags END,
+                            content = ?, metadata = (?::jsonb - 'errorCode' - 'errorMessage'),
+                            revision = revision + 1, review_status = 'PROCESSING', updated_at = NOW()
+                        WHERE id = ? AND revision = ?
+                          AND review_status IN ('PUBLISHED', 'REVIEW_REQUIRED', 'PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED')
+                          AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                        RETURNING revision
+                        """,
+                        Long.class,
+                        request.getTitle(), normalizeOptional(request.getMerchantCode()), request.getStatus(),
+                        productCategoryProvided, normalizedProductCategory, sceneProvided, normalizedScene,
+                        intentProvided, normalizedIntent, policyVersionProvided, normalizedPolicyVersion,
+                        tagsProvided, toNullableJson(normalizeTags(request.getTags())), request.getContent(),
+                        toJson(metadata), id, current.getRevision()
+                );
+            } catch (EmptyResultDataAccessException ignored) {
+                targetRevision = null;
+            }
+            if (targetRevision == null) {
+                throw new KnowledgeRevisionConflictException(
+                        current.getRevision() == null ? 0L : current.getRevision(), current.getReviewStatus());
+            }
+            long frozenRevision = targetRevision;
+            runAfterCommit(() -> asyncService.processTextImport(id, request.getContent(), frozenRevision));
         }
 
         syncChunkMetadata(id);
@@ -524,20 +545,12 @@ public class KnowledgeService {
     }
 
     private void scheduleReprocess(Long documentId) {
-        List<String> sources = pgJdbcTemplate.queryForList(
-                "SELECT COALESCE(metadata ->> 'ingestionSourceType', '') FROM knowledge_document WHERE id = ? AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'",
-                String.class, documentId);
-        if (sources.isEmpty()) return;
-        if (!"FILE".equalsIgnoreCase(sources.getFirst())) {
-            runAfterCommit(() -> asyncService.reprocessDocument(documentId));
-            return;
-        }
         Long targetRevision;
         try {
             targetRevision = pgJdbcTemplate.queryForObject("""
                     UPDATE knowledge_document SET revision = revision + 1, review_status = 'PROCESSING',
                         metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
-                    WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') = 'FILE'
+                    WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') IN ('FILE', 'TEXT')
                       AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                       AND review_status IN ('PUBLISHED', 'REVIEW_REQUIRED', 'PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED')
                     RETURNING revision
@@ -572,8 +585,8 @@ public class KnowledgeService {
                 INSERT INTO knowledge_document (
                     source_type, source_code, merchant_code, title, content,
                     product_category, scene, intent, policy_version, tags,
-                    metadata, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, NOW(), NOW())
+                    metadata, status, review_status, revision, published_revision, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, 'PROCESSING', 1, NULL, NOW(), NOW())
                 RETURNING id
                 """,
                 Long.class,

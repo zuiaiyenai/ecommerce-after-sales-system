@@ -117,13 +117,7 @@ public class KnowledgeIngestionAsyncService {
     }
 
     @Async("knowledgeIngestionExecutor")
-    public void processTextImport(Long documentId, String content) {
-        Map<String, Object> document = loadDocument(documentId);
-        if (document == null) {
-            log.warn("Skip text import, document not found: {}", documentId);
-            return;
-        }
-        long targetRevision = revision(document);
+    public void processTextImport(Long documentId, String content, long targetRevision) {
         try {
             processParsedFile(documentId, bytes(content), textFileName(documentId), targetRevision);
         } catch (Exception e) {
@@ -147,32 +141,6 @@ public class KnowledgeIngestionAsyncService {
             processParsedFile(documentId, Files.readAllBytes(path), fileName, targetRevision);
         } catch (Exception e) {
             log.error("Failed to process knowledge file import, documentId={}", documentId, e);
-            draftService.markParseFailed(documentId, targetRevision, errorCode(e), safeErrorMessage(e));
-        }
-    }
-
-    @Async("knowledgeIngestionExecutor")
-    public void reprocessDocument(Long documentId) {
-        Map<String, Object> document = loadDocument(documentId);
-        if (document == null) {
-            log.warn("Skip reprocess, document not found: {}", documentId);
-            return;
-        }
-        Map<String, Object> metadata = readMetadata(document.get("metadata"));
-        if ("FILE".equalsIgnoreCase(stringValue(metadata.get("ingestionSourceType")))) {
-            log.warn("Skip file reprocess without a claimed revision, documentId={}", documentId);
-            return;
-        }
-        if (!"PROCESSING".equalsIgnoreCase(stringValue(document.get("review_status")))) {
-            log.warn("Skip text reprocess without a claimed revision, documentId={}", documentId);
-            return;
-        }
-        long targetRevision = revision(document);
-        try {
-            processParsedFile(documentId, bytes(stringValue(document.get("content"))),
-                    textFileName(documentId), targetRevision);
-        } catch (Exception e) {
-            log.error("Failed to reprocess text document {}, revision={}", documentId, targetRevision, e);
             draftService.markParseFailed(documentId, targetRevision, errorCode(e), safeErrorMessage(e));
         }
     }
@@ -318,12 +286,6 @@ public class KnowledgeIngestionAsyncService {
 
     private String stringValue(Object value) {
         return value == null ? null : Objects.toString(value, null);
-    }
-
-    private long revision(Map<String, Object> document) {
-        Object value = document.get("revision");
-        if (value instanceof Number number) return number.longValue();
-        return Long.parseLong(String.valueOf(value));
     }
 
     private String textFileName(Long documentId) {
