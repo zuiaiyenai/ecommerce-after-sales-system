@@ -110,22 +110,57 @@ class KnowledgeAdminService:
                         "chunk_index": index,
                         "chunk_text": chunk_text,
                         "metadata": metadata,
+                        "revision": row["revision"],
+                        "product_categories": row["product_categories"],
+                        "scenes": row["scenes"],
+                        "intents": row["intents"],
+                        "search_text": f"{row['title']}\n{chunk_text}".strip(),
                     }
                 )
 
         try:
-            with psycopg.connect(dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM knowledge_chunk")
-                    for start in range(0, len(chunk_records), batch_size):
-                        batch = chunk_records[start : start + batch_size]
-                        vectors = self.retriever.embed_many([record["chunk_text"] for record in batch])
-                        for record, vector in zip(batch, vectors):
+            embedded_records: list[tuple[dict[str, Any], list[float]]] = []
+            for start in range(0, len(chunk_records), batch_size):
+                batch = chunk_records[start : start + batch_size]
+                vectors = self.retriever.embed_many([record["chunk_text"] for record in batch])
+                if not isinstance(vectors, list) or len(vectors) != len(batch):
+                    raise RuntimeError("EMBEDDING_COUNT_MISMATCH")
+                embedded_records.extend(zip(batch, vectors))
+
+            document_ids = [row["document_id"] for row in rows]
+            if document_ids:
+                with psycopg.connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT id, COALESCE(published_revision, revision), updated_at
+                            FROM knowledge_document
+                            WHERE id = ANY(%s)
+                              AND status = 1
+                              AND review_status = 'PUBLISHED'
+                              AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                            FOR UPDATE
+                            """,
+                            (document_ids,),
+                        )
+                        locked = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+                        expected = {
+                            row["document_id"]: (row["revision"], row["updated_at"])
+                            for row in rows
+                        }
+                        if locked != expected:
+                            raise RuntimeError("REINDEX_SOURCE_CHANGED")
+                        cur.execute(
+                            "DELETE FROM knowledge_chunk WHERE document_id = ANY(%s)",
+                            (document_ids,),
+                        )
+                        for record, vector in embedded_records:
                             cur.execute(
                                 """
                                 INSERT INTO knowledge_chunk
-                                  (document_id, document_type, chunk_index, chunk_text, embedding, metadata)
-                                VALUES (%s, %s, %s, %s, %s::vector, %s)
+                                  (document_id, document_type, chunk_index, chunk_text, embedding, metadata,
+                                   revision, product_categories, scenes, intents, heading_path, search_text)
+                                VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s)
                                 """,
                                 (
                                     record["document_id"],
@@ -134,9 +169,28 @@ class KnowledgeAdminService:
                                     record["chunk_text"],
                                     self.retriever._vector_literal(vector),
                                     Jsonb(record["metadata"]),
+                                    record["revision"],
+                                    record["product_categories"],
+                                    record["scenes"],
+                                    record["intents"],
+                                    [],
+                                    record["search_text"],
                                 ),
                             )
-                conn.commit()
+                        cur.execute(
+                            """
+                            UPDATE knowledge_document
+                            SET published_revision = COALESCE(published_revision, revision),
+                                updated_at = NOW()
+                            WHERE id = ANY(%s)
+                              AND status = 1
+                              AND review_status = 'PUBLISHED'
+                              AND published_revision IS NULL
+                              AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
+                            """,
+                            (document_ids,),
+                        )
+                    conn.commit()
         except Exception as exc:
             raise RuntimeError(f"pgvector_error: {exc}") from exc
 
@@ -221,9 +275,12 @@ class KnowledgeAdminService:
                         policy_version,
                         tags,
                         metadata,
-                        merchant_code
+                        merchant_code,
+                        COALESCE(published_revision, revision) AS target_revision,
+                        updated_at
                     FROM knowledge_document
                     WHERE status = 1
+                      AND review_status = 'PUBLISHED'
                       AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                     ORDER BY id
                     """
@@ -252,6 +309,11 @@ class KnowledgeAdminService:
                             "title": row[3],
                             "text": f"{row[3]}\n{row[4]}",
                             "metadata": metadata,
+                            "revision": row[12],
+                            "updated_at": row[13],
+                            "product_categories": [row[5]] if row[5] else None,
+                            "scenes": [row[6]] if row[6] else None,
+                            "intents": [row[7]] if row[7] else None,
                         }
                     )
         return rows

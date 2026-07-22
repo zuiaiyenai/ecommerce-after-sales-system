@@ -4,7 +4,7 @@
 
 分支：`codex/integrate-emotion`
 
-当前实现 HEAD：`ba5cc21`
+核心分层实现基线：`ba5cc21`；真实环境 reindex 安全收口见当前分支最新提交。
 
 ## 当前结论
 
@@ -50,6 +50,16 @@ Task 1-10 的代码链路均已搭建并提交。当前阶段按“先完成全�
 
 Windows pytest 退出阶段仍可能打印临时目录 `PermissionError`，但测试命令退出码为 0；这是环境清理提示，不是用例失败。
 
+## 真实环境验收（2026-07-22）
+
+- 已备份本地 `after_sales_rag`，备份文件位于 `.superpowers/after_sales_rag-before-layered-validation-20260722.sql`。
+- 已在保留数据卷的前提下执行生命周期与过滤元数据正式 migration；`vector`、`pg_trgm`、生命周期字段及 `published_knowledge_chunk` 均已生效。
+- 使用真实 DashScope `text-embedding-v3` 重建 30 篇文档，得到 30 个 chunk；30 条均具有 revision、结构化过滤字段与非空 `search_text`，published view 可见 30 条。
+- Reranker 采用阿里云官方推荐的 `qwen3-rerank`，Workspace 兼容接口与现有客户端响应契约匹配。真实四阶段查询结果为 `hybrid_reranked`，Dense=2、Keyword=1、RRF=2、Rerank=2，目标政策 rerank score 为 1.0，`trusted_policy_eligible=true`。
+- Java `/api/actuator/health` 为 `UP`，Agent `/api/health` 返回 `ok=true`。
+- 真实联调暴露并修复了旧库 reindex 安全问题：现在仅处理 `PUBLISHED` 文档，严格校验 embedding 数量，写入前锁定并复核 revision/updated_at，只删除当前批次 chunk，且只为空 pointer 的 legacy published 文档回填 revision。
+- Rerank 凭据当前通过本次 Docker 启动进程注入，未把密钥复制进仓库。后续重新创建容器时应在受保护的 Compose 环境中设置 `RERANK_PROVIDER=dashscope`、Workspace `/compatible-api/v1/reranks` 地址、对应 API Key、`RERANK_MODEL=qwen3-rerank` 和 `RAG_LAYERED_RETRIEVAL_ENABLED=true`。
+
 ## 后续验收分支应做什么
 
 1. 准备带可靠标签与命中元数据的 holdout 数据，执行四模式离线评估和安全门。
@@ -60,7 +70,7 @@ Windows pytest 退出阶段仍可能打印临时目录 `PermissionError`，但�
 
 ## 接手方式
 
-实现提交是一条线性历史。新分支应以当前分支 HEAD 为基线；若采用 cherry-pick，则从 `52887c9` 开始按顺序取到本交接文档提交，核心代码收口点为 `ba5cc21`。不要对当前共享工作区执行 `git reset --hard`、`git clean`、`git add .`；工作区还有大量不属于本任务的用户改动。
+实现提交是一条线性历史。新分支应以当前分支 HEAD 为基线；若采用 cherry-pick，则从 `52887c9` 开始按顺序取到本交接文档提交，核心分层实现基线为 `ba5cc21`，真实环境 reindex 安全收口见当前分支最新提交。不要对当前共享工作区执行 `git reset --hard`、`git clean`、`git add .`；工作区还有大量不属于本任务的用户改动。
 
 详细实施计划：`docs/superpowers/plans/2026-07-21-layered-rag-implementation.md`
 

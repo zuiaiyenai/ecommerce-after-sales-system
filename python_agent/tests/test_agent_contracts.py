@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import after_sales_agent.domain_models as domain_models
 from after_sales_agent.application.after_sales_workflow import LangGraphAfterSalesAgent
@@ -526,6 +527,127 @@ class AgentContractTest(unittest.TestCase):
 
         retriever_type.assert_called_once()
         self.assertEqual(2, retriever_type.return_value.retrieve.call_count)
+
+    def test_reindex_rebuilds_published_layered_chunk_contract(self) -> None:
+        retriever = Mock()
+        retriever.embed_many.return_value = [[0.1, 0.2]]
+        service = KnowledgeAdminService(retriever=retriever)
+        service._active_document_rows = Mock(return_value=[{
+            "document_id": 29,
+            "document_type": "guideline",
+            "title": "售后自动转人工边界",
+            "text": "图片无法核验问题现象时转人工。",
+            "metadata": {
+                "product_category": None,
+                "scene": "human_handoff",
+                "intent": "guardrail",
+            },
+            "revision": 3,
+            "updated_at": datetime(2026, 7, 22, 10, 0),
+            "product_categories": None,
+            "scenes": ["human_handoff"],
+            "intents": ["guardrail"],
+        }])
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [(29, 3, datetime(2026, 7, 22, 10, 0))]
+
+        with patch.dict(os.environ, {"PGVECTOR_DSN": "postgresql://test"}), patch(
+            "psycopg.connect", return_value=connection
+        ):
+            result = service.reindex()
+
+        statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        delete_sql = next(statement for statement in statements if "DELETE FROM knowledge_chunk" in statement)
+        self.assertIn("document_id = ANY", delete_sql)
+        self.assertTrue(any("FOR UPDATE" in statement for statement in statements))
+        insert_sql = next(statement for statement in statements if "INSERT INTO knowledge_chunk" in statement)
+        self.assertIn("revision", insert_sql)
+        self.assertIn("product_categories", insert_sql)
+        self.assertIn("scenes", insert_sql)
+        self.assertIn("intents", insert_sql)
+        self.assertIn("search_text", insert_sql)
+        pointer_sql = next(statement for statement in statements if "published_revision = COALESCE" in statement)
+        self.assertIn("id = ANY", pointer_sql)
+        self.assertIn("review_status = 'PUBLISHED'", pointer_sql)
+        insert_params = next(
+            call.args[1] for call in cursor.execute.call_args_list
+            if "INSERT INTO knowledge_chunk" in str(call.args[0])
+        )
+        self.assertEqual(3, insert_params[6])
+        self.assertEqual(["human_handoff"], insert_params[8])
+        self.assertEqual(["guardrail"], insert_params[9])
+        self.assertIn("图片无法核验问题现象", insert_params[11])
+        self.assertEqual({"ok": True, "documents": 1, "chunks": 1}, result)
+
+    def test_reindex_source_query_only_reads_published_documents(self) -> None:
+        service = KnowledgeAdminService(retriever=Mock())
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+
+        with patch("psycopg.connect", return_value=connection):
+            self.assertEqual([], service._active_document_rows("postgresql://test"))
+
+        source_sql = str(cursor.execute.call_args.args[0])
+        self.assertIn("review_status = 'PUBLISHED'", source_sql)
+
+    def test_reindex_rejects_incomplete_embedding_batch_before_database_write(self) -> None:
+        retriever = Mock()
+        retriever.embed_many.return_value = []
+        service = KnowledgeAdminService(retriever=retriever)
+        service._active_document_rows = Mock(return_value=[{
+            "document_id": 29,
+            "document_type": "guideline",
+            "title": "售后自动转人工边界",
+            "text": "图片无法核验问题现象时转人工。",
+            "metadata": {},
+            "revision": 1,
+            "updated_at": "2026-07-22T10:00:00",
+            "product_categories": None,
+            "scenes": ["human_handoff"],
+            "intents": ["guardrail"],
+        }])
+        connect = MagicMock()
+
+        with patch.dict(os.environ, {"PGVECTOR_DSN": "postgresql://test"}), patch(
+            "psycopg.connect", connect
+        ):
+            with self.assertRaisesRegex(RuntimeError, "EMBEDDING_COUNT_MISMATCH"):
+                service.reindex()
+
+        connect.assert_not_called()
+
+    def test_reindex_aborts_when_published_source_changes_before_write_lock(self) -> None:
+        retriever = Mock()
+        retriever.embed_many.return_value = [[0.1, 0.2]]
+        service = KnowledgeAdminService(retriever=retriever)
+        service._active_document_rows = Mock(return_value=[{
+            "document_id": 29,
+            "document_type": "guideline",
+            "title": "售后自动转人工边界",
+            "text": "旧的已发布内容",
+            "metadata": {},
+            "revision": 1,
+            "updated_at": datetime(2026, 7, 22, 10, 0),
+            "product_categories": None,
+            "scenes": ["human_handoff"],
+            "intents": ["guardrail"],
+        }])
+        connection = MagicMock()
+        active_connection = connection.__enter__.return_value
+        cursor = active_connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+
+        with patch.dict(os.environ, {"PGVECTOR_DSN": "postgresql://test"}), patch(
+            "psycopg.connect", return_value=connection
+        ):
+            with self.assertRaisesRegex(RuntimeError, "REINDEX_SOURCE_CHANGED"):
+                service.reindex()
+
+        statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        self.assertFalse(any("DELETE FROM knowledge_chunk" in statement for statement in statements))
+        active_connection.commit.assert_not_called()
 
 
 if __name__ == "__main__":
