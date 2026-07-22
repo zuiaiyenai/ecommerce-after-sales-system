@@ -47,7 +47,7 @@ public class KnowledgeService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Set<String> RESERVED_METADATA_KEYS = Set.of(
             "scope", "ingestionStatus", "ingestionSourceType", "errorMessage",
-            "chunkCount", "fileName", "fileUrl", "fileStoragePath", "deleted"
+            "chunkCount", "fileName", "file_name", "fileUrl", "fileStoragePath", "deleted"
     );
 
     private final JdbcTemplate pgJdbcTemplate;

@@ -140,7 +140,11 @@ class KnowledgeServiceTest {
         request.setIntent("exchange");
         request.setPolicyVersion("v2.0");
         request.setTags(List.of(" 质量问题 ", "换货", "换货"));
-        request.setMetadata(Map.of("owner", "after-sales", "ingestionStatus", "SUCCESS"));
+        request.setMetadata(Map.of(
+                "owner", "after-sales",
+                "ingestionStatus", "SUCCESS",
+                "fileName", "camel-forged.pdf",
+                "file_name", "snake-forged.pdf"));
 
         service.uploadKnowledge(request);
 
@@ -157,7 +161,8 @@ class KnowledgeServiceTest {
         assertThat(String.valueOf(values[9])).isEqualTo("[\"质量问题\",\"换货\"]");
         assertThat(String.valueOf(values[10]))
                 .contains("\"owner\":\"after-sales\"")
-                .contains("\"ingestionStatus\":\"PROCESSING\"");
+                .contains("\"ingestionStatus\":\"PROCESSING\"")
+                .doesNotContain("camel-forged.pdf", "snake-forged.pdf", "\"fileName\"", "\"file_name\"");
         verify(asyncService).processTextImport(77L, request.getContent(), 1L);
     }
 

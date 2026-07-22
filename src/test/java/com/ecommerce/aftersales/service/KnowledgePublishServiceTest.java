@@ -125,6 +125,46 @@ class KnowledgePublishServiceTest {
     }
 
     @Test
+    void canonicalIngestionModeRejectsForgedTextFileNamesAndKeepsTrustedFileContext() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        KnowledgePublishService service = new KnowledgePublishService(jdbc, mock(KnowledgeIngestionAsyncService.class));
+        Map<String, Object> legacyNull = publishRow(0, null);
+        Map<String, Object> legacyBlank = publishRow(
+                1, "{\"ingestionSourceType\":\"  \",\"file_name\":\"legacy.pdf\"}");
+        Map<String, Object> explicitText = publishRow(
+                2, "{\"ingestionSourceType\":\"TEXT\",\"file_name\":\"policy.pdf\"}");
+        Map<String, Object> trustedFile = publishRow(
+                3, "{\"ingestionSourceType\":\"FILE\",\"fileName\":\"policy.md\"}");
+        when(jdbc.queryForList(anyString(), eq(42L), eq(6L), eq(6L)))
+                .thenReturn(List.of(legacyNull, legacyBlank, explicitText, trustedFile));
+        when(jdbc.update(anyString(), org.mockito.ArgumentMatchers.any(Object[].class))).thenReturn(1);
+
+        service.commitPublishedRevision(42L, 6L, Collections.nCopies(
+                4, Collections.nCopies(1024, 0.0d)));
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc, org.mockito.Mockito.atLeast(6)).update(sql.capture(), arguments.capture());
+        List<Object[]> published = java.util.stream.IntStream.range(0, sql.getAllValues().size())
+                .filter(index -> sql.getAllValues().get(index).contains("INSERT INTO knowledge_chunk"))
+                .mapToObj(index -> arguments.getAllValues().get(index))
+                .toList();
+
+        assertThat(published).hasSize(4);
+        assertThat(String.valueOf(published.get(0)[12])).contains("\"source_format\":\"text\"");
+        assertThat(String.valueOf(published.get(1)[12]))
+                .contains("\"source_format\":\"text\"")
+                .doesNotContain("legacy.pdf", "\"file_name\"");
+        assertThat(String.valueOf(published.get(2)[11])).contains("POLICY-42").doesNotContain("policy.pdf");
+        assertThat(String.valueOf(published.get(2)[12]))
+                .contains("\"source_format\":\"text\"")
+                .doesNotContain("policy.pdf", "\"file_name\"");
+        assertThat(String.valueOf(published.get(3)[11])).contains("policy.md", "POLICY-42");
+        assertThat(String.valueOf(published.get(3)[12]))
+                .contains("\"source_format\":\"markdown\"", "\"file_name\":\"policy.md\"");
+    }
+
+    @Test
     void publishWorkerIsDispatchedOnlyAfterCommit() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         KnowledgeIngestionAsyncService async = mock(KnowledgeIngestionAsyncService.class);

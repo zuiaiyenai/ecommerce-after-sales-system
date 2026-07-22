@@ -190,7 +190,8 @@ public class KnowledgePublishService {
             String range = pageEnd != null && !pageEnd.equals(pageStart) ? pageStart + "-" + pageEnd : pageStart.toString();
             addContext(context, "位置：", "第 " + range + " 页");
         }
-        String fileName = firstNonBlank(documentMetadata.get("fileName"), documentMetadata.get("file_name"));
+        String ingestionMode = canonicalIngestionMode(documentMetadata);
+        String fileName = trustedFileName(documentMetadata, ingestionMode);
         List<String> source = new ArrayList<>();
         if (fileName != null) source.add(fileName);
         String sourceCode = nonBlank(row.get("source_code"));
@@ -225,8 +226,9 @@ public class KnowledgePublishService {
             data.put(key, row.get(key));
         }
         Map<String, Object> documentMetadata = metadataMap(row.get("document_metadata"));
-        String fileName = firstNonBlank(documentMetadata.get("fileName"), documentMetadata.get("file_name"));
-        String sourceFormat = sourceFormat(fileName, documentMetadata.get("ingestionSourceType"));
+        String ingestionMode = canonicalIngestionMode(documentMetadata);
+        String fileName = trustedFileName(documentMetadata, ingestionMode);
+        String sourceFormat = sourceFormat(ingestionMode, fileName);
         if (sourceFormat != null) data.put("source_format", sourceFormat);
         if (fileName != null) data.put("file_name", fileName);
         String[] headings = array(row.get("heading_path"));
@@ -257,14 +259,24 @@ public class KnowledgePublishService {
         if (values != null && values.length > 0) addContext(context, prefix, String.join("、", values));
     }
 
-    private static String sourceFormat(String fileName, Object ingestionSourceType) {
-        if (fileName != null) {
-            String lower = fileName.toLowerCase(java.util.Locale.ROOT);
-            if (lower.endsWith(".pdf")) return "pdf";
-            if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-            if (lower.endsWith(".txt")) return "text";
-        }
-        return "TEXT".equalsIgnoreCase(nonBlank(ingestionSourceType)) ? "text" : null;
+    private static String canonicalIngestionMode(Map<String, Object> documentMetadata) {
+        String mode = nonBlank(documentMetadata.get("ingestionSourceType"));
+        return mode == null ? "TEXT" : mode.toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private static String trustedFileName(Map<String, Object> documentMetadata, String ingestionMode) {
+        if (!"FILE".equals(ingestionMode)) return null;
+        return firstNonBlank(documentMetadata.get("fileName"), documentMetadata.get("file_name"));
+    }
+
+    private static String sourceFormat(String ingestionMode, String fileName) {
+        if ("TEXT".equals(ingestionMode)) return "text";
+        if (!"FILE".equals(ingestionMode) || fileName == null) return null;
+        String lower = fileName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".pdf")) return "pdf";
+        if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+        if (lower.endsWith(".txt")) return "text";
+        return null;
     }
 
     private static String firstNonBlank(Object... values) {
