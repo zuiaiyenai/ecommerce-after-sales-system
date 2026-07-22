@@ -29,9 +29,10 @@ class RaisingClassifier:
         raise RuntimeError("classifier unavailable")
 
 
-def _pdf_bytes(*texts: str, encrypted: bool = False) -> bytes:
+def _pdf_bytes(*texts: str | tuple[str, ...], encrypted: bool = False) -> bytes:
     writer = PdfWriter()
     for text in texts:
+        lines = (text,) if isinstance(text, str) else text
         page = writer.add_blank_page(width=300, height=300)
         font = DictionaryObject(
             {
@@ -44,8 +45,12 @@ def _pdf_bytes(*texts: str, encrypted: bool = False) -> bytes:
         page[NameObject("/Resources")] = DictionaryObject(
             {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
         )
+        commands = ["BT /F1 12 Tf"]
+        for index, line in enumerate(lines):
+            commands.append(f"72 {180 - index * 24} Td ({line}) Tj")
+        commands.append("ET")
         stream = DecodedStreamObject()
-        stream.set_data(f"BT /F1 12 Tf 72 180 Td ({text}) Tj ET".encode("ascii"))
+        stream.set_data("\n".join(commands).encode("ascii"))
         page[NameObject("/Contents")] = writer._add_object(stream)
     if encrypted:
         writer.encrypt("secret")

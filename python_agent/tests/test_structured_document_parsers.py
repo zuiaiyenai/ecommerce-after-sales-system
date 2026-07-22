@@ -1,11 +1,70 @@
+import io
+
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
 from after_sales_agent.application.knowledge_ingestion.parsers.markdown import parse_markdown
 from after_sales_agent.application.knowledge_ingestion.parsers.plain_text import (
     parse_plain_text,
 )
+from after_sales_agent.application.knowledge_ingestion.parsers.pdf import parse_pdf
 from after_sales_agent.application.knowledge_ingestion.section_builder import (
     HeadingStack,
     numbered_heading,
 )
+
+
+def _pdf_bytes(*pages: tuple[str, ...]) -> bytes:
+    writer = PdfWriter()
+    for lines in pages:
+        page = writer.add_blank_page(width=300, height=300)
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        font_ref = writer._add_object(font)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+        )
+        commands = ["BT /F1 12 Tf"]
+        for index, line in enumerate(lines):
+            commands.append(f"72 {250 - index * 30} Td ({line}) Tj")
+        commands.append("ET")
+        stream = DecodedStreamObject()
+        stream.set_data("\n".join(commands).encode("ascii"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_pdf_keeps_heading_across_pages_and_removes_stable_margins() -> None:
+    pages, blocks = parse_pdf(
+        _pdf_bytes(
+            ("Return policy", "1.1 Refund rules", "First page body", "Page 1"),
+            ("Return policy", "Second page body", "Page 2"),
+            ("Return policy", "Third page body", "Page 3"),
+        )
+    )
+
+    assert len(pages) == 3
+    assert all("Return policy" not in block.text for block in blocks)
+    assert [block.page_start for block in blocks] == [1, 2, 3]
+    assert all(block.heading_path == ("Refund rules",) for block in blocks)
+
+
+def test_pdf_does_not_remove_margin_lines_from_short_documents() -> None:
+    _, blocks = parse_pdf(
+        _pdf_bytes(
+            ("Important notice", "First body"),
+            ("Important notice", "Second body"),
+        )
+    )
+
+    assert any("Important notice" in block.text for block in blocks)
 
 
 def test_heading_stack_replaces_same_or_deeper_heading_levels() -> None:
