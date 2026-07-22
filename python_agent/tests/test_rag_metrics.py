@@ -200,3 +200,47 @@ def test_filter_gate_rejects_hits_missing_required_safety_metadata() -> None:
             cases,
             {"h1": {"hits": [{"chunk_id": "A", "merchant_code": "M1"}]}},
         )
+
+
+@pytest.mark.parametrize("invalid_label", ["", "   ", None])
+def test_reliable_holdout_rejects_blank_or_non_string_safety_labels(tmp_path, invalid_label) -> None:
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_text(
+        json.dumps(
+            {
+                "case_id": "invalid-label-holdout",
+                "query": "安全标签内容无效",
+                "filters": {"merchant_code": "M1", "policy_version": "v2"},
+                "relevant_chunk_ids": ["A"],
+                "expect_no_answer": False,
+                "forbidden_merchant_codes": [invalid_label],
+                "forbidden_policy_versions": ["v1"],
+                "split": "holdout",
+                "annotation_method": "dual_annotated",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="non-empty string safety labels"):
+        load_cases(dataset)
+
+
+def test_filter_gate_rejects_direct_case_with_blank_safety_label() -> None:
+    cases = [
+        Case(
+            "h1",
+            relevant_chunk_ids={"A"},
+            split="holdout",
+            annotation_method="dual_annotated",
+            forbidden_merchant_codes={" "},
+            forbidden_policy_versions={"v1"},
+        )
+    ]
+
+    with pytest.raises(ValueError, match="non-empty string safety labels"):
+        enforce_reliable_holdout_filter_gate(
+            cases,
+            {"h1": {"hits": [{"chunk_id": "A", "merchant_code": "M1", "policy_version": "v2"}]}},
+        )

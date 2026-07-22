@@ -286,6 +286,31 @@ class PgVectorKnowledgeRetriever:
         try:
             embedding, embedding_cache_hit = self._get_query_embedding(normalized_query)
         except Exception as exc:
+            error_info = self._embedding_error_info(exc)
+            logger.error(
+                "rag embedding failed query_id=%s type=%s error=%s",
+                safe_query_id,
+                error_info.get("type"),
+                error_info.get("error"),
+            )
+            if selected_mode == "dense":
+                return self._finalize_result(
+                    {
+                        "mode": "dense",
+                        "hits": [],
+                        "query": normalized_query,
+                        "trace": {
+                            "dense_candidate_count": 0,
+                            "keyword_candidate_count": 0,
+                            "rrf_candidate_count": 0,
+                            "rerank_candidate_count": 0,
+                            "retrieval_mode": "dense",
+                            "fallback_reason": "EMBEDDING_ERROR",
+                        },
+                    },
+                    plan=strict_plan,
+                    failure_reason="EMBEDDING_ERROR",
+                )
             local = (
                 self._local_knowledge_fallback(
                     query=normalized_query,
@@ -312,13 +337,6 @@ class PgVectorKnowledgeRetriever:
                 top_k=top_k,
             )
             lexical = self._apply_filter_contract(lexical, strict_plan)
-            error_info = self._embedding_error_info(exc)
-            logger.error(
-                "rag embedding failed query_id=%s type=%s error=%s",
-                safe_query_id,
-                error_info.get("type"),
-                error_info.get("error"),
-            )
             if local["hits"]:
                 local["mode"] = "local_json_fallback_after_embedding_error"
                 local["trace"]["embedding_error"] = error_info

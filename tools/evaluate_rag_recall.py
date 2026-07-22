@@ -102,10 +102,21 @@ def run_mode(
         )
         latency_ms = round((time.perf_counter() - case_started) * 1000, 3)
         trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
-        if trace.get("retrieval_mode") == "compatibility":
+        actual_mode = str(trace.get("retrieval_mode") or "")
+        if actual_mode == "compatibility":
             raise RuntimeError(
                 f"ablation mode {mode} reached the compatibility path; "
                 "set RAG_LAYERED_RETRIEVAL_ENABLED=true"
+            )
+        allowed_trace_modes = {
+            "dense": {"dense"},
+            "keyword": {"keyword"},
+            "rrf": {"rrf", "pgvector_relaxed_filters"},
+            "rerank": {"hybrid_reranked", "hybrid_rrf_degraded", "pgvector_relaxed_filters"},
+        }
+        if actual_mode not in allowed_trace_modes[mode]:
+            raise RuntimeError(
+                f"ablation requested {mode} but retriever reported {actual_mode or 'missing'}"
             )
         rerank_called = mode == "rerank" and int(trace.get("rerank_candidate_count") or 0) > 0
         runs[case.case_id] = {

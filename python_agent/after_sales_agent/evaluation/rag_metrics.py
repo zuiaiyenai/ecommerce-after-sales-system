@@ -248,12 +248,12 @@ def load_cases(path: str | Path) -> list[Case]:
                 f"line {line_number} holdout requires reliable annotation: "
                 f"{sorted(RELIABLE_ANNOTATION_METHODS)}"
             )
-        forbidden_merchant_codes = {
-            str(value) for value in _require_list(row, "forbidden_merchant_codes", line_number)
-        }
-        forbidden_policy_versions = {
-            str(value) for value in _require_list(row, "forbidden_policy_versions", line_number)
-        }
+        forbidden_merchant_codes = _require_safety_label_set(
+            row, "forbidden_merchant_codes", line_number
+        )
+        forbidden_policy_versions = _require_safety_label_set(
+            row, "forbidden_policy_versions", line_number
+        )
         if (
             split == "holdout"
             and annotation_method in RELIABLE_ANNOTATION_METHODS
@@ -288,6 +288,26 @@ def _require_list(row: Mapping[str, Any], key: str, line_number: int) -> list[An
     return value
 
 
+def _require_safety_label_set(
+    row: Mapping[str, Any],
+    key: str,
+    line_number: int,
+) -> set[str]:
+    values = _require_list(row, key, line_number)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError(
+            f"line {line_number} {key} must contain non-empty string safety labels"
+        )
+    return {value.strip() for value in values}
+
+
+def _has_valid_safety_labels(values: set[str]) -> bool:
+    return bool(values) and all(
+        isinstance(value, str) and bool(value) and value == value.strip()
+        for value in values
+    )
+
+
 def enforce_reliable_holdout_filter_gate(cases: Sequence[Case], runs: Mapping[str, Any]) -> dict[str, Any]:
     reliable_holdout = [case for case in cases if case.is_reliable_holdout]
     if not reliable_holdout:
@@ -295,11 +315,13 @@ def enforce_reliable_holdout_filter_gate(cases: Sequence[Case], runs: Mapping[st
     incomplete_labels = [
         case.case_id
         for case in reliable_holdout
-        if not case.forbidden_merchant_codes or not case.forbidden_policy_versions
+        if not _has_valid_safety_labels(case.forbidden_merchant_codes)
+        or not _has_valid_safety_labels(case.forbidden_policy_versions)
     ]
     if incomplete_labels:
         raise ValueError(
-            "reliably annotated holdout requires merchant and policy-version safety labels; "
+            "reliably annotated holdout requires non-empty string safety labels "
+            "for merchant and policy-version filters; "
             f"missing for {len(incomplete_labels)} case(s)"
         )
     report = evaluate(reliable_holdout, runs)

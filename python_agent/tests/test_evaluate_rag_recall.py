@@ -41,3 +41,23 @@ def test_ablation_run_rejects_compatibility_trace() -> None:
             retriever=CompatibilityRetriever(),
             rerank_cost_per_call=0.0,
         )
+
+
+def test_dense_ablation_rejects_keyword_fallback_trace() -> None:
+    class KeywordFallbackRetriever:
+        def retrieve(self, **_kwargs):
+            return {
+                "hits": [{"chunk_id": "K1"}],
+                "no_answer": False,
+                "trace": {"retrieval_mode": "lexical_fallback_after_embedding_error"},
+            }
+
+    case = evaluate_rag_recall.Case("c1", relevant_chunk_ids={"K1"}, query="test")
+
+    with pytest.raises(RuntimeError, match="requested dense"):
+        evaluate_rag_recall.run_mode(
+            [case],
+            "dense",
+            retriever=KeywordFallbackRetriever(),
+            rerank_cost_per_call=0.0,
+        )

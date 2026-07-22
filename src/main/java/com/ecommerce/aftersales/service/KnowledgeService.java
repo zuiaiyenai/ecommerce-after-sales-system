@@ -520,7 +520,7 @@ public class KnowledgeService {
         KnowledgeUploadDto.KnowledgeInfo info = getKnowledgeById(id);
 
         scheduleReprocess(id);
-        return Map.of("documentId", id, "message", "Knowledge sync started");
+        return Map.of("documentId", String.valueOf(id), "message", "Knowledge sync started");
     }
 
     private void scheduleReprocess(Long documentId) {

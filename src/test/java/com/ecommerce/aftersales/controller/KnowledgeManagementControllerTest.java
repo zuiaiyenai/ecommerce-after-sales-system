@@ -19,6 +19,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.List;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -115,6 +116,18 @@ class KnowledgeManagementControllerTest {
                 .andExpect(jsonPath("$.data[0].publishedRevision").value(6))
                 .andExpect(jsonPath("$.data[0].validFrom").exists())
                 .andExpect(jsonPath("$.data[0].validTo").exists());
+    }
+
+    @Test
+    void syncReturnsTextualDocumentId() throws Exception {
+        long id = 9007199254740993L;
+        when(knowledgeService.syncKnowledge(id)).thenReturn(Map.of(
+                "documentId", String.valueOf(id),
+                "message", "Knowledge sync started"));
+
+        mockMvc.perform(post("/admin/knowledge/{id}/sync", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.documentId").value("9007199254740993"));
     }
 
     @Test

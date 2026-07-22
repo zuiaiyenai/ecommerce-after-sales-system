@@ -17,7 +17,7 @@ JSONL 每行必须包含：
 
 - `split=holdout`
 - `annotation_method=dual_annotated`，或争议复核后的 `annotation_method=adjudicated`
-- 明确的相关 Chunk、非空的禁止商家和禁止政策版本安全标注
+- 明确的相关 Chunk、由去除首尾空白后仍非空的字符串组成的禁止商家和禁止政策版本安全标注
 
 ## 指标口径
 

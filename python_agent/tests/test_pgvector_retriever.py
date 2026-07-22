@@ -637,6 +637,36 @@ class PgVectorRetrievalTest(unittest.TestCase):
         self.assertEqual(0, result["trace"]["rrf_candidate_count"])
         self.assertEqual(0, result["trace"]["rerank_candidate_count"])
 
+    def test_dense_embedding_failure_never_calls_keyword_local_or_reranker(self) -> None:
+        class DenseEmbeddingFailureRetriever(PgVectorKnowledgeRetriever):
+            def _get_query_embedding(self, _query):
+                raise RuntimeError("embedding unavailable")
+
+            def _local_knowledge_fallback(self, **_kwargs):
+                raise AssertionError("dense mode must not call local fallback")
+
+            def _lexical_fallback(self, **_kwargs):
+                raise AssertionError("dense mode must not call keyword fallback")
+
+        reranker = _FakeReranker(score=0.99)
+        result = _retrieve_with_fake_psycopg(
+            DenseEmbeddingFailureRetriever(
+                layered_config(dsn="postgresql://unused", embedding_api_key="fake"),
+                reranker=reranker,
+            ),
+            source_type="faq",
+            retrieval_mode="dense",
+        )
+
+        self.assertEqual("dense", result["mode"])
+        self.assertTrue(result["no_answer"])
+        self.assertEqual("EMBEDDING_ERROR", result["failure_reason"])
+        self.assertEqual("dense", result["trace"]["retrieval_mode"])
+        self.assertEqual(0, result["trace"]["keyword_candidate_count"])
+        self.assertEqual(0, result["trace"]["rrf_candidate_count"])
+        self.assertEqual(0, result["trace"]["rerank_candidate_count"])
+        self.assertEqual([], reranker.calls)
+
     def test_runtime_trace_drops_query_tokens_and_free_filter_values(self) -> None:
         class UnsafeCompatibilityRetriever(PgVectorKnowledgeRetriever):
             def _lexical_fallback(self, **kwargs):
