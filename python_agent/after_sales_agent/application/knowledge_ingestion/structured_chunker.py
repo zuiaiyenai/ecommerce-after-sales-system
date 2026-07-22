@@ -113,7 +113,7 @@ class StructuredChunker:
         if block.block_type in {"paragraph", "quote"}:
             return _split_sentences(block.text)
         if block.block_type in {"list", "code"}:
-            return block.text.splitlines(keepends=True) or [block.text]
+            return _split_lines_without_blank_units(block.text)
         return [block.text]
 
     def _split_table(self, block: DocumentBlock) -> list[_Piece]:
@@ -123,8 +123,16 @@ class StructuredChunker:
 
         header = "".join(lines[:2])
         rows = lines[2:]
-        if self._exceeds_hard_limit(header):
-            return self._fallback_piece_split(block)
+        header_tokens = estimate_tokens(header)
+        header_chars = len(header)
+        if (
+            header_tokens >= self.config.hard_max_tokens
+            or header_chars >= self.config.hard_max_chars
+        ):
+            raise ValueError("table header leaves no room for data")
+
+        row_token_budget = self.config.hard_max_tokens - header_tokens
+        row_char_budget = self.config.hard_max_chars - header_chars
 
         limit = min(self.config.target_tokens, self.config.hard_max_tokens)
         groups: list[str] = []
@@ -138,12 +146,10 @@ class StructuredChunker:
             if self._exceeds_hard_limit(current + row):
                 row_parts = split_by_estimated_tokens(
                     row,
-                    self.config.hard_max_tokens,
-                    self.config.hard_max_chars,
+                    row_token_budget,
+                    row_char_budget,
                 )
                 for row_part in row_parts:
-                    if self._exceeds_hard_limit(header + row_part):
-                        return self._fallback_piece_split(block)
                     groups.append(header + row_part)
                 current = header
             else:
@@ -283,6 +289,25 @@ def _split_sentences(text: str) -> list[str]:
     return sentences
 
 
+def _split_lines_without_blank_units(text: str) -> list[str]:
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return [text]
+
+    units: list[str] = []
+    pending_blank_lines = ""
+    for line in lines:
+        if line.strip():
+            units.append(pending_blank_lines + line)
+            pending_blank_lines = ""
+        else:
+            pending_blank_lines += line
+
+    if pending_blank_lines:
+        units[-1] += pending_blank_lines
+    return units
+
+
 def _adjacent_page_ranges(
     left_start: int | None,
     left_end: int | None,
@@ -293,4 +318,6 @@ def _adjacent_page_ranges(
         return right_start is None and right_end is None
     if right_start is None or right_end is None:
         return False
-    return right_start <= left_end + 1
+    if left_start > left_end or right_start > right_end:
+        return False
+    return left_start <= right_start <= left_end + 1
