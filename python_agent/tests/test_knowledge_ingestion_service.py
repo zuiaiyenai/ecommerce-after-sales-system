@@ -252,7 +252,7 @@ def test_parse_rejects_invalid_utf8_txt() -> None:
         )
 
 
-def test_text_pdf_chunks_keep_source_page_numbers() -> None:
+def test_text_pdf_chunks_keep_structured_source_page_range() -> None:
     result = KnowledgeIngestionService(classifier=FakeClassifier({})).parse(
         file_name="policy.pdf",
         content=_pdf_bytes("first page", "second page"),
@@ -260,14 +260,13 @@ def test_text_pdf_chunks_keep_source_page_numbers() -> None:
         allowed_metadata={},
     )
 
-    assert [chunk.page_number for chunk in result.chunks] == [1, 2]
-    assert [chunk.text for chunk in result.chunks] == ["first page", "second page"]
+    assert [chunk.page_number for chunk in result.chunks] == [1]
+    assert [chunk.metadata["page_end"] for chunk in result.chunks] == [2]
+    assert [chunk.text for chunk in result.chunks] == ["first page\n\nsecond page"]
 
 
-def test_chunks_keep_sentence_boundary_overlap_and_top_level_sections_separate() -> None:
-    first_sentence = "A" * 699 + "."
-    second_sentence = "B" * 100 + "."
-    content = f"# First\n\n{first_sentence}\n\n{second_sentence}\n\n# Second\n\nsecond-section."
+def test_parse_uses_structured_chunks_without_fixed_overlap() -> None:
+    content = "# Returns\n\n" + ("Complete paragraph. " * 300) + "\n\n# Exchanges\n\nExchange body."
     result = KnowledgeIngestionService(classifier=FakeClassifier({})).parse(
         file_name="policy.md",
         content=content.encode("utf-8"),
@@ -275,13 +274,23 @@ def test_chunks_keep_sentence_boundary_overlap_and_top_level_sections_separate()
         allowed_metadata={},
     )
 
-    first_chunks = [chunk for chunk in result.chunks if chunk.heading_path == ["First"]]
-    second_chunks = [chunk for chunk in result.chunks if chunk.heading_path == ["Second"]]
-    assert first_chunks[0].text == first_sentence
-    assert first_chunks[1].text.startswith(first_sentence[-120:])
-    assert first_chunks[1].text.endswith(second_sentence)
-    assert all(len(chunk.text) <= 700 for chunk in result.chunks)
-    assert [chunk.text for chunk in second_chunks] == ["second-section."]
+    assert len(result.chunks) > 1
+    assert result.chunks[-1].heading_path == ["Exchanges"]
+    assert all(chunk.metadata["chunking_strategy"] == "structured_recursive_v1" for chunk in result.chunks)
+    assert all(chunk.metadata["estimated_tokens"] <= 800 for chunk in result.chunks)
+
+
+def test_markdown_and_txt_do_not_fake_page_one() -> None:
+    for name in ("policy.md", "policy.txt"):
+        result = KnowledgeIngestionService().parse(
+            file_name=name,
+            content=b"# Title\n\nBody" if name.endswith(".md") else b"1. Title\n\nBody",
+            knowledge_type="faq",
+            allowed_metadata={},
+        )
+
+        assert result.chunks[0].page_number is None
+        assert result.chunks[0].metadata["page_end"] is None
 
 
 def test_model_failure_keeps_rule_metadata_and_requires_review_for_unknown_fields() -> None:
