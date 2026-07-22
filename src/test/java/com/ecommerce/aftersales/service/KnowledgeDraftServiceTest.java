@@ -68,6 +68,18 @@ class KnowledgeDraftServiceTest {
     }
 
     @Test
+    void malformedDraftDatesReturnStableBusinessValidationError() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);
+
+        assertThatThrownBy(() -> service.updateDraftDocument(42L, 3L,
+                Map.of("policyVersion", "v1", "validFrom", "not-a-date", "validTo", "2026-01-02T00:00:00")))
+                .isInstanceOf(com.ecommerce.aftersales.common.BizException.class)
+                .hasMessageContaining("政策版本与有效期不合法");
+        org.mockito.Mockito.verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
     void staleRevisionOrStatusCannotReplaceDrafts() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         KnowledgeDraftService service = new KnowledgeDraftService(jdbcTemplate);

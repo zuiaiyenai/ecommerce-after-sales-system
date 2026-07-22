@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Collections;
+import java.sql.Timestamp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -93,5 +94,52 @@ class KnowledgePublishServiceTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).update(sql.capture(), org.mockito.ArgumentMatchers.any(Object[].class));
         assertThat(sql.getValue()).contains("revision=? AND review_status='PUBLISHING'").doesNotContain("published_revision");
+    }
+
+    @Test
+    void publishGateRejectsUnconfirmedTagsAndInvalidVersionedPolicyButAllowsEmptyConfirmedTagsAndFaq() {
+        List<java.util.function.Consumer<Map<String, Object>>> invalidCases = List.of(
+                row -> row.put("product_categories", null), row -> row.put("scenes", null), row -> row.put("intents", null),
+                row -> row.put("policy_version", ""),
+                row -> row.put("valid_to", Timestamp.valueOf("2026-01-01 00:00:00")),
+                row -> row.put("valid_to", Timestamp.valueOf("2025-12-31 23:59:59")));
+        for (var mutation : invalidCases) {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            KnowledgeIngestionAsyncService async = mock(KnowledgeIngestionAsyncService.class);
+            Map<String, Object> row = gateRow("after_sales_policy");
+            mutation.accept(row);
+            when(jdbc.queryForObject(anyString(), eq(Long.class), eq(42L), eq(5L))).thenReturn(6L);
+            when(jdbc.queryForList(anyString(), eq(42L), eq(6L), eq(6L))).thenReturn(List.of(row));
+            KnowledgePublishService service = new KnowledgePublishService(jdbc, async, metadataPolicy());
+
+            assertThatThrownBy(() -> service.startPublishing(42L, 5L)).isInstanceOf(com.ecommerce.aftersales.common.BizException.class);
+            verifyNoInteractions(async);
+        }
+
+        for (String sourceType : List.of("after_sales_policy", "faq")) {
+            JdbcTemplate jdbc = mock(JdbcTemplate.class);
+            KnowledgeIngestionAsyncService async = mock(KnowledgeIngestionAsyncService.class);
+            Map<String, Object> row = gateRow(sourceType);
+            if ("faq".equals(sourceType)) { row.remove("policy_version"); row.remove("valid_from"); row.remove("valid_to"); }
+            when(jdbc.queryForObject(anyString(), eq(Long.class), eq(42L), eq(5L))).thenReturn(6L);
+            when(jdbc.queryForList(anyString(), eq(42L), eq(6L), eq(6L))).thenReturn(List.of(row));
+            assertThat(new KnowledgePublishService(jdbc, async, metadataPolicy()).startPublishing(42L, 5L)).isEqualTo(6L);
+            verify(async).publish(42L, 6L);
+        }
+    }
+
+    private Map<String, Object> gateRow(String sourceType) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("source_type", sourceType); row.put("policy_version", "v1");
+        row.put("valid_from", Timestamp.valueOf("2026-01-01 00:00:00")); row.put("valid_to", Timestamp.valueOf("2026-01-02 00:00:00"));
+        row.put("product_categories", new String[0]); row.put("scenes", new String[0]); row.put("intents", new String[0]);
+        return row;
+    }
+
+    private KnowledgeMetadataPolicy metadataPolicy() {
+        AgentPolicyCatalogService catalog = mock(AgentPolicyCatalogService.class);
+        when(catalog.getCatalog()).thenReturn(Map.of("merchants", Map.of("MERCHANT_DEMO", Map.of())));
+        when(catalog.getMerchantPolicy(org.mockito.ArgumentMatchers.any())).thenReturn(Map.of("service_policy", Map.of("policy_version", "v1")));
+        return new KnowledgeMetadataPolicy(catalog);
     }
 }

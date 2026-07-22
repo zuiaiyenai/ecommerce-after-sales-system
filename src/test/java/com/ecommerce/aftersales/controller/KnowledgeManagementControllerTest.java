@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.GlobalExceptionHandler;
+import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
@@ -100,5 +101,16 @@ class KnowledgeManagementControllerTest {
                     .andExpect(status().isBadRequest());
         }
         verifyNoInteractions(publishService);
+    }
+
+    @Test
+    void publishConflictReturnsTextualCurrentRevisionAndActualReviewStatus() throws Exception {
+        when(publishService.startPublishing(42L, 3L)).thenThrow(new KnowledgeRevisionConflictException(5L, "PUBLISHING"));
+
+        mockMvc.perform(post("/admin/knowledge/42/publish").contentType("application/json")
+                        .content("{\"expectedRevision\":3}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.data.currentRevision").value("5"))
+                .andExpect(jsonPath("$.data.reviewStatus").value("PUBLISHING"));
     }
 }

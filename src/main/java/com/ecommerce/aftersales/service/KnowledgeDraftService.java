@@ -52,7 +52,7 @@ public class KnowledgeDraftService {
         String validFrom = string(edit.get("validFrom"));
         String validTo = string(edit.get("validTo"));
         if (policyVersion == null || policyVersion.isBlank() || validFrom == null || validTo == null
-                || !LocalDateTime.parse(validTo).isAfter(LocalDateTime.parse(validFrom))) {
+                || !validWindow(validFrom, validTo)) {
             throw new BizException("政策版本与有效期不合法");
         }
         Long revision = casRevision(documentId, expectedRevision);
@@ -104,6 +104,11 @@ public class KnowledgeDraftService {
             case SCENE -> metadataPolicy.normalizeScene(value);
             case INTENT -> metadataPolicy.normalizeIntent(value);
         }).filter(Objects::nonNull).toArray(String[]::new);
+    }
+
+    private static boolean validWindow(String validFrom, String validTo) {
+        try { return LocalDateTime.parse(validTo).isAfter(LocalDateTime.parse(validFrom)); }
+        catch (java.time.format.DateTimeParseException exception) { return false; }
     }
 
     private enum Field { CATEGORY, SCENE, INTENT }
