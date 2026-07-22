@@ -550,7 +550,7 @@ public class KnowledgeService {
             targetRevision = pgJdbcTemplate.queryForObject("""
                     UPDATE knowledge_document SET revision = revision + 1, review_status = 'PROCESSING',
                         metadata = COALESCE(metadata, '{}'::jsonb) - 'errorCode' - 'errorMessage', updated_at = NOW()
-                    WHERE id = ? AND COALESCE(metadata ->> 'ingestionSourceType', '') IN ('FILE', 'TEXT')
+                    WHERE id = ? AND COALESCE(NULLIF(metadata ->> 'ingestionSourceType', ''), 'TEXT') IN ('FILE', 'TEXT')
                       AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
                       AND review_status IN ('PUBLISHED', 'REVIEW_REQUIRED', 'PARSE_FAILED', 'CLASSIFY_FAILED', 'EMBEDDING_FAILED')
                     RETURNING revision

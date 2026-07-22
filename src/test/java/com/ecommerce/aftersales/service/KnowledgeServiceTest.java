@@ -510,6 +510,34 @@ class KnowledgeServiceTest {
     }
 
     @Test
+    void reindexTreatsMissingOrBlankSourceMarkerAsLegacyTextWhenClaimingRevision() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
+        KnowledgeService service = new KnowledgeService(
+                jdbcTemplate, asyncService, metadataPolicy("v2.0"), tempDir.toString());
+        when(jdbcTemplate.queryForList(anyString(), eq(Long.class))).thenReturn(List.of(44L));
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(44L))).thenReturn(12L);
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            service.reindexAll();
+            verifyNoInteractions(asyncService);
+            TransactionSynchronizationManager.getSynchronizations().getFirst().afterCommit();
+            verify(asyncService).reprocessDocument(44L, 12L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+
+        ArgumentCaptor<String> claimSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForObject(claimSql.capture(), eq(Long.class), eq(44L));
+        assertThat(claimSql.getValue())
+                .contains("COALESCE(NULLIF(metadata ->> 'ingestionSourceType', ''), 'TEXT')")
+                .contains("IN ('FILE', 'TEXT')");
+    }
+
+    @Test
     void reindexDoesNotDispatchWhenAFileClaimIsStaleOrDeleted() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);

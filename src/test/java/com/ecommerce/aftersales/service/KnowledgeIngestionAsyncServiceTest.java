@@ -56,7 +56,7 @@ class KnowledgeIngestionAsyncServiceTest {
         Files.writeString(file, "# policy");
 
         new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, policy, draftService)
-                .processFileImport(42L, file.toString(), "policy.md");
+                .processFileImport(42L, file.toString(), "policy.md", 1L);
 
         ArgumentCaptor<HttpEntity> request = ArgumentCaptor.forClass(HttpEntity.class);
         verify(restTemplate).postForObject(eq("http://agent.internal/api/knowledge/parse"), request.capture(), eq(Map.class));
@@ -219,6 +219,9 @@ class KnowledgeIngestionAsyncServiceTest {
         assertThat(java.util.Arrays.stream(KnowledgeIngestionAsyncService.class.getDeclaredMethods())
                 .filter(method -> method.getName().equals("reprocessDocument"))
                 .map(java.lang.reflect.Method::getParameterCount)).containsExactly(2);
+        assertThat(java.util.Arrays.stream(KnowledgeIngestionAsyncService.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("processFileImport"))
+                .map(java.lang.reflect.Method::getParameterCount)).containsExactly(4);
     }
 
     @Test

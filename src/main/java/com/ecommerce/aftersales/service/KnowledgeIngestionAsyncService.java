@@ -127,11 +127,6 @@ public class KnowledgeIngestionAsyncService {
     }
 
     @Async("knowledgeIngestionExecutor")
-    public void processFileImport(Long documentId, String filePath, String fileName) {
-        processFileImport(documentId, filePath, fileName, 1L);
-    }
-
-    @Async("knowledgeIngestionExecutor")
     public void processFileImport(Long documentId, String filePath, String fileName, long targetRevision) {
         try {
             Path path = Path.of(filePath);
