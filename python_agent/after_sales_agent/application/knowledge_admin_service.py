@@ -15,8 +15,13 @@ from after_sales_agent.retrieval.pgvector_retriever import PgVectorConfig, PgVec
 class KnowledgeAdminService:
     """Application service for knowledge-base admin and smoke-test endpoints."""
 
-    def __init__(self, ingestion: KnowledgeIngestionService | None = None) -> None:
+    def __init__(
+        self,
+        ingestion: KnowledgeIngestionService | None = None,
+        retriever: PgVectorKnowledgeRetriever | None = None,
+    ) -> None:
         self.ingestion = ingestion or KnowledgeIngestionService()
+        self.retriever = retriever if retriever is not None else PgVectorKnowledgeRetriever(PgVectorConfig.from_env())
 
     def parse_document(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create an unpersisted, Java-controlled knowledge draft from an uploaded document."""
@@ -39,7 +44,7 @@ class KnowledgeAdminService:
     def retrieve(self, data: dict[str, Any]) -> dict[str, Any]:
         sources = data.get("sources") if isinstance(data.get("sources"), list) else []
         source_type = sources[0] if len(sources) == 1 else data.get("source_type")
-        result = PgVectorKnowledgeRetriever().retrieve(
+        result = self.retriever.retrieve(
             query=str(data.get("query") or ""),
             merchant_code=data.get("merchant_code"),
             product_category=data.get("product_category"),
@@ -80,7 +85,6 @@ class KnowledgeAdminService:
         if not dsn:
             raise RuntimeError("PGVECTOR_DSN is required")
 
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig.from_env())
         rows = self._active_document_rows(dsn)
         batch_size = max(1, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "10")), 25))
         chunk_records: list[dict[str, Any]] = []
@@ -105,7 +109,7 @@ class KnowledgeAdminService:
                     cur.execute("DELETE FROM knowledge_chunk")
                     for start in range(0, len(chunk_records), batch_size):
                         batch = chunk_records[start : start + batch_size]
-                        vectors = retriever.embed_many([record["chunk_text"] for record in batch])
+                        vectors = self.retriever.embed_many([record["chunk_text"] for record in batch])
                         for record, vector in zip(batch, vectors):
                             cur.execute(
                                 """
@@ -118,7 +122,7 @@ class KnowledgeAdminService:
                                     record["document_type"],
                                     record["chunk_index"],
                                     record["chunk_text"],
-                                    retriever._vector_literal(vector),
+                                    self.retriever._vector_literal(vector),
                                     Jsonb(record["metadata"]),
                                 ),
                             )
@@ -132,8 +136,7 @@ class KnowledgeAdminService:
         if not isinstance(chunks, list) or not chunks:
             raise ValueError("chunks must be a non-empty list")
 
-        retriever = PgVectorKnowledgeRetriever(PgVectorConfig.from_env())
-        embeddings = retriever.embed_many([str(chunk) for chunk in chunks])
+        embeddings = self.retriever.embed_many([str(chunk) for chunk in chunks])
         return {
             "ok": True,
             "embeddings": embeddings,

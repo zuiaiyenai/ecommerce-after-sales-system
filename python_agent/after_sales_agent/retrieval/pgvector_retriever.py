@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from after_sales_agent.providers.reranker_client import RerankResult, RerankerClient
+from after_sales_agent.providers.reranker_client import RERANKER_CLIENTS, RerankResult, RerankerClient
 
 from after_sales_agent.retrieval.knowledge_filters import (
     POLICY_SOURCE_TYPES,
@@ -133,7 +133,7 @@ class PgVectorKnowledgeRetriever:
         reranker: Any | None = None,
     ) -> None:
         self.config = config or PgVectorConfig.from_env()
-        self.reranker = reranker or RerankerClient()
+        self.reranker = reranker if reranker is not None else RERANKER_CLIENTS.get()
         self._embedding_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache_lock = threading.Lock()
 
@@ -151,8 +151,6 @@ class PgVectorKnowledgeRetriever:
         top_k: int | None = None,
     ) -> dict[str, Any]:
         normalized_query = str(query or "").strip()
-        if not normalized_query:
-            return {"mode": "skipped", "hits": [], "query": normalized_query}
         resolved_as_of_time = as_of_time or datetime.now()
         filter_plans = build_filter_plans(
             FilterContext(
@@ -166,6 +164,12 @@ class PgVectorKnowledgeRetriever:
             )
         )
         strict_plan = filter_plans[0]
+        if not normalized_query:
+            return self._finalize_result(
+                {"mode": "skipped", "hits": [], "query": normalized_query, "trace": {}},
+                plan=strict_plan,
+                failure_reason="EMPTY_QUERY",
+            )
         logger.info(
             "rag retrieve start query=%s merchant=%s category=%s scene=%s intent=%s dsn=%s",
             normalized_query[:160],
@@ -190,25 +194,37 @@ class PgVectorKnowledgeRetriever:
                 local["mode"] = "local_json_fallback"
                 local["trace"]["reason"] = "PGVECTOR_DSN is empty"
                 logger.warning("rag pgvector dsn missing, fallback to local json hits=%s", len(local["hits"]))
-                return self._apply_filter_contract(local, strict_plan)
+                return self._finalize_result(
+                    local,
+                    plan=strict_plan,
+                    failure_reason="PGVECTOR_NOT_CONFIGURED",
+                )
         if not self.config.dsn:
             logger.warning("rag pgvector dsn missing and local json fallback has no hits")
-            return {
-                "mode": "pgvector_not_configured",
-                "hits": [],
-                "query": normalized_query,
-                "trace": {"reason": "PGVECTOR_DSN is empty"},
-            }
+            return self._finalize_result(
+                {
+                    "mode": "pgvector_not_configured",
+                    "hits": [],
+                    "query": normalized_query,
+                    "trace": {"reason": "PGVECTOR_DSN is empty"},
+                },
+                plan=strict_plan,
+                failure_reason="PGVECTOR_NOT_CONFIGURED",
+            )
 
         try:
             import psycopg  # type: ignore
         except Exception as exc:
-            return {
-                "mode": "pgvector_dependency_missing",
-                "hits": [],
-                "query": normalized_query,
-                "trace": {"error": exc.__class__.__name__},
-            }
+            return self._finalize_result(
+                {
+                    "mode": "pgvector_dependency_missing",
+                    "hits": [],
+                    "query": normalized_query,
+                    "trace": {"error": exc.__class__.__name__},
+                },
+                plan=strict_plan,
+                failure_reason="PGVECTOR_DEPENDENCY_MISSING",
+            )
 
         try:
             embedding, embedding_cache_hit = self._get_query_embedding(normalized_query)
@@ -245,18 +261,30 @@ class PgVectorKnowledgeRetriever:
                 local["mode"] = "local_json_fallback_after_embedding_error"
                 local["trace"]["embedding_error"] = error_info
                 logger.warning("rag fallback to local json after embedding error hits=%s", len(local["hits"]))
-                return self._apply_filter_contract(local, strict_plan)
+                return self._finalize_result(
+                    local,
+                    plan=strict_plan,
+                    failure_reason="EMBEDDING_ERROR",
+                )
             if lexical["hits"]:
                 lexical["mode"] = "lexical_fallback_after_embedding_error"
                 lexical["trace"]["embedding_error"] = error_info
                 logger.warning("rag fallback to lexical after embedding error hits=%s", len(lexical["hits"]))
-                return lexical
-            return {
-                "mode": "embedding_error",
-                "hits": [],
-                "query": normalized_query,
-                "trace": error_info,
-            }
+                return self._finalize_result(
+                    lexical,
+                    plan=strict_plan,
+                    failure_reason="EMBEDDING_ERROR",
+                )
+            return self._finalize_result(
+                {
+                    "mode": "embedding_error",
+                    "hits": [],
+                    "query": normalized_query,
+                    "trace": error_info,
+                },
+                plan=strict_plan,
+                failure_reason="EMBEDDING_ERROR",
+            )
         metadata_filters = {
             "merchant_code": merchant_code,
             "product_category": product_category,
@@ -284,12 +312,16 @@ class PgVectorKnowledgeRetriever:
                 limit=candidate_limit,
             )
         except Exception as exc:
-            return {
-                "mode": "pgvector_error",
-                "hits": [],
-                "query": normalized_query,
-                "trace": {"error": exc.__class__.__name__, "message": str(exc)},
-            }
+            return self._finalize_result(
+                {
+                    "mode": "pgvector_error",
+                    "hits": [],
+                    "query": normalized_query,
+                    "trace": {"error": exc.__class__.__name__, "message": str(exc)},
+                },
+                plan=strict_plan,
+                failure_reason="PGVECTOR_ERROR",
+            )
         vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
         lexical = self._lexical_fallback(
             query=normalized_query,
@@ -336,22 +368,7 @@ class PgVectorKnowledgeRetriever:
                 embedding_cache_hit=embedding_cache_hit,
                 as_of_time=resolved_as_of_time,
             )
-            if relaxed["hits"]:
-                return relaxed
-        logger.info("rag retrieve success mode=pgvector hits=%s", len(hits))
-        return self._apply_filter_contract({
-            "mode": "pgvector",
-            "query": normalized_query,
-            "hits": hits,
-            "trace": {
-                "filters": metadata_filters,
-                "top_k": limit,
-                "ivfflat_probes": self.config.ivfflat_probes,
-                "vector_latency_ms": vector_latency_ms,
-                "embedding_cache_hit": embedding_cache_hit,
-            },
-        }, strict_plan)
-
+            return relaxed
     def _relaxed_retrieve_after_empty_vector(
         self,
         *,
@@ -471,18 +488,22 @@ class PgVectorKnowledgeRetriever:
                 intent=intent,
             )
         )[0]
-        return self._apply_filter_contract({
-            "mode": "pgvector_relaxed_filters",
-            "query": query,
-            "hits": [],
-            "trace": {
-                "strict_filters": strict_filters,
-                "filters": strict_filters,
-                "fallback_attempts": attempts,
-                "top_k": limit,
-                "embedding_cache_hit": embedding_cache_hit,
+        return self._finalize_result(
+            {
+                "mode": "pgvector_relaxed_filters",
+                "query": query,
+                "hits": [],
+                "trace": {
+                    "strict_filters": strict_filters,
+                    "filters": strict_filters,
+                    "fallback_attempts": attempts,
+                    "top_k": limit,
+                    "embedding_cache_hit": embedding_cache_hit,
+                },
             },
-        }, exhausted_plan)
+            plan=exhausted_plan,
+            failure_reason="NO_MATCH",
+        )
 
     @staticmethod
     def _normalized_merchant_code(merchant_code: str | None) -> str:
@@ -545,6 +566,60 @@ class PgVectorKnowledgeRetriever:
         if isinstance(hits, list):
             cls._annotate_hits_with_filter_contract(hits, plan)
         return result
+
+    @classmethod
+    def _finalize_result(
+        cls,
+        result: dict[str, Any],
+        *,
+        plan: FilterPlan,
+        failure_reason: str | None,
+        reranker_succeeded: bool = False,
+        no_answer: bool = True,
+        trusted_policy_eligible: bool = False,
+        threshold: float | None = None,
+    ) -> dict[str, Any]:
+        finalized = dict(result)
+        hits = finalized.get("hits")
+        if not isinstance(hits, list):
+            hits = []
+        finalized["hits"] = hits
+        resolved_threshold = float(
+            threshold if threshold is not None else cls._threshold_for_source(plan.source_type)
+        )
+        finalized["filter_level"] = plan.level
+        finalized["relaxation_level"] = plan.level
+        finalized["reranker_succeeded"] = bool(reranker_succeeded)
+        finalized["threshold"] = resolved_threshold
+        finalized["no_answer"] = bool(no_answer)
+        finalized["trusted_policy_eligible"] = bool(trusted_policy_eligible)
+        finalized["failure_reason"] = failure_reason
+
+        trace = finalized.get("trace")
+        if not isinstance(trace, dict):
+            trace = {}
+        stage_latency = trace.get("stage_latency_ms")
+        if not isinstance(stage_latency, dict):
+            stage_latency = {}
+        if "vector_latency_ms" in trace and "vector" not in stage_latency:
+            stage_latency["vector"] = trace["vector_latency_ms"]
+        trace["stage_latency_ms"] = stage_latency
+        trace["filter_level"] = plan.level
+        trace["reranker_succeeded"] = bool(reranker_succeeded)
+        trace["threshold"] = resolved_threshold
+        trace["failure_reason"] = failure_reason
+        trace["trusted_policy_eligible"] = bool(trusted_policy_eligible)
+        finalized["trace"] = trace
+
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            hit["relaxation_level"] = plan.level
+            if not trusted_policy_eligible:
+                hit["trusted_policy_eligible"] = False
+            else:
+                hit.setdefault("trusted_policy_eligible", False)
+        return finalized
 
     def _vector_search(
         self,
@@ -736,18 +811,21 @@ class PgVectorKnowledgeRetriever:
         trace["threshold"] = threshold
         trace["trusted_policy_eligible"] = trusted_policy_eligible
         no_answer = bool(reranked.degraded or not output_hits)
-        return {
-            "mode": reranked.mode,
-            "query": query,
-            "hits": output_hits,
-            "filter_level": plan.level,
-            "relaxation_level": plan.level,
-            "reranker_succeeded": reranker_succeeded,
-            "threshold": threshold,
-            "no_answer": no_answer,
-            "trusted_policy_eligible": trusted_policy_eligible,
-            "trace": trace,
-        }
+        failure_reason = reranked.failure_reason if reranked.degraded else ("NO_MATCH" if no_answer else None)
+        return self._finalize_result(
+            {
+                "mode": reranked.mode,
+                "query": query,
+                "hits": output_hits,
+                "trace": trace,
+            },
+            plan=plan,
+            failure_reason=failure_reason,
+            reranker_succeeded=reranker_succeeded,
+            no_answer=no_answer,
+            trusted_policy_eligible=trusted_policy_eligible,
+            threshold=threshold,
+        )
 
     @staticmethod
     def _hit_source_type(hit: dict[str, Any]) -> str:
@@ -833,12 +911,29 @@ class PgVectorKnowledgeRetriever:
         filter_plan: FilterPlan | None = None,
         top_k: int | None = None,
     ) -> dict[str, Any]:
+        plan = filter_plan or self._strict_filter_plan(
+            merchant_code=merchant_code,
+            product_category=product_category,
+            scene=scene,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            as_of_time=as_of_time,
+        )
         if not self.config.dsn:
-            return {"mode": "lexical_not_configured", "query": query, "hits": [], "trace": {"reason": "PGVECTOR_DSN is empty"}}
+            return self._finalize_result(
+                {"mode": "lexical_not_configured", "query": query, "hits": [], "trace": {"reason": "PGVECTOR_DSN is empty"}},
+                plan=plan,
+                failure_reason="LEXICAL_NOT_CONFIGURED",
+            )
         try:
             import psycopg  # type: ignore
         except Exception as exc:
-            return {"mode": "lexical_dependency_missing", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__}}
+            return self._finalize_result(
+                {"mode": "lexical_dependency_missing", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__}},
+                plan=plan,
+                failure_reason="LEXICAL_DEPENDENCY_MISSING",
+            )
 
         metadata_filters = {
             "merchant_code": merchant_code,
@@ -864,23 +959,22 @@ class PgVectorKnowledgeRetriever:
                 limit=max(1, min(int(top_k or self.config.top_k), 20)),
             )
         except Exception as exc:
-            return {"mode": "lexical_error", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__, "message": str(exc)}}
+            return self._finalize_result(
+                {"mode": "lexical_error", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__, "message": str(exc)}},
+                plan=plan,
+                failure_reason="LEXICAL_ERROR",
+            )
         result = {
             "mode": "lexical_fallback",
             "query": query,
             "hits": hits,
             "trace": {"filters": metadata_filters, "top_k": len(hits), "tokens": self._lexical_tokens(query)},
         }
-        plan = filter_plan or self._strict_filter_plan(
-            merchant_code=merchant_code,
-            product_category=product_category,
-            scene=scene,
-            intent=intent,
-            source_type=source_type,
-            policy_version=policy_version,
-            as_of_time=as_of_time,
+        return self._finalize_result(
+            result,
+            plan=plan,
+            failure_reason="LEXICAL_FALLBACK_ONLY",
         )
-        return self._apply_filter_contract(result, plan)
 
     @staticmethod
     def _lexical_tokens(query: str) -> list[str]:
@@ -987,9 +1081,22 @@ class PgVectorKnowledgeRetriever:
         policy_version: str | None = None,
         top_k: int | None = None,
     ) -> dict[str, Any]:
+        plan = self._strict_filter_plan(
+            merchant_code=merchant_code,
+            product_category=product_category,
+            scene=scene,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            as_of_time=None,
+        )
         knowledge = self._load_local_policy_knowledge()
         if not knowledge:
-            return {"mode": "local_json_missing", "query": query, "hits": [], "trace": {"reason": "policy-knowledge-base.json missing"}}
+            return self._finalize_result(
+                {"mode": "local_json_missing", "query": query, "hits": [], "trace": {"reason": "policy-knowledge-base.json missing"}},
+                plan=plan,
+                failure_reason="LOCAL_JSON_MISSING",
+            )
 
         hits: list[dict[str, Any]] = []
         scene_aliases = set(self._scene_aliases(scene))
@@ -1064,16 +1171,20 @@ class PgVectorKnowledgeRetriever:
                 )
 
         hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
-        return {
-            "mode": "local_json_fallback",
-            "query": query,
-            "hits": hits[:limit],
-            "trace": {
-                "scene": scene,
-                "product_category": product_category,
-                "merchant_code": merchant_code,
+        return self._finalize_result(
+            {
+                "mode": "local_json_fallback",
+                "query": query,
+                "hits": hits[:limit],
+                "trace": {
+                    "scene": scene,
+                    "product_category": product_category,
+                    "merchant_code": merchant_code,
+                },
             },
-        }
+            plan=plan,
+            failure_reason="LOCAL_FALLBACK_ONLY",
+        )
 
     @staticmethod
     def _local_text_match_score(query: str, text: str) -> float:

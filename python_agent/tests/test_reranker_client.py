@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import math
 import threading
 import time
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from after_sales_agent.providers.reranker_client import (
     RerankCircuitBreaker,
     RerankError,
     RerankerClient,
+    RerankerClientLifecycle,
     RerankerConfig,
 )
 
@@ -121,6 +123,45 @@ def test_semaphore_queue_wait_is_bounded_by_timeout() -> None:
     assert elapsed < 0.25
 
 
+def test_queue_and_retries_share_one_monotonic_total_deadline() -> None:
+    now = [100.0]
+
+    class QueueDelaySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout == pytest.approx(1.0)
+            now[0] += 0.25
+            return True
+
+        def release(self) -> None:
+            return None
+
+    class DeadlineTransport:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def post_json(self, _payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+            self.timeouts.append(timeout)
+            if len(self.timeouts) == 1:
+                now[0] += 0.5
+            else:
+                now[0] += timeout
+            raise RerankError("TIMEOUT")
+
+    transport = DeadlineTransport()
+    client = RerankerClient(
+        transport=transport,
+        config=_config(timeout_seconds=1.0),
+        clock=lambda: now[0],
+    )
+    client._semaphore = QueueDelaySemaphore()  # type: ignore[assignment]
+
+    result = client.rerank("query", _candidates(1), top_n=1)
+
+    assert result.failure_reason == "TIMEOUT"
+    assert transport.timeouts == pytest.approx([0.75, 0.25])
+    assert now[0] == pytest.approx(101.0)
+
+
 @pytest.mark.parametrize(
     "results",
     [
@@ -141,6 +182,32 @@ def test_invalid_indexes_and_scores_fail_closed(results: list[dict[str, object]]
     assert result.degraded is True
     assert result.failure_reason == "INVALID_RESPONSE"
     assert result.items == candidates
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [],
+        [{"index": 0, "relevance_score": 0.9}],
+        [
+            {"index": 0, "relevance_score": 0.9},
+            {"index": 1, "relevance_score": 0.8},
+            {"index": 2, "relevance_score": 0.7},
+        ],
+    ],
+)
+def test_provider_result_count_must_exactly_match_requested_cardinality(
+    results: list[dict[str, object]],
+) -> None:
+    candidates = _candidates(3)
+    result = RerankerClient(
+        transport=SequenceTransport({"results": results}),
+        config=_config(),
+    ).rerank("query", candidates, top_n=2)
+
+    assert result.degraded is True
+    assert result.failure_reason == "INVALID_RESPONSE"
+    assert result.items == candidates[:2]
 
 
 def test_provider_indexes_align_to_original_candidates_in_provider_order() -> None:
@@ -168,6 +235,132 @@ def test_unconfigured_provider_degrades_without_transport_call() -> None:
     assert result.mode == "hybrid_rrf_degraded"
     assert result.failure_reason == "NOT_CONFIGURED"
     assert transport.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("RERANK_TIMEOUT_SECONDS", "abc"),
+        ("RERANK_TIMEOUT_SECONDS", "NaN"),
+        ("RERANK_TIMEOUT_SECONDS", "Infinity"),
+        ("RERANK_TIMEOUT_SECONDS", "0"),
+        ("RERANK_TIMEOUT_SECONDS", "-1"),
+        ("RERANK_TIMEOUT_SECONDS", "31"),
+        ("RERANK_MAX_RETRIES", "2"),
+        ("RERANK_MAX_CANDIDATES", "21"),
+        ("RERANK_MAX_CONCURRENCY", "0"),
+        ("RERANK_MAX_CONCURRENCY", "65"),
+        ("RERANK_CIRCUIT_FAILURE_THRESHOLD", "0"),
+        ("RERANK_CIRCUIT_FAILURE_THRESHOLD", "101"),
+        ("RERANK_CIRCUIT_RECOVERY_SECONDS", "0"),
+        ("RERANK_CIRCUIT_RECOVERY_SECONDS", "3601"),
+    ],
+)
+def test_invalid_numeric_environment_degrades_to_config_error_without_startup_exception(
+    monkeypatch,
+    name: str,
+    value: str,
+) -> None:
+    for key, valid_value in {
+        "RERANK_PROVIDER": "dashscope",
+        "RERANK_BASE_URL": "https://example.invalid/rerank",
+        "RERANK_API_KEY": "secret-value-must-not-leak",
+        "RERANK_MODEL": "text-rerank-v2",
+        "RERANK_TIMEOUT_SECONDS": "3",
+        "RERANK_MAX_RETRIES": "1",
+        "RERANK_MAX_CANDIDATES": "20",
+        "RERANK_MAX_CONCURRENCY": "4",
+        "RERANK_CIRCUIT_FAILURE_THRESHOLD": "5",
+        "RERANK_CIRCUIT_RECOVERY_SECONDS": "30",
+    }.items():
+        monkeypatch.setenv(key, valid_value)
+    monkeypatch.setenv(name, value)
+
+    config = RerankerConfig.from_env()
+    with patch("after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport") as transport_type:
+        result = RerankerClient(config=config).rerank("query", _candidates(1), top_n=1)
+
+    assert config.config_error == f"INVALID_RERANK_CONFIG:{name}"
+    assert "secret-value-must-not-leak" not in config.config_error
+    assert result.failure_reason == "CONFIG_ERROR"
+    transport_type.assert_not_called()
+
+
+def test_partial_provider_configuration_is_config_error_without_transport_creation() -> None:
+    config = _config(base_url="")
+
+    with patch("after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport") as transport_type:
+        result = RerankerClient(config=config).rerank("query", _candidates(1), top_n=1)
+
+    assert result.failure_reason == "CONFIG_ERROR"
+    transport_type.assert_not_called()
+
+
+def test_unconfigured_client_does_not_create_managed_transport() -> None:
+    config = _config(provider="", base_url="", api_key="", model="")
+
+    with patch("after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport") as transport_type:
+        result = RerankerClient(config=config).rerank("query", _candidates(1), top_n=1)
+
+    assert result.failure_reason == "NOT_CONFIGURED"
+    transport_type.assert_not_called()
+
+
+def test_valid_client_creates_managed_transport_lazily_on_first_call() -> None:
+    response_transport = SequenceTransport({"results": [{"index": 0, "relevance_score": 0.8}]})
+
+    with patch(
+        "after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport",
+        return_value=response_transport,
+    ) as transport_type:
+        client = RerankerClient(config=_config())
+        transport_type.assert_not_called()
+        result = client.rerank("query", _candidates(1), top_n=1)
+
+    assert result.degraded is False
+    transport_type.assert_called_once()
+
+
+def test_reranker_client_close_is_idempotent_and_closes_created_transport_once() -> None:
+    class CloseableTransport(SequenceTransport):
+        def __init__(self) -> None:
+            super().__init__({"results": [{"index": 0, "relevance_score": 0.8}]})
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    transport = CloseableTransport()
+    client = RerankerClient(config=_config(), transport=transport)
+    client.rerank("query", _candidates(1), top_n=1)
+
+    client.close()
+    client.close()
+
+    assert transport.close_calls == 1
+
+
+def test_lifecycle_shares_client_and_breaker_across_requests_and_closes_once() -> None:
+    transport = SequenceTransport(RerankError("HTTP_500"))
+    lifecycle = RerankerClientLifecycle(
+        factory=lambda: RerankerClient(
+            config=_config(max_retries=0, circuit_failure_threshold=1),
+            transport=transport,
+        )
+    )
+
+    first_client = lifecycle.get()
+    first = first_client.rerank("first", _candidates(1), top_n=1)
+    second_client = lifecycle.get()
+    second = second_client.rerank("second", _candidates(1), top_n=1)
+
+    assert first_client is second_client
+    assert first.failure_reason == "HTTP_500"
+    assert second.failure_reason == "CIRCUIT_OPEN"
+    assert transport.calls == 1
+
+    lifecycle.close()
+    lifecycle.close()
 
 
 def test_circuit_breaker_allows_only_one_recovery_probe_across_threads() -> None:

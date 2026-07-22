@@ -31,6 +31,7 @@ from after_sales_agent.infra.agent_metrics import AGENT_RUNTIME_METRICS
 from after_sales_agent.infra.request_tracing import TraceRecorder, install_trace_logging_filter, normalize_trace_id
 from after_sales_agent.providers.llm_client import LLM_CLIENTS
 from after_sales_agent.providers.model_prewarm_service import LocalModelPrewarmService
+from after_sales_agent.providers.reranker_client import RERANKER_CLIENTS
 from after_sales_agent.providers.vision_review_service import VisionReviewService
 from after_sales_agent.utils.vision_serialization import serialize_image_review
 
@@ -762,6 +763,11 @@ class AgentApiHandler(BaseHTTPRequestHandler):
             self._send_json({"error": error, "message": message}, status=503)
             return
 
+def close_application_resources() -> None:
+    LLM_CLIENTS.close()
+    RERANKER_CLIENTS.close()
+
+
 def main() -> None:
     started_at = perf_counter()
     host = os.getenv("AGENT_HOST", "127.0.0.1")
@@ -776,7 +782,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
-        LLM_CLIENTS.close()
+        close_application_resources()
 
 
 if __name__ == "__main__":

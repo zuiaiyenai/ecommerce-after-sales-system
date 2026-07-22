@@ -5,6 +5,7 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 from after_sales_agent.providers.reranker_client import RerankResult
 
@@ -27,6 +28,171 @@ PgVectorKnowledgeRetriever = retriever_module.PgVectorKnowledgeRetriever
 
 
 class PgVectorRetrievalTest(unittest.TestCase):
+    def assert_degraded_contract(self, result, *, mode: str, filter_level: str, failure_reason: str) -> None:
+        self.assertEqual(mode, result["mode"])
+        self.assertEqual(filter_level, result["filter_level"])
+        self.assertFalse(result["reranker_succeeded"])
+        self.assertTrue(result["no_answer"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertEqual(failure_reason, result["failure_reason"])
+        self.assertIsInstance(result["threshold"], float)
+        self.assertIsInstance(result["trace"]["stage_latency_ms"], dict)
+        self.assertEqual(failure_reason, result["trace"]["failure_reason"])
+        self.assertFalse(result["trace"]["trusted_policy_eligible"])
+        for hit in result["hits"]:
+            self.assertFalse(hit["trusted_policy_eligible"])
+
+    def test_empty_query_uses_stable_degraded_contract(self) -> None:
+        result = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(query="  ")
+
+        self.assert_degraded_contract(
+            result,
+            mode="skipped",
+            filter_level="strict",
+            failure_reason="EMPTY_QUERY",
+        )
+
+    def test_missing_dsn_policy_query_uses_stable_degraded_contract(self) -> None:
+        result = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(
+            query="refund policy",
+            source_type="after_sales_policy",
+        )
+
+        self.assert_degraded_contract(
+            result,
+            mode="pgvector_not_configured",
+            filter_level="strict",
+            failure_reason="PGVECTOR_NOT_CONFIGURED",
+        )
+
+    def test_local_fallback_preserves_auxiliary_hits_but_is_untrusted(self) -> None:
+        class LocalRetriever(PgVectorKnowledgeRetriever):
+            def _local_knowledge_fallback(self, **kwargs):
+                return {
+                    "mode": "local_json_fallback",
+                    "query": kwargs.get("query") or "",
+                    "hits": [{"chunk_id": "LOCAL-1", "source_type": "faq", "snippet": "local help"}],
+                    "trace": {},
+                }
+
+        result = LocalRetriever(PgVectorConfig(dsn="", embedding_api_key="")).retrieve(
+            query="help",
+            source_type="faq",
+        )
+
+        self.assertEqual(1, len(result["hits"]))
+        self.assert_degraded_contract(
+            result,
+            mode="local_json_fallback",
+            filter_level="strict",
+            failure_reason="PGVECTOR_NOT_CONFIGURED",
+        )
+
+    def test_missing_psycopg_dependency_uses_stable_degraded_contract(self) -> None:
+        retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+
+        with patch.dict(sys.modules, {"psycopg": None}):
+            result = retriever.retrieve(query="refund", source_type="after_sales_policy")
+
+        self.assert_degraded_contract(
+            result,
+            mode="pgvector_dependency_missing",
+            filter_level="strict",
+            failure_reason="PGVECTOR_DEPENDENCY_MISSING",
+        )
+
+    def test_embedding_error_lexical_fallback_preserves_hits_under_stable_contract(self) -> None:
+        class EmbeddingFailureRetriever(PgVectorKnowledgeRetriever):
+            def _get_query_embedding(self, _text):
+                raise RuntimeError("embedding unavailable")
+
+            def _lexical_fallback(self, **kwargs):
+                return {
+                    "mode": "lexical_fallback",
+                    "query": kwargs.get("query") or "",
+                    "hits": [{"chunk_id": "LEX-1", "source_type": "after_sales_policy"}],
+                    "trace": {},
+                }
+
+        result = _retrieve_with_fake_psycopg(
+            EmbeddingFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            source_type="after_sales_policy",
+        )
+
+        self.assertEqual(1, len(result["hits"]))
+        self.assert_degraded_contract(
+            result,
+            mode="lexical_fallback_after_embedding_error",
+            filter_level="strict",
+            failure_reason="EMBEDDING_ERROR",
+        )
+
+    def test_embedding_error_without_fallback_uses_stable_contract(self) -> None:
+        class EmbeddingFailureRetriever(PgVectorKnowledgeRetriever):
+            def _get_query_embedding(self, _text):
+                raise RuntimeError("embedding unavailable")
+
+            def _lexical_fallback(self, **kwargs):
+                return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
+
+        result = _retrieve_with_fake_psycopg(
+            EmbeddingFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            source_type="after_sales_policy",
+        )
+
+        self.assert_degraded_contract(
+            result,
+            mode="embedding_error",
+            filter_level="strict",
+            failure_reason="EMBEDDING_ERROR",
+        )
+
+    def test_pgvector_error_uses_stable_degraded_contract(self) -> None:
+        class PgFailureRetriever(PgVectorKnowledgeRetriever):
+            def _embed(self, _text):
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                raise RuntimeError("database unavailable")
+
+        result = _retrieve_with_fake_psycopg(
+            PgFailureRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            source_type="after_sales_policy",
+        )
+
+        self.assert_degraded_contract(
+            result,
+            mode="pgvector_error",
+            filter_level="strict",
+            failure_reason="PGVECTOR_ERROR",
+        )
+
+    def test_exhausted_relaxed_plans_use_stable_degraded_contract(self) -> None:
+        class EmptyRetriever(PgVectorKnowledgeRetriever):
+            def _embed(self, _text):
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                return []
+
+            def _lexical_fallback(self, **kwargs):
+                return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
+
+        result = _retrieve_with_fake_psycopg(
+            EmptyRetriever(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")),
+            source_type="faq",
+            product_category="headphone",
+            scene="quality_issue",
+            intent="refund",
+        )
+
+        self.assert_degraded_contract(
+            result,
+            mode="pgvector_relaxed_filters",
+            filter_level="intent_relaxed",
+            failure_reason="NO_MATCH",
+        )
+
     def test_query_embedding_cache_reuses_vector_until_ttl_expiry(self) -> None:
         class CachedEmbeddingRetriever(PgVectorKnowledgeRetriever):
             def __init__(self) -> None:
@@ -104,6 +270,12 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 sys.modules["psycopg"] = old_psycopg
 
         self.assertEqual([], result["hits"])
+        self.assert_degraded_contract(
+            result,
+            mode="lexical_fallback",
+            filter_level="strict",
+            failure_reason="LEXICAL_FALLBACK_ONLY",
+        )
         search_sql, search_params = cursor.executions[0]
         self.assertIn("kd.merchant_code IN (%s, 'GLOBAL')", search_sql)
         self.assertIn("COALESCE(kd.metadata ->> 'deleted', 'false') <> 'true'", search_sql)
@@ -388,6 +560,12 @@ class PgVectorRetrievalTest(unittest.TestCase):
 
         titles = [hit["title"] for hit in result["hits"]]
         self.assertIn("商品破损", titles)
+        self.assert_degraded_contract(
+            result,
+            mode="local_json_fallback",
+            filter_level="strict",
+            failure_reason="LOCAL_FALLBACK_ONLY",
+        )
 
     def test_local_fallback_finds_repo_knowledge_when_cwd_is_python_agent(self) -> None:
         retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="", embedding_api_key=""))

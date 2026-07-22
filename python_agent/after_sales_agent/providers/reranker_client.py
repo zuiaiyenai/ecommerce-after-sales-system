@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 import math
 import os
@@ -27,6 +28,30 @@ class RerankError(RuntimeError):
         return False
 
 
+_NUMERIC_CONFIG_SPECS: dict[str, tuple[type[int] | type[float], int | float, int | float, int | float]] = {
+    "RERANK_TIMEOUT_SECONDS": (float, 3.0, 0.0, 30.0),
+    "RERANK_MAX_RETRIES": (int, 1, 0, 1),
+    "RERANK_MAX_CANDIDATES": (int, 20, 1, 20),
+    "RERANK_MAX_CONCURRENCY": (int, 4, 1, 64),
+    "RERANK_CIRCUIT_FAILURE_THRESHOLD": (int, 5, 1, 100),
+    "RERANK_CIRCUIT_RECOVERY_SECONDS": (float, 30.0, 0.0, 3600.0),
+}
+
+
+def _safe_numeric_config(name: str) -> tuple[int | float, str | None]:
+    value_type, default, minimum, maximum = _NUMERIC_CONFIG_SPECS[name]
+    raw = os.getenv(name, str(default))
+    try:
+        value = value_type(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default, f"INVALID_RERANK_CONFIG:{name}"
+    if isinstance(value, float) and not math.isfinite(value):
+        return default, f"INVALID_RERANK_CONFIG:{name}"
+    if value < minimum or value > maximum or (minimum == 0.0 and value == 0.0 and value_type is float):
+        return default, f"INVALID_RERANK_CONFIG:{name}"
+    return value, None
+
+
 @dataclass(frozen=True)
 class RerankerConfig:
     provider: str
@@ -39,25 +64,46 @@ class RerankerConfig:
     max_concurrency: int = 4
     circuit_failure_threshold: int = 5
     circuit_recovery_seconds: float = 30.0
+    config_error: str | None = None
 
     @classmethod
     def from_env(cls) -> "RerankerConfig":
+        numeric: dict[str, int | float] = {}
+        first_error: str | None = None
+        for name in _NUMERIC_CONFIG_SPECS:
+            numeric[name], error = _safe_numeric_config(name)
+            first_error = first_error or error
         return cls(
             provider=os.getenv("RERANK_PROVIDER", "").strip(),
             base_url=os.getenv("RERANK_BASE_URL", "").strip(),
             api_key=os.getenv("RERANK_API_KEY", "").strip(),
             model=os.getenv("RERANK_MODEL", "text-rerank-v2").strip(),
-            timeout_seconds=float(os.getenv("RERANK_TIMEOUT_SECONDS", "3")),
-            max_retries=int(os.getenv("RERANK_MAX_RETRIES", "1")),
-            max_candidates=int(os.getenv("RERANK_MAX_CANDIDATES", "20")),
-            max_concurrency=int(os.getenv("RERANK_MAX_CONCURRENCY", "4")),
-            circuit_failure_threshold=int(os.getenv("RERANK_CIRCUIT_FAILURE_THRESHOLD", "5")),
-            circuit_recovery_seconds=float(os.getenv("RERANK_CIRCUIT_RECOVERY_SECONDS", "30")),
+            timeout_seconds=float(numeric["RERANK_TIMEOUT_SECONDS"]),
+            max_retries=int(numeric["RERANK_MAX_RETRIES"]),
+            max_candidates=int(numeric["RERANK_MAX_CANDIDATES"]),
+            max_concurrency=int(numeric["RERANK_MAX_CONCURRENCY"]),
+            circuit_failure_threshold=int(numeric["RERANK_CIRCUIT_FAILURE_THRESHOLD"]),
+            circuit_recovery_seconds=float(numeric["RERANK_CIRCUIT_RECOVERY_SECONDS"]),
+            config_error=first_error,
         )
 
     @property
+    def validation_error(self) -> str | None:
+        if self.config_error:
+            return self.config_error
+        # Provider and credential are the explicit enablement switch. A stale URL
+        # with both unset remains a deliberately disabled configuration.
+        if (self.provider or self.api_key) and not (
+            self.provider and self.base_url and self.api_key and self.model
+        ):
+            return "INVALID_RERANK_CONFIG:PROVIDER_FIELDS"
+        return None
+
+    @property
     def configured(self) -> bool:
-        return bool(self.provider and self.base_url and self.api_key and self.model)
+        return self.validation_error is None and bool(
+            self.provider and self.base_url and self.api_key and self.model
+        )
 
 
 @dataclass(frozen=True)
@@ -163,17 +209,50 @@ class RerankerClient:
         *,
         config: RerankerConfig | None = None,
         transport: RerankTransport | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config or RerankerConfig.from_env()
-        self.transport = transport or ManagedHTTPRerankTransport(
-            base_url=self.config.base_url,
-            api_key=self.config.api_key,
+        self.transport = transport
+        self._clock = clock
+        self._transport_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._closed = False
+        concurrency = self.config.max_concurrency if isinstance(self.config.max_concurrency, int) else 1
+        self._semaphore = threading.BoundedSemaphore(max(1, concurrency))
+        threshold = (
+            self.config.circuit_failure_threshold
+            if isinstance(self.config.circuit_failure_threshold, int)
+            else 1
         )
-        self._semaphore = threading.BoundedSemaphore(max(1, int(self.config.max_concurrency)))
+        recovery = self.config.circuit_recovery_seconds
+        if not isinstance(recovery, (int, float)) or not math.isfinite(float(recovery)):
+            recovery = 0.0
         self.breaker = RerankCircuitBreaker(
-            threshold=self.config.circuit_failure_threshold,
-            recovery_seconds=self.config.circuit_recovery_seconds,
+            threshold=threshold,
+            recovery_seconds=recovery,
+            clock=clock,
         )
+
+    def _get_transport(self) -> RerankTransport:
+        if self.transport is not None:
+            return self.transport
+        with self._transport_lock:
+            if self.transport is None:
+                self.transport = ManagedHTTPRerankTransport(
+                    base_url=self.config.base_url,
+                    api_key=self.config.api_key,
+                )
+            return self.transport
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            transport = self.transport
+        close = getattr(transport, "close", None)
+        if callable(close):
+            close()
 
     def rerank(
         self,
@@ -181,16 +260,20 @@ class RerankerClient:
         candidates: list[dict[str, Any]],
         top_n: int,
     ) -> RerankResult:
-        started = time.monotonic()
+        started = self._clock()
+        timeout_seconds = max(0.0, float(self.config.timeout_seconds))
+        deadline = started + timeout_seconds
         candidate_limit = max(1, min(int(self.config.max_candidates), 20))
         bounded_candidates = list(candidates[:candidate_limit])
         bounded_top_n = max(1, min(int(top_n), len(bounded_candidates))) if bounded_candidates else 0
         fallback = list(bounded_candidates[:bounded_top_n])
         if not bounded_candidates:
             return RerankResult([], "hybrid_reranked", False, None, self._latency_ms(started))
+        if self.config.validation_error:
+            return self._degraded(fallback, "CONFIG_ERROR", started)
         if not self.config.configured:
             return self._degraded(fallback, "NOT_CONFIGURED", started)
-        acquired = self._semaphore.acquire(timeout=max(0.0, float(self.config.timeout_seconds)))
+        acquired = self._semaphore.acquire(timeout=max(0.0, deadline - self._clock()))
         if not acquired:
             return self._degraded(fallback, "QUEUE_TIMEOUT", started)
         try:
@@ -203,9 +286,13 @@ class RerankerClient:
                 "top_n": bounded_top_n,
             }
             attempts = min(max(0, int(self.config.max_retries)), 1) + 1
+            transport = self._get_transport()
             for attempt in range(attempts):
                 try:
-                    data = self.transport.post_json(payload, timeout=float(self.config.timeout_seconds))
+                    remaining = deadline - self._clock()
+                    if remaining <= 0.0:
+                        raise RerankError("TIMEOUT")
+                    data = transport.post_json(payload, timeout=remaining)
                     items = self._validated_items(data, bounded_candidates, bounded_top_n)
                     self.breaker.record_success()
                     return RerankResult(items, "hybrid_reranked", False, None, self._latency_ms(started))
@@ -234,6 +321,8 @@ class RerankerClient:
         raw_results = data.get("results")
         if not isinstance(raw_results, list):
             raise RerankError("INVALID_RESPONSE")
+        if len(raw_results) != top_n:
+            raise RerankError("INVALID_RESPONSE")
         seen: set[int] = set()
         items: list[dict[str, Any]] = []
         for raw in raw_results:
@@ -258,15 +347,40 @@ class RerankerClient:
             items.append(item)
         return items[:top_n]
 
-    @staticmethod
-    def _latency_ms(started: float) -> float:
-        return round(max(0.0, (time.monotonic() - started) * 1000), 3)
+    def _latency_ms(self, started: float) -> float:
+        return round(max(0.0, (self._clock() - started) * 1000), 3)
 
-    @classmethod
     def _degraded(
-        cls,
+        self,
         items: list[dict[str, Any]],
         reason: str,
         started: float,
     ) -> RerankResult:
-        return RerankResult(list(items), "hybrid_rrf_degraded", True, reason, cls._latency_ms(started))
+        return RerankResult(list(items), "hybrid_rrf_degraded", True, reason, self._latency_ms(started))
+
+
+class RerankerClientLifecycle:
+    """Own one process-wide client so breaker and transport state survive requests."""
+
+    def __init__(self, factory: Callable[[], RerankerClient] = RerankerClient) -> None:
+        self._factory = factory
+        self._client: RerankerClient | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> RerankerClient:
+        if self._client is not None:
+            return self._client
+        with self._lock:
+            if self._client is None:
+                self._client = self._factory()
+            return self._client
+
+    def close(self) -> None:
+        with self._lock:
+            client = self._client
+        if client is not None:
+            client.close()
+
+
+RERANKER_CLIENTS = RerankerClientLifecycle()
+atexit.register(RERANKER_CLIENTS.close)

@@ -441,6 +441,22 @@ class AgentContractTest(unittest.TestCase):
         self.assertIsNone(kwargs["source_type"])
         self.assertIsNone(kwargs["top_k"])
 
+    def test_knowledge_admin_reuses_one_retriever_across_requests(self) -> None:
+        with patch(
+            "after_sales_agent.application.knowledge_admin_service.PgVectorKnowledgeRetriever"
+        ) as retriever_type:
+            retriever_type.return_value.retrieve.return_value = {
+                "query": "refund",
+                "mode": "pgvector",
+                "hits": [],
+            }
+            service = KnowledgeAdminService()
+            service.retrieve({"query": "first"})
+            service.retrieve({"query": "second"})
+
+        retriever_type.assert_called_once()
+        self.assertEqual(2, retriever_type.return_value.retrieve.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()
