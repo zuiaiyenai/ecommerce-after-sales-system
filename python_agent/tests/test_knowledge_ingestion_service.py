@@ -106,6 +106,47 @@ def test_markdown_sections_keep_heading_path_and_unknown_metadata_requires_revie
     assert result.chunks[0].review_required is True
 
 
+@pytest.mark.parametrize(
+    ("file_name", "content", "source_format"),
+    [
+        ("policy.md", b"# Refund\n\nfixture-body-must-not-be-logged", "md"),
+        ("policy.txt", b"fixture-body-must-not-be-logged", "txt"),
+        ("policy.pdf", _pdf_bytes("fixture-body-must-not-be-logged"), "pdf"),
+    ],
+)
+def test_parse_is_deterministic_and_logs_only_aggregate_chunk_metrics(
+    caplog: pytest.LogCaptureFixture,
+    file_name: str,
+    content: bytes,
+    source_format: str,
+) -> None:
+    service = KnowledgeIngestionService()
+
+    with caplog.at_level("INFO", logger="after_sales_agent.application.knowledge_ingestion.service"):
+        first = service.parse(
+            file_name=file_name,
+            content=content,
+            knowledge_type="faq",
+            allowed_metadata={},
+        )
+        second = service.parse(
+            file_name=file_name,
+            content=content,
+            knowledge_type="faq",
+            allowed_metadata={},
+        )
+
+    assert first.to_dict() == second.to_dict()
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert f"source_format={source_format}" in messages
+    assert "chunk_count=" in messages
+    assert "max_estimated_tokens=" in messages
+    assert "distinct_heading_paths=" in messages
+    assert "cross_page_chunk_count=" in messages
+    assert "strategy_version=" in messages
+    assert "fixture-body-must-not-be-logged" not in messages
+
+
 def test_scanned_pdf_is_rejected_without_ocr() -> None:
     buffer = io.BytesIO()
     writer = PdfWriter()

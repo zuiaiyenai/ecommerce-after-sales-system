@@ -172,7 +172,7 @@ class KnowledgeIngestionService:
         token_counts = [chunk.estimated_tokens for chunk in chunks]
         logger.info(
             "knowledge_ingestion_summary source_format=%s chunk_count=%d max_estimated_tokens=%d "
-            "average_estimated_tokens=%.2f distinct_heading_paths=%d cross_page_chunk_count=%d strategy=%s",
+            "average_estimated_tokens=%.2f distinct_heading_paths=%d cross_page_chunk_count=%d strategy_version=%s",
             source_format,
             len(chunks),
             max(token_counts, default=0),
