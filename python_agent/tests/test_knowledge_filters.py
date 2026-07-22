@@ -75,4 +75,5 @@ def test_hard_filter_sql_enforces_published_revision_merchant_and_half_open_vali
     assert "kd.merchant_code IN (%s, 'GLOBAL')" in sql
     assert "kd.valid_from IS NULL OR kd.valid_from <= %s" in sql
     assert "kd.valid_to IS NULL OR %s < kd.valid_to" in sql
+    assert sql.count("%s::text IS NULL") == 5
     assert params.count(as_of_time) == 2

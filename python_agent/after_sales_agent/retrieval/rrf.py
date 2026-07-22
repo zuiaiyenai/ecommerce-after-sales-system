@@ -18,11 +18,17 @@ def rrf_fuse(
 
     merged: dict[str, dict[str, Any]] = {}
     for channel, hits in (("dense", dense_hits), ("keyword", keyword_hits)):
-        for rank, hit in enumerate(hits, start=1):
+        seen_chunk_ids: set[str] = set()
+        rank = 0
+        for hit in hits:
             raw_chunk_id = hit.get("chunk_id", hit.get("id"))
             if raw_chunk_id is None:
                 raise ValueError(f"{channel} hit is missing chunk_id")
             chunk_id = str(raw_chunk_id)
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            rank += 1
             item = merged.setdefault(
                 chunk_id,
                 {

@@ -72,13 +72,13 @@ def build_hard_filter_sql(plan: FilterPlan) -> tuple[str, list[Any]]:
         AND kd.published_revision IS NOT NULL
         AND kc.revision = kd.published_revision
         AND kd.merchant_code IN (%s, 'GLOBAL')
-        AND (%s IS NULL OR kd.source_type = %s)
-        AND (%s IS NULL OR kd.policy_version = %s)
+        AND (%s::text IS NULL OR kd.source_type = %s)
+        AND (%s::text IS NULL OR kd.policy_version = %s)
         AND (kd.valid_from IS NULL OR kd.valid_from <= %s)
         AND (kd.valid_to IS NULL OR %s < kd.valid_to)
-        AND (%s IS NULL OR kc.product_categories = '{}' OR %s = ANY(kc.product_categories))
-        AND (%s IS NULL OR kc.scenes = '{}' OR %s = ANY(kc.scenes))
-        AND (%s IS NULL OR kc.intents = '{}' OR %s = ANY(kc.intents))
+        AND (%s::text IS NULL OR kc.product_categories = '{}' OR %s = ANY(kc.product_categories))
+        AND (%s::text IS NULL OR kc.scenes = '{}' OR %s = ANY(kc.scenes))
+        AND (%s::text IS NULL OR kc.intents = '{}' OR %s = ANY(kc.intents))
     """.strip()
     params: list[Any] = [
         plan.merchant_code,

@@ -173,7 +173,7 @@ class PgVectorKnowledgeRetriever:
                 local["mode"] = "local_json_fallback"
                 local["trace"]["reason"] = "PGVECTOR_DSN is empty"
                 logger.warning("rag pgvector dsn missing, fallback to local json hits=%s", len(local["hits"]))
-                return local
+                return self._apply_filter_contract(local, strict_plan)
         if not self.config.dsn:
             logger.warning("rag pgvector dsn missing and local json fallback has no hits")
             return {
@@ -221,13 +221,14 @@ class PgVectorKnowledgeRetriever:
                 as_of_time=resolved_as_of_time,
                 top_k=top_k,
             )
+            lexical = self._apply_filter_contract(lexical, strict_plan)
             error_info = self._embedding_error_info(exc)
             logger.error("rag embedding failed mode=%s detail=%s", error_info.get("type"), error_info)
             if local["hits"]:
                 local["mode"] = "local_json_fallback_after_embedding_error"
                 local["trace"]["embedding_error"] = error_info
                 logger.warning("rag fallback to local json after embedding error hits=%s", len(local["hits"]))
-                return local
+                return self._apply_filter_contract(local, strict_plan)
             if lexical["hits"]:
                 lexical["mode"] = "lexical_fallback_after_embedding_error"
                 lexical["trace"]["embedding_error"] = error_info
@@ -285,6 +286,8 @@ class PgVectorKnowledgeRetriever:
             filter_plan=strict_plan,
             top_k=candidate_limit,
         )
+        hits = self._annotate_hits_with_filter_contract(hits, strict_plan)
+        lexical = self._apply_filter_contract(lexical, strict_plan)
         if hits:
             hits = self._merge_and_rerank_hits(hits, lexical.get("hits") or [], normalized_query, limit)
         else:
@@ -310,7 +313,7 @@ class PgVectorKnowledgeRetriever:
             if relaxed["hits"]:
                 return relaxed
         logger.info("rag retrieve success mode=pgvector hits=%s", len(hits))
-        return {
+        return self._apply_filter_contract({
             "mode": "pgvector",
             "query": normalized_query,
             "hits": hits,
@@ -321,7 +324,7 @@ class PgVectorKnowledgeRetriever:
                 "vector_latency_ms": vector_latency_ms,
                 "embedding_cache_hit": embedding_cache_hit,
             },
-        }
+        }, strict_plan)
 
     def _relaxed_retrieve_after_empty_vector(
         self,
@@ -382,6 +385,7 @@ class PgVectorKnowledgeRetriever:
                 filter_plan=plan,
                 limit=20,
             )
+            vector_hits = self._annotate_hits_with_filter_contract(vector_hits, plan)
             vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
             lexical = self._lexical_fallback(
                 query=query,
@@ -395,6 +399,7 @@ class PgVectorKnowledgeRetriever:
                 filter_plan=plan,
                 top_k=20,
             )
+            lexical = self._apply_filter_contract(lexical, plan)
             attempts.append(
                 {
                     "level": plan.level,
@@ -416,13 +421,27 @@ class PgVectorKnowledgeRetriever:
             if vector_hits:
                 hits = self._merge_and_rerank_hits(vector_hits, lexical.get("hits") or [], query, limit)
                 logger.warning("rag fallback vector hit level=%s hits=%s", plan.level, len(hits))
-                return {"mode": "pgvector_relaxed_filters", "query": query, "hits": hits, "trace": trace}
+                return self._apply_filter_contract(
+                    {"mode": "pgvector_relaxed_filters", "query": query, "hits": hits, "trace": trace},
+                    plan,
+                )
             if lexical["hits"]:
                 lexical["mode"] = "lexical_fallback_after_relaxed_filters"
                 lexical["trace"].update(trace)
                 logger.warning("rag fallback lexical hit level=%s hits=%s", plan.level, len(lexical["hits"]))
-                return lexical
-        return {
+                return self._apply_filter_contract(lexical, plan)
+        exhausted_plan = plans[-1] if plans else build_filter_plans(
+            FilterContext(
+                merchant_code=self._normalized_merchant_code(merchant_code),
+                source_type=source_type,
+                policy_version=policy_version,
+                as_of_time=as_of_time,
+                product_category=strict_filters.get("product_category"),
+                scene=strict_filters.get("scene"),
+                intent=intent,
+            )
+        )[0]
+        return self._apply_filter_contract({
             "mode": "pgvector_relaxed_filters",
             "query": query,
             "hits": [],
@@ -433,7 +452,7 @@ class PgVectorKnowledgeRetriever:
                 "top_k": limit,
                 "embedding_cache_hit": embedding_cache_hit,
             },
-        }
+        }, exhausted_plan)
 
     @staticmethod
     def _normalized_merchant_code(merchant_code: str | None) -> str:
@@ -470,6 +489,32 @@ class PgVectorKnowledgeRetriever:
         if hasattr(value, "isoformat"):
             return str(value.isoformat())
         return str(value)
+
+    @staticmethod
+    def _annotate_hits_with_filter_contract(
+        hits: list[dict[str, Any]],
+        plan: FilterPlan,
+    ) -> list[dict[str, Any]]:
+        for hit in hits:
+            hit["trusted_policy_eligible"] = plan.trusted_policy_eligible
+            hit["relaxation_level"] = plan.level
+        return hits
+
+    @classmethod
+    def _apply_filter_contract(
+        cls,
+        result: dict[str, Any],
+        plan: FilterPlan,
+    ) -> dict[str, Any]:
+        result["trusted_policy_eligible"] = plan.trusted_policy_eligible
+        result["relaxation_level"] = plan.level
+        trace = result.setdefault("trace", {})
+        trace["trusted_policy_eligible"] = plan.trusted_policy_eligible
+        trace["relaxation_level"] = plan.level
+        hits = result.get("hits")
+        if isinstance(hits, list):
+            cls._annotate_hits_with_filter_contract(hits, plan)
+        return result
 
     def _vector_search(
         self,
@@ -520,7 +565,8 @@ class PgVectorKnowledgeRetriever:
                 cur.execute(f"SET LOCAL ivfflat.probes = {probes}")
                 cur.execute(sql, params)
                 rows = cur.fetchall()
-        return [self._row_to_hit(row, rank=rank, channel="dense") for rank, row in enumerate(rows, start=1)]
+        hits = [self._row_to_hit(row, rank=rank, channel="dense") for rank, row in enumerate(rows, start=1)]
+        return self._annotate_hits_with_filter_contract(hits, plan)
 
     @staticmethod
     def _row_to_hit(row: Any, *, rank: int = 1, channel: str = "dense") -> dict[str, Any]:
@@ -641,7 +687,8 @@ class PgVectorKnowledgeRetriever:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
-        return [self._row_to_hit(row, rank=rank, channel="keyword") for rank, row in enumerate(rows, start=1)]
+        hits = [self._row_to_hit(row, rank=rank, channel="keyword") for rank, row in enumerate(rows, start=1)]
+        return self._annotate_hits_with_filter_contract(hits, plan)
 
     def _lexical_fallback(
         self,
@@ -689,12 +736,22 @@ class PgVectorKnowledgeRetriever:
             )
         except Exception as exc:
             return {"mode": "lexical_error", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__, "message": str(exc)}}
-        return {
+        result = {
             "mode": "lexical_fallback",
             "query": query,
             "hits": hits,
             "trace": {"filters": metadata_filters, "top_k": len(hits), "tokens": self._lexical_tokens(query)},
         }
+        plan = filter_plan or self._strict_filter_plan(
+            merchant_code=merchant_code,
+            product_category=product_category,
+            scene=scene,
+            intent=intent,
+            source_type=source_type,
+            policy_version=policy_version,
+            as_of_time=as_of_time,
+        )
+        return self._apply_filter_contract(result, plan)
 
     @staticmethod
     def _lexical_tokens(query: str) -> list[str]:

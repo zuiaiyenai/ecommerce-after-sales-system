@@ -234,8 +234,12 @@ class PgVectorRetrievalTest(unittest.TestCase):
             self.assertEqual(7, hit["citation"]["revision"])
         self.assertEqual(1, dense[0]["dense_rank"])
         self.assertEqual(["dense"], dense[0]["retrieval_channels"])
+        self.assertTrue(dense[0]["trusted_policy_eligible"])
+        self.assertEqual("strict", dense[0]["relaxation_level"])
         self.assertEqual(1, keyword[0]["keyword_rank"])
         self.assertEqual(["keyword"], keyword[0]["retrieval_channels"])
+        self.assertTrue(keyword[0]["trusted_policy_eligible"])
+        self.assertEqual("strict", keyword[0]["relaxation_level"])
         self.assertEqual(dense[0]["citation"], keyword[0]["citation"])
 
     def test_local_fallback_uses_scene_aliases_for_damage(self) -> None:
@@ -326,6 +330,10 @@ class PgVectorRetrievalTest(unittest.TestCase):
             retriever.vector_calls,
         )
         self.assertEqual("category_and_scene_relaxed", result["trace"]["fallback_level"])
+        self.assertEqual("category_and_scene_relaxed", result["relaxation_level"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertFalse(result["trace"]["trusted_policy_eligible"])
+        self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
         self.assertEqual("耳机外壳破裂退款规则", result["hits"][0]["title"])
 
     def test_retrieve_preserves_scene_before_global_relaxation(self) -> None:
@@ -375,7 +383,52 @@ class PgVectorRetrievalTest(unittest.TestCase):
 
         self.assertEqual("pgvector_relaxed_filters", result["mode"])
         self.assertEqual("category_relaxed", result["trace"]["fallback_level"])
+        self.assertEqual("category_relaxed", result["relaxation_level"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
         self.assertEqual([("服装", "quality_issue"), (None, "quality_issue")], retriever.vector_calls)
+
+    def test_keyword_relaxed_hit_carries_explicit_untrusted_filter_contract(self) -> None:
+        class KeywordRelaxingRetriever(PgVectorKnowledgeRetriever):
+            def _embed(self, text: str) -> list[float]:
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                return []
+
+            def _lexical_fallback(self, **kwargs):
+                if kwargs.get("product_category") is None and kwargs.get("scene") == "quality_issue":
+                    return {
+                        "mode": "lexical_fallback",
+                        "query": kwargs.get("query") or "",
+                        "hits": [{"id": 9, "chunk_id": 9, "title": "general quality FAQ", "score": 2.4}],
+                        "trace": {},
+                    }
+                return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
+
+        old_psycopg = sys.modules.get("psycopg")
+        sys.modules["psycopg"] = types.SimpleNamespace()
+        try:
+            result = KeywordRelaxingRetriever(
+                PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake")
+            ).retrieve(
+                query="quality question",
+                merchant_code="M1",
+                product_category="headphone",
+                scene="quality_issue",
+                source_type="faq",
+            )
+        finally:
+            if old_psycopg is None:
+                sys.modules.pop("psycopg", None)
+            else:
+                sys.modules["psycopg"] = old_psycopg
+
+        self.assertEqual("lexical_fallback_after_relaxed_filters", result["mode"])
+        self.assertEqual("category_relaxed", result["relaxation_level"])
+        self.assertFalse(result["trusted_policy_eligible"])
+        self.assertFalse(result["trace"]["trusted_policy_eligible"])
+        self.assertFalse(result["hits"][0]["trusted_policy_eligible"])
 
 
 class _CapturingCursor:

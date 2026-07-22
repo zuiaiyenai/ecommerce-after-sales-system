@@ -28,3 +28,19 @@ def test_rrf_order_is_unchanged_when_raw_scores_change() -> None:
 
     assert [hit["chunk_id"] for hit in first] == [hit["chunk_id"] for hit in second]
     assert [hit["rrf_score"] for hit in first] == [hit["rrf_score"] for hit in second]
+
+
+def test_rrf_counts_duplicate_chunk_only_once_per_channel() -> None:
+    fused = rrf_fuse(
+        [
+            {"chunk_id": "A", "score": 0.9},
+            {"chunk_id": "A", "score": 0.8},
+            {"chunk_id": "B", "score": 0.7},
+        ],
+        [{"chunk_id": "B", "score": 9.0}],
+    )
+
+    hit_a = next(hit for hit in fused if hit["chunk_id"] == "A")
+    assert hit_a["rrf_score"] == 1.0 / 61
+    assert hit_a["retrieval_channels"] == ["dense"]
+    assert hit_a["dense_rank"] == 1
