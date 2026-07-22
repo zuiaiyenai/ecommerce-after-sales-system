@@ -148,18 +148,21 @@ public class KnowledgeIngestionAsyncService {
             return;
         }
         Map<String, Object> metadata = readMetadata(document.get("metadata"));
-        String sourceMode = stringValue(metadata.get("ingestionSourceType"));
+        String sourceMode = canonicalIngestionMode(metadata.get("ingestionSourceType"));
 
         try {
-            if ("FILE".equalsIgnoreCase(sourceMode)) {
+            if ("FILE".equals(sourceMode)) {
                 String filePath = stringValue(metadata.get("fileStoragePath"));
                 String fileName = stringValue(metadata.get("fileName"));
                 processFileImport(documentId, filePath, fileName, targetRevision);
                 return;
             }
-
-            processParsedFile(documentId, bytes(stringValue(document.get("content"))),
-                    textFileName(documentId), targetRevision);
+            if ("TEXT".equals(sourceMode)) {
+                processParsedFile(documentId, bytes(stringValue(document.get("content"))),
+                        textFileName(documentId), targetRevision);
+                return;
+            }
+            log.warn("Skip reprocess, unsupported ingestion source mode: documentId={}, mode={}", documentId, sourceMode);
         } catch (Exception e) {
             log.error("Failed to reprocess document {}", documentId, e);
             draftService.markParseFailed(documentId, targetRevision, errorCode(e), safeErrorMessage(e));
@@ -281,6 +284,11 @@ public class KnowledgeIngestionAsyncService {
 
     private String stringValue(Object value) {
         return value == null ? null : Objects.toString(value, null);
+    }
+
+    private String canonicalIngestionMode(Object value) {
+        String mode = stringValue(value);
+        return mode == null || mode.isBlank() ? "TEXT" : mode.trim().toUpperCase(java.util.Locale.ROOT);
     }
 
     private String textFileName(Long documentId) {

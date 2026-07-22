@@ -57,12 +57,17 @@ class KnowledgeDraftLifecycleIntegrationTest extends PostgresRagIntegrationSuppo
     }
 
     @Test
-    void syncLegacyTextWithoutSourceMarkerUsesProductionClaimAndDispatchesAfterCommit() throws Exception {
+    void syncCanonicalizesLegacyBlankAndMixedCaseSourceMarkersBeforeClaiming() throws Exception {
         jdbc.update("""
                 INSERT INTO knowledge_document(id, source_type, source_code, merchant_code, title, content,
                     metadata, review_status, revision, published_revision)
-                VALUES (9422, 'faq', 'legacy-text-9422', 'MERCHANT_DEMO', 'legacy', 'body',
-                    NULL, 'PUBLISHED', 1, 1)
+                VALUES
+                    (9422, 'faq', 'legacy-text-9422', 'MERCHANT_DEMO', 'legacy null', 'body',
+                        NULL, 'PUBLISHED', 1, 1),
+                    (9423, 'faq', 'legacy-text-9423', 'MERCHANT_DEMO', 'legacy blank', 'body',
+                        '{"ingestionSourceType":"   "}'::jsonb, 'PUBLISHED', 1, 1),
+                    (9424, 'faq', 'legacy-file-9424', 'MERCHANT_DEMO', 'mixed file', '',
+                        '{"ingestionSourceType":" fIlE "}'::jsonb, 'PUBLISHED', 1, 1)
                 """);
         KnowledgeIngestionAsyncService worker = mock(KnowledgeIngestionAsyncService.class);
         KnowledgeService service = new KnowledgeService(
@@ -77,16 +82,22 @@ class KnowledgeDraftLifecycleIntegrationTest extends PostgresRagIntegrationSuppo
 
         transaction.executeWithoutResult(status -> {
             assertThat(service.syncKnowledge(9422L)).containsEntry("documentId", "9422");
+            assertThat(service.syncKnowledge(9423L)).containsEntry("documentId", "9423");
+            assertThat(service.syncKnowledge(9424L)).containsEntry("documentId", "9424");
             verifyNoInteractions(worker);
-            assertThat(jdbc.queryForObject(
-                    "SELECT revision FROM knowledge_document WHERE id=9422", Long.class)).isEqualTo(2L);
-            assertThat(jdbc.queryForObject(
-                    "SELECT review_status FROM knowledge_document WHERE id=9422", String.class)).isEqualTo("PROCESSING");
-            assertThat(jdbc.queryForObject(
-                    "SELECT published_revision FROM knowledge_document WHERE id=9422", Long.class)).isEqualTo(1L);
+            for (long id : List.of(9422L, 9423L, 9424L)) {
+                assertThat(jdbc.queryForObject(
+                        "SELECT revision FROM knowledge_document WHERE id=?", Long.class, id)).isEqualTo(2L);
+                assertThat(jdbc.queryForObject(
+                        "SELECT review_status FROM knowledge_document WHERE id=?", String.class, id)).isEqualTo("PROCESSING");
+                assertThat(jdbc.queryForObject(
+                        "SELECT published_revision FROM knowledge_document WHERE id=?", Long.class, id)).isEqualTo(1L);
+            }
         });
 
         verify(worker).reprocessDocument(9422L, 2L);
+        verify(worker).reprocessDocument(9423L, 2L);
+        verify(worker).reprocessDocument(9424L, 2L);
     }
 
     private Map<String, Object> parsedDraft() {

@@ -27,6 +27,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 class KnowledgeIngestionAsyncServiceTest {
@@ -158,6 +159,57 @@ class KnowledgeIngestionAsyncServiceTest {
                 .processFileImport(42L, file.toString(), "target-revision.md", 7L);
 
         verify(draftService).replaceParsedDraft(eq(42L), eq(7L), any(Map.class));
+    }
+
+    @Test
+    void reprocessCanonicalizesFileAndTextModesAndRejectsUnknownModes() throws Exception {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgeMetadataPolicy policy = mock(KnowledgeMetadataPolicy.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+        AgentGatewayProperties properties = new AgentGatewayProperties();
+        properties.setBaseUrl("http://agent.internal/api");
+        when(policy.options("MERCHANT_DEMO")).thenReturn(Map.of(
+                "productCategories", List.of(), "scenes", List.of(), "intents", List.of()));
+        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenReturn(Map.of(
+                "content", "parsed", "chunks", List.of(Map.of("chunk_index", 0, "heading_path", List.of(),
+                        "text", "parsed", "classification_source", "RULE", "review_required", false))));
+        Path file = tempDir.resolve("canonical-mode.md");
+        Files.writeString(file, "# file body");
+        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
+                "id", 42L, "source_type", "faq", "merchant_code", "MERCHANT_DEMO", "content", "text fallback",
+                "metadata", Map.of("ingestionSourceType", " file ", "fileStoragePath", file.toString(),
+                        "fileName", "canonical-mode.md"))));
+        when(jdbcTemplate.queryForList(anyString(), eq(43L))).thenReturn(List.of(Map.of(
+                "id", 43L, "source_type", "faq", "merchant_code", "MERCHANT_DEMO", "content", "text body",
+                "metadata", Map.of("ingestionSourceType", " text "))));
+        when(jdbcTemplate.queryForList(anyString(), eq(44L))).thenReturn(List.of(Map.of(
+                "id", 44L, "source_type", "faq", "merchant_code", "MERCHANT_DEMO", "content", "must not parse",
+                "metadata", Map.of("ingestionSourceType", "url"))));
+        KnowledgeIngestionAsyncService service = new KnowledgeIngestionAsyncService(
+                jdbcTemplate, restTemplate, properties, policy, draftService);
+
+        service.reprocessDocument(42L, 8L);
+        service.reprocessDocument(43L, 9L);
+        service.reprocessDocument(44L, 10L);
+
+        ArgumentCaptor<HttpEntity> requests = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate, times(2)).postForObject(
+                eq("http://agent.internal/api/knowledge/parse"), requests.capture(), eq(Map.class));
+        List<Map<String, Object>> bodies = requests.getAllValues().stream()
+                .map(HttpEntity::getBody)
+                .map(body -> (Map<String, Object>) body)
+                .toList();
+        assertThat(bodies).extracting(body -> body.get("file_name"))
+                .containsExactly("canonical-mode.md", "knowledge-43.txt");
+        assertThat(new String(Base64.getDecoder().decode(String.valueOf(bodies.get(0).get("content_base64"))),
+                java.nio.charset.StandardCharsets.UTF_8)).isEqualTo("# file body");
+        assertThat(new String(Base64.getDecoder().decode(String.valueOf(bodies.get(1).get("content_base64"))),
+                java.nio.charset.StandardCharsets.UTF_8)).isEqualTo("text body");
+        verify(draftService).replaceParsedDraft(eq(42L), eq(8L), any(Map.class));
+        verify(draftService).replaceParsedDraft(eq(43L), eq(9L), any(Map.class));
+        verify(draftService, never()).replaceParsedDraft(eq(44L), eq(10L), any(Map.class));
+        verify(draftService, never()).markParseFailed(eq(44L), eq(10L), anyString(), anyString());
     }
 
     @Test

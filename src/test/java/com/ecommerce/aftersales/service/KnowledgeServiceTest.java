@@ -515,7 +515,7 @@ class KnowledgeServiceTest {
     }
 
     @Test
-    void reindexTreatsMissingOrBlankSourceMarkerAsLegacyTextWhenClaimingRevision() throws Exception {
+    void reindexCanonicalizesWhitespaceAndCaseBeforeClaimingSupportedSourceModes() throws Exception {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         KnowledgeIngestionAsyncService asyncService = mock(KnowledgeIngestionAsyncService.class);
         KnowledgeService service = new KnowledgeService(
@@ -538,7 +538,7 @@ class KnowledgeServiceTest {
         ArgumentCaptor<String> claimSql = ArgumentCaptor.forClass(String.class);
         verify(jdbcTemplate).queryForObject(claimSql.capture(), eq(Long.class), eq(44L));
         assertThat(claimSql.getValue())
-                .contains("COALESCE(NULLIF(metadata ->> 'ingestionSourceType', ''), 'TEXT')")
+                .contains("COALESCE(NULLIF(UPPER(BTRIM(metadata ->> 'ingestionSourceType')), ''), 'TEXT')")
                 .contains("IN ('FILE', 'TEXT')");
     }
 
