@@ -11,6 +11,9 @@ _SETEXT_UNDERLINE = re.compile(r"^\s*(?P<mark>=+|-+)\s*$")
 _FENCE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})")
 _LIST = re.compile(r"^\s*(?:[-+*]\s+|\d+[.)]\s+)")
 _TABLE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEPARATOR = re.compile(
+    r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
+)
 _QUOTE = re.compile(r"^\s*>")
 
 
@@ -42,13 +45,8 @@ def parse_markdown(text: str) -> list[DocumentBlock]:
             while index < len(lines):
                 code_line = lines[index]
                 code_lines.append(code_line)
-                closing = _FENCE.match(code_line)
                 index += 1
-                if (
-                    closing
-                    and closing.group("fence")[0] == fence_char
-                    and len(closing.group("fence")) >= fence_length
-                ):
+                if _is_closing_fence(code_line, fence_char, fence_length):
                     break
             blocks.append(DocumentBlock("code", "\n".join(code_lines), headings.path))
             continue
@@ -74,6 +72,10 @@ def parse_markdown(text: str) -> list[DocumentBlock]:
             continue
 
         line_type = _markdown_line_type(line)
+        if _is_table_header(lines, index) or (
+            block_type == "table" and "|" in line
+        ):
+            line_type = "table"
         if block_type != line_type:
             flush()
             block_type = line_type
@@ -92,3 +94,19 @@ def _markdown_line_type(line: str) -> str:
     if _QUOTE.match(line):
         return "quote"
     return "paragraph"
+
+
+def _is_closing_fence(line: str, fence_char: str, minimum_length: int) -> bool:
+    candidate = line.lstrip()
+    length = len(candidate) - len(candidate.lstrip(fence_char))
+    return (
+        length >= minimum_length
+        and candidate.startswith(fence_char)
+        and not candidate[length:].strip()
+    )
+
+
+def _is_table_header(lines: list[str], index: int) -> bool:
+    return index + 1 < len(lines) and "|" in lines[index] and bool(
+        _TABLE_SEPARATOR.match(lines[index + 1])
+    )

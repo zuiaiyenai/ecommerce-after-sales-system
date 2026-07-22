@@ -51,7 +51,7 @@ def test_plain_text_uses_only_conservative_numbered_headings() -> None:
     blocks = parse_plain_text("第一章 退款规则\n\n正文。\n\n普通短句\n继续说明。")
 
     assert blocks[0].heading_path == ("退款规则",)
-    assert "普通短句" in [block.text for block in blocks]
+    assert [block.text for block in blocks] == ["正文。", "普通短句\n继续说明。"]
 
 
 def test_numbered_heading_requires_an_explicit_numbering_marker() -> None:
@@ -59,3 +59,58 @@ def test_numbered_heading_requires_an_explicit_numbering_marker() -> None:
     assert numbered_heading("二、凭证要求") == (1, "凭证要求")
     assert numbered_heading("1.2 图片要求") == (2, "图片要求")
     assert numbered_heading("普通短句") is None
+
+
+def test_markdown_groups_quotes_and_consecutive_paragraph_lines() -> None:
+    blocks = parse_markdown("> 第一行\n> 第二行\n\n正文第一行\n正文第二行")
+
+    assert [block.block_type for block in blocks] == ["quote", "paragraph"]
+    assert [block.text for block in blocks] == [
+        "> 第一行\n> 第二行",
+        "正文第一行\n正文第二行",
+    ]
+
+
+def test_markdown_recognizes_tables_without_outer_pipes() -> None:
+    blocks = parse_markdown("类型 | 要求\n--- | ---\n图片 | 清晰")
+
+    assert [block.block_type for block in blocks] == ["table"]
+
+
+def test_markdown_keeps_invalid_closing_fence_inside_code_block() -> None:
+    blocks = parse_markdown(
+        """````text
+# not a heading
+````not-a-close
+- still code
+````
+# 后续标题
+正文
+"""
+    )
+
+    assert [block.block_type for block in blocks] == ["code", "paragraph"]
+    assert "````not-a-close\n- still code" in blocks[0].text
+    assert blocks[1].heading_path == ("后续标题",)
+
+
+def test_parsers_package_exports_public_parse_functions() -> None:
+    from after_sales_agent.application.knowledge_ingestion.parsers import (
+        parse_markdown as exported_markdown,
+    )
+    from after_sales_agent.application.knowledge_ingestion.parsers import (
+        parse_plain_text as exported_plain_text,
+    )
+
+    assert exported_markdown is parse_markdown
+    assert exported_plain_text is parse_plain_text
+
+
+def test_plain_text_keeps_markdown_like_lines_in_a_paragraph() -> None:
+    blocks = parse_plain_text("普通说明\n- 不是列表\n> 不是引用\n| 不是表格 |\n\n后续说明")
+
+    assert [block.block_type for block in blocks] == ["paragraph", "paragraph"]
+    assert [block.text for block in blocks] == [
+        "普通说明\n- 不是列表\n> 不是引用\n| 不是表格 |",
+        "后续说明",
+    ]
