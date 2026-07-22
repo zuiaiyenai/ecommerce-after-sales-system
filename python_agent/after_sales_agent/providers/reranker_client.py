@@ -76,7 +76,11 @@ class RerankerConfig:
         return cls(
             provider=os.getenv("RERANK_PROVIDER", "").strip(),
             base_url=os.getenv("RERANK_BASE_URL", "").strip(),
-            api_key=os.getenv("RERANK_API_KEY", "").strip(),
+            api_key=(
+                os.getenv("RERANK_API_KEY")
+                or os.getenv("VISION_API_KEY")
+                or ""
+            ).strip(),
             model=os.getenv("RERANK_MODEL", "text-rerank-v2").strip(),
             timeout_seconds=float(numeric["RERANK_TIMEOUT_SECONDS"]),
             max_retries=int(numeric["RERANK_MAX_RETRIES"]),

@@ -368,6 +368,18 @@ def test_partial_provider_configuration_is_config_error_without_transport_creati
     transport_type.assert_not_called()
 
 
+def test_reranker_config_reuses_existing_dashscope_credential(monkeypatch) -> None:
+    monkeypatch.setenv("RERANK_PROVIDER", "dashscope")
+    monkeypatch.setenv("RERANK_BASE_URL", "https://workspace.example/compatible-api/v1/reranks")
+    monkeypatch.delenv("RERANK_API_KEY", raising=False)
+    monkeypatch.setenv("VISION_API_KEY", "shared-workspace-key")
+
+    config = RerankerConfig.from_env()
+
+    assert config.api_key == "shared-workspace-key"
+    assert config.configured is True
+
+
 def test_unconfigured_client_does_not_create_managed_transport() -> None:
     config = _config(provider="", base_url="", api_key="", model="")
 

@@ -58,7 +58,7 @@ Windows pytest 退出阶段仍可能打印临时目录 `PermissionError`，但�
 - Reranker 采用阿里云官方推荐的 `qwen3-rerank`，Workspace 兼容接口与现有客户端响应契约匹配。真实四阶段查询结果为 `hybrid_reranked`，Dense=2、Keyword=1、RRF=2、Rerank=2，目标政策 rerank score 为 1.0，`trusted_policy_eligible=true`。
 - Java `/api/actuator/health` 为 `UP`，Agent `/api/health` 返回 `ok=true`。
 - 真实联调暴露并修复了旧库 reindex 安全问题：现在仅处理 `PUBLISHED` 文档，严格校验 embedding 数量，写入前锁定并复核 revision/updated_at，只删除当前批次 chunk，且只为空 pointer 的 legacy published 文档回填 revision。
-- Rerank 凭据当前通过本次 Docker 启动进程注入，未把密钥复制进仓库。后续重新创建容器时应在受保护的 Compose 环境中设置 `RERANK_PROVIDER=dashscope`、Workspace `/compatible-api/v1/reranks` 地址、对应 API Key、`RERANK_MODEL=qwen3-rerank` 和 `RAG_LAYERED_RETRIEVAL_ENABLED=true`。
+- Rerank 配置已持久化到 Git 忽略的根 `.env` 与 `python_agent/.env`；`RerankerConfig` 在未单独设置 `RERANK_API_KEY` 时复用已有 `VISION_API_KEY`，避免复制密钥。重新创建 Agent/Java 容器后已验证 `qwen3-rerank` 真实请求为 `hybrid_reranked` 且未降级。
 
 ## 后续验收分支应做什么
 
