@@ -25,6 +25,9 @@ import java.util.stream.Collectors;
 @Service
 public class KnowledgePublishService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final List<String> STRUCTURAL_METADATA_KEYS = List.of(
+            "page_start", "page_end", "content_types", "estimated_tokens", "chunking_strategy"
+    );
     @Qualifier("pgJdbcTemplate") private final JdbcTemplate pgJdbcTemplate;
     private final KnowledgeIngestionAsyncService asyncService;
     private final KnowledgeMetadataPolicy metadataPolicy;
@@ -104,7 +107,8 @@ public class KnowledgePublishService {
     List<Map<String, Object>> targetDraft(Long documentId, long targetRevision) {
         return pgJdbcTemplate.queryForList("""
                 SELECT kd.id document_id, kd.source_type, kd.source_code, kd.merchant_code, kd.title, kd.policy_version,
-                       kd.valid_from, kd.valid_to, d.chunk_index, d.chunk_text, d.heading_path, d.page_number,
+                       kd.valid_from, kd.valid_to, kd.revision, kd.metadata document_metadata,
+                       d.chunk_index, d.chunk_text, d.heading_path, d.page_number, d.metadata chunk_metadata,
                        d.product_categories, d.scenes, d.intents
                 FROM knowledge_document kd JOIN knowledge_chunk_draft d ON d.document_id=kd.id
                 WHERE kd.id=? AND kd.revision=? AND kd.review_status='PUBLISHING' AND d.revision=?
@@ -168,22 +172,138 @@ public class KnowledgePublishService {
         return null;
     }
     private static String vectorText(List<Double> vector) { return vector.stream().map(String::valueOf).collect(Collectors.joining(",", "[", "]")); }
-    private static String searchText(Map<String, Object> row) {
-        List<String> values = new ArrayList<>();
-        values.add(value(row, "title")); values.add(String.join(" ", array(row.get("heading_path")) == null ? new String[0] : array(row.get("heading_path"))));
-        values.add(value(row, "chunk_text"));
-        for (String key : List.of("product_categories", "scenes", "intents")) { String[] tags = array(row.get(key)); if (tags != null) values.add(String.join(" ", tags)); }
-        return values.stream().filter(value -> !value.isBlank()).collect(Collectors.joining(" "));
+    public static String contextualizedText(Map<String, Object> row) {
+        return contextualizedText(row, List.of());
     }
+
+    private static String contextualizedText(Map<String, Object> row, List<String> additionalContext) {
+        Map<String, Object> structural = metadataMap(row.get("chunk_metadata"));
+        Map<String, Object> documentMetadata = metadataMap(row.get("document_metadata"));
+        List<String> context = new ArrayList<>();
+        addContext(context, "文档：", value(row, "title"));
+        String[] headings = array(row.get("heading_path"));
+        if (headings != null && headings.length > 0) addContext(context, "章节：", String.join(" > ", headings));
+        Integer pageStart = integer(structural.get("page_start"));
+        if (pageStart == null) pageStart = integer(row.get("page_number"));
+        Integer pageEnd = integer(structural.get("page_end"));
+        if (pageStart != null) {
+            String range = pageEnd != null && !pageEnd.equals(pageStart) ? pageStart + "-" + pageEnd : pageStart.toString();
+            addContext(context, "位置：", "第 " + range + " 页");
+        }
+        String fileName = firstNonBlank(documentMetadata.get("fileName"), documentMetadata.get("file_name"));
+        List<String> source = new ArrayList<>();
+        if (fileName != null) source.add(fileName);
+        String sourceCode = nonBlank(row.get("source_code"));
+        if (sourceCode != null) source.add(sourceCode);
+        if (!source.isEmpty()) addContext(context, "来源：", String.join(" / ", source));
+        String[] contentTypes = array(structural.get("content_types"));
+        if (contentTypes != null && contentTypes.length > 0) addContext(context, "内容类型：", String.join("、", contentTypes));
+        context.addAll(additionalContext);
+        String body = value(row, "chunk_text");
+        if (context.isEmpty()) return body;
+        return String.join("\n", context) + (body.isBlank() ? "" : "\n\n" + body);
+    }
+
+    private static String searchText(Map<String, Object> row) {
+        List<String> classifications = new ArrayList<>();
+        addClassification(classifications, "商品分类：", row.get("product_categories"));
+        addClassification(classifications, "场景：", row.get("scenes"));
+        addClassification(classifications, "意图：", row.get("intents"));
+        return contextualizedText(row, classifications);
+    }
+
     private static Map<String, Object> metadata(Map<String, Object> row) {
         Map<String, Object> data = new LinkedHashMap<>();
-        for (String key : List.of("title", "source_type", "source_code", "merchant_code", "policy_version", "valid_from", "valid_to")) data.put(key, row.get(key));
+        Map<String, Object> structural = metadataMap(row.get("chunk_metadata"));
+        for (String key : STRUCTURAL_METADATA_KEYS) {
+            if (structural.containsKey(key)) data.put(key, structural.get(key));
+        }
+        data.put("document_id", value(row, "document_id"));
+        data.put("document_title", row.get("title"));
+        data.put("title", row.get("title"));
+        for (String key : List.of("source_type", "source_code", "merchant_code", "policy_version", "valid_from", "valid_to", "revision", "chunk_index")) {
+            data.put(key, row.get(key));
+        }
+        Map<String, Object> documentMetadata = metadataMap(row.get("document_metadata"));
+        String fileName = firstNonBlank(documentMetadata.get("fileName"), documentMetadata.get("file_name"));
+        String sourceFormat = sourceFormat(fileName, documentMetadata.get("ingestionSourceType"));
+        if (sourceFormat != null) data.put("source_format", sourceFormat);
+        if (fileName != null) data.put("file_name", fileName);
         String[] headings = array(row.get("heading_path"));
+        data.put("heading_path", headings == null ? List.of() : Arrays.asList(headings));
+        data.put("page_number", row.get("page_number"));
+        for (String key : List.of("product_categories", "scenes", "intents")) {
+            String[] labels = array(row.get(key));
+            data.put(key, labels == null ? null : Arrays.asList(labels));
+        }
+        Integer pageStart = integer(structural.get("page_start"));
+        if (pageStart == null) pageStart = integer(row.get("page_number"));
+        Integer pageEnd = integer(structural.get("page_end"));
         Map<String, Object> citation = new LinkedHashMap<>();
         citation.put("headingPath", headings == null ? List.of() : Arrays.asList(headings));
         citation.put("pageNumber", row.get("page_number"));
+        citation.put("pageStart", pageStart);
+        citation.put("pageEnd", pageEnd == null ? pageStart : pageEnd);
         data.put("citation", citation);
         return data;
+    }
+
+    private static void addContext(List<String> context, String prefix, String raw) {
+        if (raw != null && !raw.isBlank()) context.add(prefix + raw);
+    }
+
+    private static void addClassification(List<String> context, String prefix, Object raw) {
+        String[] values = array(raw);
+        if (values != null && values.length > 0) addContext(context, prefix, String.join("、", values));
+    }
+
+    private static String sourceFormat(String fileName, Object ingestionSourceType) {
+        if (fileName != null) {
+            String lower = fileName.toLowerCase(java.util.Locale.ROOT);
+            if (lower.endsWith(".pdf")) return "pdf";
+            if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+            if (lower.endsWith(".txt")) return "text";
+        }
+        return "TEXT".equalsIgnoreCase(nonBlank(ingestionSourceType)) ? "text" : null;
+    }
+
+    private static String firstNonBlank(Object... values) {
+        for (Object raw : values) {
+            String value = nonBlank(raw);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    private static String nonBlank(Object raw) {
+        String value = raw == null ? null : String.valueOf(raw).trim();
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static Integer integer(Object raw) {
+        if (raw instanceof Number number) return number.intValue();
+        try { return raw == null ? null : Integer.valueOf(String.valueOf(raw)); }
+        catch (NumberFormatException ignored) { return null; }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> metadataMap(Object raw) {
+        if (raw == null) return Map.of();
+        if (raw instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        try {
+            Object json = raw;
+            if ("org.postgresql.util.PGobject".equals(raw.getClass().getName())) {
+                json = raw.getClass().getMethod("getValue").invoke(raw);
+            }
+            if (json == null || String.valueOf(json).isBlank()) return Map.of();
+            return OBJECT_MAPPER.readValue(String.valueOf(json), Map.class);
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
     private static String toJson(Object value) { try { return OBJECT_MAPPER.writeValueAsString(value); } catch (Exception e) { throw new IllegalStateException("Unable to serialize knowledge metadata", e); } }
 }

@@ -60,6 +60,46 @@ class KnowledgePublishServiceTest {
     }
 
     @Test
+    void publishedChunkKeepsOriginalTextAndMergesStructuralMetadataUnderAuthoritativeFacts() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        KnowledgePublishService service = new KnowledgePublishService(jdbc, mock(KnowledgeIngestionAsyncService.class));
+        Map<String, Object> draft = new LinkedHashMap<>();
+        draft.put("document_id", 42L); draft.put("source_type", "after_sales_policy");
+        draft.put("source_code", "POLICY-2026"); draft.put("merchant_code", "MERCHANT_DEMO");
+        draft.put("title", "平台售后退款规则"); draft.put("policy_version", "v3");
+        draft.put("chunk_index", 5); draft.put("chunk_text", "body");
+        draft.put("heading_path", new String[]{"退款政策", "举证要求"}); draft.put("page_number", 3);
+        draft.put("product_categories", new String[]{"phone"}); draft.put("scenes", new String[]{"quality_issue"});
+        draft.put("intents", new String[]{"refund"});
+        draft.put("chunk_metadata", "{\"page_start\":3,\"page_end\":4,\"content_types\":[\"paragraph\",\"list\"],"
+                + "\"estimated_tokens\":2,\"chunking_strategy\":\"structured_recursive_v1\","
+                + "\"source_type\":\"pdf\",\"merchant_code\":\"UNTRUSTED\",\"unknown\":\"drop-me\"}");
+        draft.put("document_metadata", "{\"ingestionSourceType\":\"FILE\",\"fileName\":\"policy.pdf\"}");
+        when(jdbc.queryForList(anyString(), eq(42L), eq(6L), eq(6L))).thenReturn(List.of(draft));
+        when(jdbc.update(anyString(), org.mockito.ArgumentMatchers.any(Object[].class))).thenReturn(1);
+
+        service.commitPublishedRevision(42L, 6L, List.of(Collections.nCopies(1024, 0.0d)));
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc, org.mockito.Mockito.atLeast(3)).update(sql.capture(), arguments.capture());
+        int insert = java.util.stream.IntStream.range(0, sql.getAllValues().size())
+                .filter(index -> sql.getAllValues().get(index).contains("INSERT INTO knowledge_chunk"))
+                .findFirst().orElseThrow();
+        Object[] published = arguments.getAllValues().get(insert);
+        assertThat(published[3]).isEqualTo("body");
+        assertThat(String.valueOf(published[11]))
+                .contains("文档：平台售后退款规则", "章节：退款政策 > 举证要求", "位置：第 3-4 页")
+                .contains("来源：policy.pdf / POLICY-2026", "商品分类：phone", "场景：quality_issue", "意图：refund")
+                .endsWith("body");
+        assertThat(String.valueOf(published[12]))
+                .contains("\"page_end\":4", "\"pageNumber\":3", "\"pageStart\":3", "\"pageEnd\":4")
+                .contains("\"source_type\":\"after_sales_policy\"", "\"source_format\":\"pdf\"")
+                .contains("\"product_categories\":[\"phone\"]")
+                .doesNotContain("UNTRUSTED", "drop-me");
+    }
+
+    @Test
     void publishWorkerIsDispatchedOnlyAfterCommit() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         KnowledgeIngestionAsyncService async = mock(KnowledgeIngestionAsyncService.class);

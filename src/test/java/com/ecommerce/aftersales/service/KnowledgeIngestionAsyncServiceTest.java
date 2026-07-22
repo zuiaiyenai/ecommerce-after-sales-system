@@ -14,14 +14,15 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Base64;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -65,53 +66,73 @@ class KnowledgeIngestionAsyncServiceTest {
     }
 
     @Test
-    void generatedChunkMetadataContainsAllStructuredRetrievalFields() {
+    void textImportUsesPythonParserAndReplacesTheClaimedDraftWithoutDeletingPublishedChunks() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgeMetadataPolicy policy = mock(KnowledgeMetadataPolicy.class);
+        KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
         AgentGatewayProperties properties = new AgentGatewayProperties();
         properties.setBaseUrl("http://agent.internal");
-        KnowledgeIngestionAsyncService service =
-                new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties);
-
-        Map<String, Object> document = Map.ofEntries(
-                Map.entry("id", 42L),
-                Map.entry("source_type", "after_sales_policy"),
-                Map.entry("source_code", "POLICY-001"),
-                Map.entry("merchant_code", "MERCHANT_DEMO"),
-                Map.entry("title", "耳机质量问题政策"),
-                Map.entry("content", "功能异常时提供问题凭证。"),
-                Map.entry("product_category", "headphone"),
-                Map.entry("scene", "quality_issue"),
-                Map.entry("intent", "exchange"),
-                Map.entry("policy_version", "v2.0"),
-                Map.entry("tags", "[\"耳机\",\"换货\"]"),
-                Map.entry("metadata", "{}"),
-                Map.entry("status", 1)
-        );
-        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(document));
-        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class)))
-                .thenReturn(Map.of("embeddings", List.of(List.of(0.1D, 0.2D))));
+        when(policy.options("MERCHANT_DEMO")).thenReturn(Map.of(
+                "productCategories", List.of(), "scenes", List.of(), "intents", List.of()));
+        when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
+                "id", 42L, "source_type", "after_sales_policy", "merchant_code", "MERCHANT_DEMO",
+                "revision", 7L, "metadata", "{\"ingestionSourceType\":\"TEXT\"}")));
+        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenReturn(Map.of(
+                "content", "功能异常时提供问题凭证。", "chunks", List.of(Map.of(
+                        "chunk_index", 0, "heading_path", List.of(), "text", "功能异常时提供问题凭证。",
+                        "classification_source", "RULE", "review_required", false))));
+        KnowledgeIngestionAsyncService service = new KnowledgeIngestionAsyncService(
+                jdbcTemplate, restTemplate, properties, policy, draftService);
 
         service.processTextImport(42L, "功能异常时提供问题凭证。");
 
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
-        verify(jdbcTemplate, atLeastOnce()).update(sql.capture(), arguments.capture());
-        int chunkInsertIndex = -1;
-        for (int i = 0; i < sql.getAllValues().size(); i++) {
-            if (sql.getAllValues().get(i).contains("INSERT INTO knowledge_chunk")) {
-                chunkInsertIndex = i;
-                break;
-            }
-        }
-        assertThat(chunkInsertIndex).isGreaterThanOrEqualTo(0);
-        String metadata = String.valueOf(arguments.getAllValues().get(chunkInsertIndex)[5]);
-        assertThat(metadata)
-                .contains("\"product_category\":\"headphone\"")
-                .contains("\"scene\":\"quality_issue\"")
-                .contains("\"intent\":\"exchange\"")
-                .contains("\"policy_version\":\"v2.0\"")
-                .contains("\"tags\":[\"耳机\",\"换货\"]");
+        ArgumentCaptor<HttpEntity> request = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).postForObject(eq("http://agent.internal/knowledge/parse"), request.capture(), eq(Map.class));
+        Map<String, Object> body = (Map<String, Object>) request.getValue().getBody();
+        assertThat(body.get("file_name")).isEqualTo("knowledge-42.txt");
+        assertThat(new String(Base64.getDecoder().decode(String.valueOf(body.get("content_base64"))), java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("功能异常时提供问题凭证。");
+        verify(draftService).replaceParsedDraft(eq(42L), eq(7L), any(Map.class));
+        verify(jdbcTemplate, never()).update(argThat(sql -> sql.contains("DELETE FROM knowledge_chunk")), any(Object[].class));
+    }
+
+    @Test
+    void publishEmbedsDeterministicDocumentContextInsteadOfRawChunkText() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RestTemplate restTemplate = mock(RestTemplate.class);
+        KnowledgePublishService publishService = mock(KnowledgePublishService.class);
+        @SuppressWarnings("unchecked") ObjectProvider<KnowledgePublishService> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(publishService);
+        Map<String, Object> row = new java.util.LinkedHashMap<>();
+        row.put("title", "平台售后退款规则");
+        row.put("source_code", "POLICY-2026");
+        row.put("chunk_text", "body");
+        row.put("heading_path", new String[]{"退款政策", "举证要求"});
+        row.put("page_number", 3);
+        row.put("chunk_metadata", "{\"page_start\":3,\"page_end\":4,\"content_types\":[\"paragraph\",\"list\"]}");
+        row.put("document_metadata", "{\"ingestionSourceType\":\"FILE\",\"fileName\":\"policy.pdf\"}");
+        when(publishService.targetDraft(42L, 6L)).thenReturn(List.of(row));
+        when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(Map.of("embeddings", List.of(java.util.Collections.nCopies(1024, 0.0d))));
+        AgentGatewayProperties properties = new AgentGatewayProperties();
+        properties.setBaseUrl("http://agent/api");
+
+        new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, mock(KnowledgeMetadataPolicy.class),
+                mock(KnowledgeDraftService.class), provider).publish(42L, 6L);
+
+        ArgumentCaptor<HttpEntity> request = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).postForObject(eq("http://agent/api/embeddings"), request.capture(), eq(Map.class));
+        Map<String, Object> requestBody = (Map<String, Object>) request.getValue().getBody();
+        List<String> embeddingChunks = (List<String>) requestBody.get("chunks");
+        assertThat(embeddingChunks).hasSize(1);
+        assertThat(embeddingChunks.getFirst())
+                .contains("文档：平台售后退款规则")
+                .contains("章节：退款政策 > 举证要求")
+                .contains("位置：第 3-4 页")
+                .contains("来源：policy.pdf / POLICY-2026")
+                .contains("内容类型：paragraph、list")
+                .endsWith("body");
     }
 
     @Test
@@ -162,6 +183,32 @@ class KnowledgeIngestionAsyncServiceTest {
                 .processFileImport(42L, file.toString(), "encrypted.pdf", 7L);
 
         verify(draftService).markParseFailed(eq(42L), eq(7L), eq("PDF_ENCRYPTED"), anyString());
+    }
+
+    @Test
+    void structuredParserErrorsRemainStableAcrossTheJavaBoundary() throws Exception {
+        for (String code : List.of("DOCUMENT_CONTENT_EMPTY", "DOCUMENT_CHUNKING_FAILED")) {
+            JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+            RestTemplate restTemplate = mock(RestTemplate.class);
+            KnowledgeMetadataPolicy policy = mock(KnowledgeMetadataPolicy.class);
+            KnowledgeDraftService draftService = mock(KnowledgeDraftService.class);
+            AgentGatewayProperties properties = new AgentGatewayProperties();
+            properties.setBaseUrl("http://agent.internal/api");
+            when(policy.options("MERCHANT_DEMO")).thenReturn(Map.of(
+                    "productCategories", List.of(), "scenes", List.of(), "intents", List.of()));
+            when(jdbcTemplate.queryForList(anyString(), eq(42L))).thenReturn(List.of(Map.of(
+                    "id", 42L, "source_type", "after_sales_policy", "merchant_code", "MERCHANT_DEMO", "metadata", "{}")));
+            when(restTemplate.postForObject(anyString(), any(HttpEntity.class), eq(Map.class))).thenThrow(
+                    HttpClientErrorException.create(HttpStatus.UNPROCESSABLE_ENTITY, "unprocessable", HttpHeaders.EMPTY,
+                            ("{\"error\":\"" + code + "\",\"message\":\"parse failed\"}").getBytes(), null));
+            Path file = tempDir.resolve(code + ".txt");
+            Files.writeString(file, "text");
+
+            new KnowledgeIngestionAsyncService(jdbcTemplate, restTemplate, properties, policy, draftService)
+                    .processFileImport(42L, file.toString(), file.getFileName().toString(), 7L);
+
+            verify(draftService).markParseFailed(eq(42L), eq(7L), eq(code), anyString());
+        }
     }
 
     @Test
