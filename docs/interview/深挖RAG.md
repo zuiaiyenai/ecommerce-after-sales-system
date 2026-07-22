@@ -2,7 +2,7 @@
 
 > 面向“Java 后端 + AI Agent 应用开发”岗位的面试资料。本文只把仓库已经存在的代码描述为“已实现”；尚未落地的能力统一标记为“代码中暂未发现”或“建议优化”，不能在面试中说成现状。
 
-> 简历口径说明（依据 2026-07-16 版实时简历）：简历没有声明本项目 RAG Recall@5 为 100%。仓库虽然保留了一份 18 条用例的基线报告，但它只是补充验证材料，不是简历指标。面试时不需要主动背出“100%”，若面试官追问评测，再说明样本规模、统计方法和局限。
+> 简历口径说明（依据 2026-07-16 版实时简历）：简历没有声明本项目的 RAG Recall、HitRate、MRR 或 NDCG。仓库当前有 18 条 smoke case，但没有可计算检索指标的 Gold Chunk 标注，dry-run 报告也是 `metrics=null`。面试时不能把它说成“RAG 100%”，若被追问，应明确说明当前只能验证评测流程和安全门禁，不能证明检索效果。
 
 ## 0. 先给结论：这个项目的 RAG 到底深不深
 
@@ -24,7 +24,7 @@
 - keyword 使用 `pg_trgm similarity + ILIKE + heading_path` 加分，不是 BM25/Elasticsearch；
 - Reranker 是托管服务，不是本地 Cross-Encoder；
 - 结构化切片已经落地，但 Parent-Child、字符 offset 和语义模型切片尚未实现；
-- 18 条旧基线只证明旧链路在种子场景上可用，不能证明结构化切片、发布 revision 或 Reranker 的效果；
+- 当前 18 条 smoke case 只用于验证评测流程和安全门禁，不能证明结构化切片、发布 revision 或 Reranker 的效果；
 - 缺少新链路 Gold document/chunk、难例集、消融实验和端到端回答质量评测。
 
 因此，面试中最稳妥的定位是：
@@ -46,7 +46,7 @@
 这些内容都能在当前仓库找到对应代码；仓库现在还实现了结构化入库、Draft/Publish、RRF 和托管 Reranker。简历没有写本项目的 RAG Recall、HitRate、MRR 或 NDCG 数字，所以回答时应分三层：
 
 1. **简历已写且代码已实现**：可以主动展开；
-2. **仓库存在但简历未写的 18 条基线**：被问到评测时作为补充说明；
+2. **仓库当前的 18 条 smoke case**：被问到评测时说明其构成、无 Gold Chunk 和 `metrics=null`，不能包装成效果指标；
 3. **尚未实现的 OCR/DOCX/HTML、BM25/ES、本地 Cross-Encoder、Parent-Child**：只能作为优化方案。
 
 特别注意不要混淆简历中的两个项目：
@@ -68,7 +68,7 @@
 >
 > 安全上，RAG 只提供证据，不直接修改工单。可信政策要求 strict filter、Dense/Keyword 双通道、政策来源、Reranker 成功、来源阈值和有效 citation；工作流还复核商家、版本、业务时间有效期、图片与风险规则。政策默认阈值是 0.75，不是所有来源统一 0.65。系统保存 query、mode、hits、citation 与各阶段 trace，便于复盘。
 >
-> 目前局限是没有 OCR/DOCX/HTML、keyword 不是 BM25/ES、Reranker 依赖托管服务。简历里没有写 RAG 指标；仓库的 18 条历史小样本更接近场景 HitRate@5，不能证明当前新链路效果。下一步应先重建带 Gold document/chunk、负例和版本安全例的评测集，再做切片、检索和 Reranker 消融。
+> 目前局限是没有 OCR/DOCX/HTML、keyword 不是 BM25/ES、Reranker 依赖托管服务。简历里没有写 RAG 指标；仓库当前 18 条 smoke case 中没有可计算 Recall/HitRate 的 Gold Chunk，dry-run 也不产出指标。下一步应先补齐 Gold document/chunk、难负例和版本安全例，再做切片、检索和 Reranker 消融。
 
 ---
 
@@ -434,7 +434,7 @@ Chunk product_categories / scenes / intents 匹配或为空通用标签
 
 `source_type` 是 `after_sales_policy/faq/evidence_requirement` 等业务语义；`source_format` 才是 `pdf/markdown/text`。两者不能混用。
 
-原文与检索上下文也分离：`chunk_text` 和 citation snippet 保持原文；Embedding 输入确定性添加文档标题、标题路径、页范围、可信文件名/`source_code` 和内容类型，keyword `search_text` 额外加入已确认分类。这样提升召回，又不把检索增强文本冒充引用正文。
+原文与检索上下文也分离：`chunk_text` 保持原文，Retriever 将它放入命中项的 `snippet`；citation 只保存 Chunk/文档、来源、标题路径、页码、revision、版本和有效期等溯源元数据。Embedding 输入确定性添加文档标题、标题路径、页范围、可信文件名/`source_code` 和内容类型，keyword `search_text` 额外加入已确认分类。这样提升召回，又不把检索增强文本冒充引用正文。
 
 历史数据使用 `20260721_backfill_knowledge_filter_metadata.sql` 做安全回填：只从旧 metadata 中已经存在的同名或驼峰字段复制到独立列，并把 `数码/general/product_damage/resend` 等历史别名规范化为 `digital/NULL/damage/reissue`，最后同步 Chunk metadata。对于完全没有明确来源值的历史文档保持 NULL，不根据标题或知识类型猜测品类/场景；Retriever 把 NULL 当作通用知识处理。
 
@@ -716,49 +716,45 @@ embedding_provider + model + dimension + preprocessing_version + normalized_quer
 
 ## 11. 离线评测：当前代码究竟测了什么
 
-### 11.1 当前基线
+### 11.1 当前 smoke 数据集
 
-仓库保留的历史 `tools/evaluate_rag_recall.py` 基线：
+当前 `python_agent/evaluation/rag_retrieval_cases.jsonl` 有 18 条 case：
 
-- 3 个品类：digital、headphone、phone；
-- 6 个场景；
-- 共 18 个 Query Case；
-- 每个场景只有一条固定查询，在三个品类中重复；
-- 若 Top5 任一 Hit 的 `scene` 属于预设别名集合，就记为命中；
-- 历史报告记录为 18/18、100%，平均延迟约 158.85ms。
+- 15 条标记为 `legacy_scene_heuristic_unverified`；
+- 3 条标记为 `negative_intent_reviewed`；
+- 所有 case 的 `relevant_chunk_ids` 当前均为空；
+- `docs/rag-recall-baseline.json` 是 dry-run 产物，`metrics=null`。
 
-这组数字存在于仓库旧评测报告中，**没有写入实时简历的 RAG 描述**，且产生于结构化切片、Draft/Publish、共同 hard filter 与托管 Reranker 新链路之前。它适合说明“曾经做过基础链路验证”，不能证明当前链路效果，更不适合作为项目开场成果指标。
+这套数据能验证评测 CLI 是否可运行、分层链路是否启用、负例是否 fail closed，以及输出结构是否完整。它没有可核验的 Gold Chunk 集合，不能证明结构化切片、Draft/Publish、RRF 或 Reranker 的检索收益。
 
-### 11.2 为什么它更像 HitRate@5
+### 11.2 为什么当前不能报告 Recall 或 HitRate
 
-经典 Recall@K：
+严格 Recall@K 需要每个 Query 的完整相关集合：
 
 ```text
 Recall@K = TopK 中相关文档数 / 该 Query 的全部相关文档数
 ```
 
-当前脚本只判断 Top5 是否至少存在一条场景匹配记录：
+HitRate@K 至少也需要一个可核验的相关结果集合：
 
 ```text
-HitRate@5 = Top5 中至少有一条相关结果的 Query 数 / Query 总数
+HitRate@K = TopK 中至少命中一条 Gold 结果的 Query 数 / Query 总数
 ```
 
-脚本没有为每条 Query 标注全部相关 document_id/chunk_id，所以无法计算严格 Recall@K。面试中最安全的说法：
+当前 18 条 case 没有 `relevant_chunk_ids`，因此两者都不能计算。面试中最安全的说法：
 
-> 仓库做过一份 18 条小样本场景基线，结果是 18 条都能在 Top5 找到至少一条场景匹配知识。脚本文件沿用了 Recall@5 的名称，但从统计实现看更接近 HitRate@5。这一数字没有写在我的简历里，我只把它当作基础链路验证，不能外推为线上召回率。
+> 仓库当前有 18 条 smoke case，用于验证评测流程、分层检索开关和安全负例；因为还没有 Gold document/chunk 标注，dry-run 报告也是 `metrics=null`，所以我不会把它描述成 Recall、HitRate 或线上效果。下一步要先补标注，再报告 MRR、NDCG 和过滤违规率。
 
 ### 11.3 当前评测的局限
 
 1. 只有 18 条，样本太小；
-2. 三个品类重复同六条 Query，语言多样性不足；
-3. 只看 `scene`，没有 Gold Document/Chunk；
-4. 相关场景相同但政策内容错误，也可能记为成功；
-5. 没有无答案、跨商家、过期政策、负例；
-6. 没有口语、错别字、省略、多轮指代、多意图；
-7. 没有 Precision、MRR、NDCG 和引用正确性；
-8. 平均延迟混合冷启动和缓存命中，缺少 p50/p95；
-9. 数据很可能来自同一套种子知识，不能代表生产分布；
-10. 没有比较 lexical、dense、hybrid、rerank 的消融实验。
+2. 15 条旧场景仍是 `unverified`，不能当作人工确认 Gold；
+3. 没有 Gold Document/Chunk，无法计算 Recall、HitRate、MRR 或 NDCG；
+4. 负例只有 3 条，缺少跨商家、过期政策和版本冲突等安全难例；
+5. 缺少口语、错别字、省略、多轮指代和多意图；
+6. 没有引用正确性、过滤违规率和 page/path 覆盖率；
+7. dry-run 不执行真实 Provider/数据库链路，也没有可报告的 p50/p95；
+8. 没有比较 lexical、dense、hybrid、rerank 的完整消融实验。
 
 ### 11.4 应建立怎样的评测集
 
@@ -935,7 +931,7 @@ Dense 擅长语义改写，Sparse 擅长：
 
 ### P0：面试前必须说清楚
 
-1. 简历没有写 RAG 100%；若被问到仓库基线，要说明 18 条“Recall@5”实际更接近 HitRate@5；
+1. 简历没有写 RAG 指标；当前 18 条 smoke 没有 Gold Chunk，`metrics=null`，不能包装成 Recall 或 HitRate；
 2. 支持文本层 PDF/Markdown/UTF-8 TXT，不支持 OCR/DOCX/HTML；
 3. 当前是 `structured_recursive_v1`，不是固定窗口/overlap；
 4. keyword 是 pg_trgm，不是 BM25/ES；
@@ -993,7 +989,7 @@ Dense 擅长语义改写，Sparse 擅长：
 
 ### Q6：你的简历没有写 RAG 指标，那你们做过召回评测吗？
 
-> 做过一份仓库级的小样本基线，但我没有把它写成简历成果。当前脚本是 3 个品类乘 6 个场景，共 18 条；Top5 中只要有一条 scene 属于预设别名就记成功，18 条都命中。从实现看它更准确叫 HitRate@5，而不是有完整 Gold 集合的严格 Recall@5。它只能说明种子知识上的基础链路可用，不能代表线上效果。下一步需要增加 Gold document/chunk、真实口语、无答案、跨商家和版本难例，并报告 MRR、NDCG、过滤违规率和 p95。
+> 当前仓库有 18 条 smoke case，其中 15 条是未完成人工 Gold 验证的旧场景，3 条是已审负例；`relevant_chunk_ids` 为空，dry-run 报告也是 `metrics=null`。因此我只能说评测 CLI 和安全门禁已经可运行，不能报告 Recall、HitRate 或线上效果。下一步需要补 Gold document/chunk、真实口语、无答案、跨商家和版本难例，再报告 MRR、NDCG、过滤违规率和 p95。
 
 ### Q7：Embedding API 挂了怎么办？
 
@@ -1095,6 +1091,6 @@ python -m pytest python_agent/tests/test_pgvector_retriever.py -q
 5. 检索是 Dense + pg_trgm 各 Top20 -> RRF(k=60) -> 托管 Reranker；
 6. 两通道共用 merchant/source/version/time/Chunk 标签 hard filters；
 7. degraded、relaxed、lexical-only、local JSON 都不能授权自动审核；
-8. 简历没写 RAG 100%；仓库 18 条基线若被问到，应称为小样本 HitRate@5；
+8. 简历没写 RAG 指标；当前 18 条 smoke 没有 Gold Chunk、`metrics=null`，不能声称 Recall 或 HitRate；
 9. 召回低先查知识、解析、切片和 Filter，再查 ANN、模型和 Reranker；
 10. citation/trace 已含页码、标题路径、revision、候选数与降级原因；下一步优先建设新链路可信评测集。

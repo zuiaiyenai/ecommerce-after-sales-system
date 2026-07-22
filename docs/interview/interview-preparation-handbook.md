@@ -543,7 +543,7 @@ Java 上传并创建 PROCESSING(revision=N)
 - IVFFlat 余弦索引；
 - 默认 `ivfflat.probes=10`。
 
-发布时不会修改 `chunk_text`：它和 citation 中的正文仍是解析后的原文。Embedding 输入会确定性添加文档标题、标题路径、页码、可信文件名/`source_code` 和内容类型；keyword 的 `search_text` 还会添加已确认分类。这样提高召回上下文，又不会把装饰性上下文伪装成引用原文。
+发布时不会修改 `chunk_text`：Retriever 将其原文放在命中项 `snippet` 中；citation 本身只保存 Chunk/文档、来源、标题路径、页码、revision、版本和有效期等溯源元数据。Embedding 输入会确定性添加文档标题、标题路径、页码、可信文件名/`source_code` 和内容类型；keyword 的 `search_text` 还会添加已确认分类。这样提高召回上下文，又不会把装饰性上下文伪装成引用原文。
 
 `source_type` 表示 `after_sales_policy/faq/evidence_requirement` 等业务语义，文件格式使用独立的 `source_format=pdf/markdown/text`。只有 `ingestionSourceType=FILE` 时才从 Java 保留字段读取 file name；`fileName/file_name` 等内部 metadata key 不允许由用户自定义 metadata 伪造。
 
@@ -579,16 +579,9 @@ Embedding Key 缺失时常见 `lexical_fallback_after_embedding_error`，它说�
 
 ### 13.6 RAG 评测
 
-仓库保留过一份 18 条历史场景基线，覆盖 3 类商品、6 类售后场景；它按“Top5 至少有一条 scene 匹配”计数，更准确地说是历史 HitRate@5，而不是有完整相关集合的 Recall@5。
+当前 `rag_retrieval_cases.jsonl` 有 18 条 smoke case：15 条标记为 `legacy_scene_heuristic_unverified`，3 条为 `negative_intent_reviewed`。这些 case 的 `relevant_chunk_ids` 为空，dry-run 报告明确是 `metrics=null`，所以当前不能据此报告 Recall、HitRate、MRR 或 NDCG。
 
-局限：
-
-- 样本很小；
-- 主要检查元数据和场景覆盖；
-- 运行于结构化切片、发布 revision 和托管 Reranker 完成之前，不能证明当前新链路效果；
-- 不等于答案正确率；
-- 不等于线上真实分布；
-- 不能描述为生产召回率。
+它能验证的是评测 CLI、分层链路开关、负例门禁和输出结构，不是检索效果。不能把 18 条 smoke 描述成“18/18 命中”“100% 召回”或生产指标。
 
 新链路应重新构建 Gold document/chunk 与无答案、跨商家、过期政策难例，并报告 Recall/MRR/NDCG、两通道候选数、Reranker 降级率、filter violation、citation page/path 覆盖率和发布 revision。
 
