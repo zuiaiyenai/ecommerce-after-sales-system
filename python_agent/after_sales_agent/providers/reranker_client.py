@@ -214,9 +214,10 @@ class RerankerClient:
         self.config = config or RerankerConfig.from_env()
         self.transport = transport
         self._clock = clock
-        self._transport_lock = threading.Lock()
-        self._close_lock = threading.Lock()
+        self._lifecycle = threading.Condition()
+        self._active_calls = 0
         self._closed = False
+        self._close_complete = False
         concurrency = self.config.max_concurrency if isinstance(self.config.max_concurrency, int) else 1
         self._semaphore = threading.BoundedSemaphore(max(1, concurrency))
         threshold = (
@@ -234,9 +235,9 @@ class RerankerClient:
         )
 
     def _get_transport(self) -> RerankTransport:
-        if self.transport is not None:
-            return self.transport
-        with self._transport_lock:
+        with self._lifecycle:
+            if self._closed:
+                raise RerankError("CLIENT_CLOSED")
             if self.transport is None:
                 self.transport = ManagedHTTPRerankTransport(
                     base_url=self.config.base_url,
@@ -245,14 +246,42 @@ class RerankerClient:
             return self.transport
 
     def close(self) -> None:
-        with self._close_lock:
+        with self._lifecycle:
+            if self._close_complete:
+                return
             if self._closed:
+                while not self._close_complete:
+                    self._lifecycle.wait()
                 return
             self._closed = True
+            while self._active_calls:
+                self._lifecycle.wait()
             transport = self.transport
-        close = getattr(transport, "close", None)
-        if callable(close):
-            close()
+        try:
+            close = getattr(transport, "close", None)
+            if callable(close):
+                close()
+        finally:
+            with self._lifecycle:
+                self._close_complete = True
+                self._lifecycle.notify_all()
+
+    def _begin_call(self) -> bool:
+        with self._lifecycle:
+            if self._closed:
+                return False
+            self._active_calls += 1
+            return True
+
+    def _finish_call(self) -> None:
+        with self._lifecycle:
+            self._active_calls -= 1
+            if self._active_calls == 0:
+                self._lifecycle.notify_all()
+
+    def _is_closed(self) -> bool:
+        with self._lifecycle:
+            return self._closed
 
     def rerank(
         self,
@@ -267,46 +296,65 @@ class RerankerClient:
         bounded_candidates = list(candidates[:candidate_limit])
         bounded_top_n = max(1, min(int(top_n), len(bounded_candidates))) if bounded_candidates else 0
         fallback = list(bounded_candidates[:bounded_top_n])
-        if not bounded_candidates:
-            return RerankResult([], "hybrid_reranked", False, None, self._latency_ms(started))
-        if self.config.validation_error:
-            return self._degraded(fallback, "CONFIG_ERROR", started)
-        if not self.config.configured:
-            return self._degraded(fallback, "NOT_CONFIGURED", started)
-        acquired = self._semaphore.acquire(timeout=max(0.0, deadline - self._clock()))
-        if not acquired:
-            return self._degraded(fallback, "QUEUE_TIMEOUT", started)
+        if not self._begin_call():
+            return self._degraded(fallback, "CLIENT_CLOSED", started)
         try:
-            if not self.breaker.before_call():
-                return self._degraded(fallback, "CIRCUIT_OPEN", started)
-            payload = {
-                "model": self.config.model,
-                "query": str(query or ""),
-                "documents": [self._candidate_text(item) for item in bounded_candidates],
-                "top_n": bounded_top_n,
-            }
-            attempts = min(max(0, int(self.config.max_retries)), 1) + 1
-            transport = self._get_transport()
-            for attempt in range(attempts):
+            if not bounded_candidates:
+                return RerankResult([], "hybrid_reranked", False, None, self._latency_ms(started))
+            if self.config.validation_error:
+                return self._degraded(fallback, "CONFIG_ERROR", started)
+            if not self.config.configured:
+                return self._degraded(fallback, "NOT_CONFIGURED", started)
+            acquired = self._semaphore.acquire(timeout=max(0.0, deadline - self._clock()))
+            if not acquired:
+                return self._degraded(fallback, "QUEUE_TIMEOUT", started)
+            try:
+                if self._is_closed():
+                    return self._degraded(fallback, "CLIENT_CLOSED", started)
+                if not self.breaker.before_call():
+                    return self._degraded(fallback, "CIRCUIT_OPEN", started)
+                payload = {
+                    "model": self.config.model,
+                    "query": str(query or ""),
+                    "documents": [self._candidate_text(item) for item in bounded_candidates],
+                    "top_n": bounded_top_n,
+                }
+                attempts = min(max(0, int(self.config.max_retries)), 1) + 1
                 try:
-                    remaining = deadline - self._clock()
-                    if remaining <= 0.0:
-                        raise RerankError("TIMEOUT")
-                    data = transport.post_json(payload, timeout=remaining)
-                    items = self._validated_items(data, bounded_candidates, bounded_top_n)
-                    self.breaker.record_success()
-                    return RerankResult(items, "hybrid_reranked", False, None, self._latency_ms(started))
+                    transport = self._get_transport()
                 except RerankError as exc:
-                    if exc.retryable and attempt + 1 < attempts:
-                        continue
-                    self.breaker.record_failure()
+                    if exc.code != "CLIENT_CLOSED":
+                        self.breaker.record_failure()
                     return self._degraded(fallback, exc.code, started)
                 except Exception:
                     self.breaker.record_failure()
                     return self._degraded(fallback, "UNEXPECTED_ERROR", started)
-            return self._degraded(fallback, "UNEXPECTED_ERROR", started)
+                for attempt in range(attempts):
+                    try:
+                        remaining = deadline - self._clock()
+                        if remaining <= 0.0:
+                            raise RerankError("TIMEOUT")
+                        data = transport.post_json(payload, timeout=remaining)
+                        if self._clock() >= deadline:
+                            raise RerankError("TIMEOUT")
+                        items = self._validated_items(data, bounded_candidates, bounded_top_n)
+                        self.breaker.record_success()
+                        return RerankResult(items, "hybrid_reranked", False, None, self._latency_ms(started))
+                    except RerankError as exc:
+                        if exc.code == "CLIENT_CLOSED":
+                            return self._degraded(fallback, exc.code, started)
+                        if exc.retryable and attempt + 1 < attempts:
+                            continue
+                        self.breaker.record_failure()
+                        return self._degraded(fallback, exc.code, started)
+                    except Exception:
+                        self.breaker.record_failure()
+                        return self._degraded(fallback, "UNEXPECTED_ERROR", started)
+                return self._degraded(fallback, "UNEXPECTED_ERROR", started)
+            finally:
+                self._semaphore.release()
         finally:
-            self._semaphore.release()
+            self._finish_call()
 
     @staticmethod
     def _candidate_text(candidate: dict[str, Any]) -> str:
@@ -366,20 +414,24 @@ class RerankerClientLifecycle:
         self._factory = factory
         self._client: RerankerClient | None = None
         self._lock = threading.Lock()
+        self._closed = False
 
     def get(self) -> RerankerClient:
-        if self._client is not None:
-            return self._client
         with self._lock:
+            if self._closed:
+                raise RerankError("CLIENT_CLOSED")
             if self._client is None:
                 self._client = self._factory()
             return self._client
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             client = self._client
-        if client is not None:
-            client.close()
+            if client is not None:
+                client.close()
 
 
 RERANKER_CLIENTS = RerankerClientLifecycle()

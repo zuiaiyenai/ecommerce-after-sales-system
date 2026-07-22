@@ -415,33 +415,74 @@ class PgVectorKnowledgeRetriever:
                 relaxed_filters,
             )
             vector_started_at = time.perf_counter()
-            vector_hits = self._vector_search(
-                psycopg_module=psycopg_module,
-                embedding=embedding,
-                merchant_code=plan.merchant_code,
-                product_category=plan.product_category,
-                scene=plan.scene,
-                intent=plan.intent,
-                source_type=plan.source_type,
-                policy_version=plan.policy_version,
-                as_of_time=plan.as_of_time,
-                filter_plan=plan,
-                limit=20,
-            )
+            try:
+                vector_hits = self._vector_search(
+                    psycopg_module=psycopg_module,
+                    embedding=embedding,
+                    merchant_code=plan.merchant_code,
+                    product_category=plan.product_category,
+                    scene=plan.scene,
+                    intent=plan.intent,
+                    source_type=plan.source_type,
+                    policy_version=plan.policy_version,
+                    as_of_time=plan.as_of_time,
+                    filter_plan=plan,
+                    limit=20,
+                )
+            except Exception as exc:
+                vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
+                return self._finalize_result(
+                    {
+                        "mode": "pgvector_error",
+                        "query": query,
+                        "hits": [],
+                        "trace": {
+                            "error": exc.__class__.__name__,
+                            "message": str(exc),
+                            "strict_filters": strict_filters,
+                            "filters": relaxed_filters,
+                            "fallback_level": plan.level,
+                            "fallback_attempts": attempts,
+                            "vector_latency_ms": vector_latency_ms,
+                        },
+                    },
+                    plan=plan,
+                    failure_reason="PGVECTOR_ERROR",
+                )
             vector_hits = self._annotate_hits_with_filter_contract(vector_hits, plan)
             vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
-            lexical = self._lexical_fallback(
-                query=query,
-                merchant_code=plan.merchant_code,
-                product_category=plan.product_category,
-                scene=plan.scene,
-                intent=plan.intent,
-                source_type=plan.source_type,
-                policy_version=plan.policy_version,
-                as_of_time=plan.as_of_time,
-                filter_plan=plan,
-                top_k=20,
-            )
+            try:
+                lexical = self._lexical_fallback(
+                    query=query,
+                    merchant_code=plan.merchant_code,
+                    product_category=plan.product_category,
+                    scene=plan.scene,
+                    intent=plan.intent,
+                    source_type=plan.source_type,
+                    policy_version=plan.policy_version,
+                    as_of_time=plan.as_of_time,
+                    filter_plan=plan,
+                    top_k=20,
+                )
+            except Exception as exc:
+                return self._finalize_result(
+                    {
+                        "mode": "lexical_error",
+                        "query": query,
+                        "hits": [],
+                        "trace": {
+                            "error": exc.__class__.__name__,
+                            "message": str(exc),
+                            "strict_filters": strict_filters,
+                            "filters": relaxed_filters,
+                            "fallback_level": plan.level,
+                            "fallback_attempts": attempts,
+                            "vector_latency_ms": vector_latency_ms,
+                        },
+                    },
+                    plan=plan,
+                    failure_reason="LEXICAL_ERROR",
+                )
             lexical = self._apply_filter_contract(lexical, plan)
             attempts.append(
                 {

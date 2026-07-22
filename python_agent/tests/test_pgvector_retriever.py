@@ -31,12 +31,14 @@ class PgVectorRetrievalTest(unittest.TestCase):
     def assert_degraded_contract(self, result, *, mode: str, filter_level: str, failure_reason: str) -> None:
         self.assertEqual(mode, result["mode"])
         self.assertEqual(filter_level, result["filter_level"])
+        self.assertEqual(filter_level, result["relaxation_level"])
         self.assertFalse(result["reranker_succeeded"])
         self.assertTrue(result["no_answer"])
         self.assertFalse(result["trusted_policy_eligible"])
         self.assertEqual(failure_reason, result["failure_reason"])
         self.assertIsInstance(result["threshold"], float)
         self.assertIsInstance(result["trace"]["stage_latency_ms"], dict)
+        self.assertEqual(filter_level, result["trace"]["filter_level"])
         self.assertEqual(failure_reason, result["trace"]["failure_reason"])
         self.assertFalse(result["trace"]["trusted_policy_eligible"])
         for hit in result["hits"]:
@@ -165,6 +167,72 @@ class PgVectorRetrievalTest(unittest.TestCase):
             mode="pgvector_error",
             filter_level="strict",
             failure_reason="PGVECTOR_ERROR",
+        )
+
+    def test_relaxed_vector_error_uses_current_plan_stable_degraded_contract(self) -> None:
+        class RelaxedVectorFailureRetriever(PgVectorKnowledgeRetriever):
+            def __init__(self) -> None:
+                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                self.vector_calls = 0
+
+            def _embed(self, _text):
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                self.vector_calls += 1
+                if self.vector_calls == 1:
+                    return []
+                raise RuntimeError("relaxed vector database unavailable")
+
+            def _lexical_fallback(self, **kwargs):
+                return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
+
+        result = _retrieve_with_fake_psycopg(
+            RelaxedVectorFailureRetriever(),
+            source_type="faq",
+            product_category="headphone",
+            scene="quality_issue",
+        )
+
+        self.assertEqual([], result["hits"])
+        self.assert_degraded_contract(
+            result,
+            mode="pgvector_error",
+            filter_level="category_relaxed",
+            failure_reason="PGVECTOR_ERROR",
+        )
+
+    def test_relaxed_lexical_error_uses_current_plan_stable_degraded_contract(self) -> None:
+        class RelaxedLexicalFailureRetriever(PgVectorKnowledgeRetriever):
+            def __init__(self) -> None:
+                super().__init__(PgVectorConfig(dsn="postgresql://unused", embedding_api_key="fake"))
+                self.lexical_calls = 0
+
+            def _embed(self, _text):
+                return [0.0]
+
+            def _vector_search(self, **_kwargs):
+                return []
+
+            def _lexical_fallback(self, **kwargs):
+                self.lexical_calls += 1
+                if self.lexical_calls == 1:
+                    return {"mode": "lexical_fallback", "query": kwargs.get("query") or "", "hits": [], "trace": {}}
+                raise RuntimeError("relaxed lexical database unavailable")
+
+        result = _retrieve_with_fake_psycopg(
+            RelaxedLexicalFailureRetriever(),
+            source_type="faq",
+            product_category="headphone",
+            scene="quality_issue",
+        )
+
+        self.assertEqual([], result["hits"])
+        self.assert_degraded_contract(
+            result,
+            mode="lexical_error",
+            filter_level="category_relaxed",
+            failure_reason="LEXICAL_ERROR",
         )
 
     def test_exhausted_relaxed_plans_use_stable_degraded_contract(self) -> None:

@@ -116,10 +116,12 @@ def test_semaphore_queue_wait_is_bounded_by_timeout() -> None:
         queued = client.rerank("queued", _candidates(1), 1)
         elapsed = time.monotonic() - started
         release.set()
-        assert first.result(timeout=1).degraded is False
+        inflight = first.result(timeout=1)
 
     assert queued.degraded is True
     assert queued.failure_reason == "QUEUE_TIMEOUT"
+    assert inflight.degraded is True
+    assert inflight.failure_reason == "TIMEOUT"
     assert elapsed < 0.25
 
 
@@ -160,6 +162,76 @@ def test_queue_and_retries_share_one_monotonic_total_deadline() -> None:
     assert result.failure_reason == "TIMEOUT"
     assert transport.timeouts == pytest.approx([0.75, 0.25])
     assert now[0] == pytest.approx(101.0)
+
+
+def test_valid_response_arriving_after_overall_deadline_fails_closed_without_recording_success() -> None:
+    now = [10.0]
+
+    class LateValidTransport:
+        def post_json(self, _payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+            now[0] += timeout + 0.01
+            return {"results": [{"index": 0, "relevance_score": 0.99}]}
+
+    class RecordingBreaker:
+        def __init__(self) -> None:
+            self.successes = 0
+            self.failures = 0
+
+        def before_call(self) -> bool:
+            return True
+
+        def record_success(self) -> None:
+            self.successes += 1
+
+        def record_failure(self) -> None:
+            self.failures += 1
+
+    candidate = {**_candidates(1)[0], "trusted_policy_eligible": False}
+    client = RerankerClient(
+        transport=LateValidTransport(),
+        config=_config(timeout_seconds=1.0, max_retries=0),
+        clock=lambda: now[0],
+    )
+    breaker = RecordingBreaker()
+    client.breaker = breaker  # type: ignore[assignment]
+
+    result = client.rerank("query", [candidate], top_n=1)
+
+    assert result.degraded is True
+    assert result.failure_reason == "TIMEOUT"
+    assert result.items == [candidate]
+    assert result.items[0]["trusted_policy_eligible"] is False
+    assert breaker.successes == 0
+    assert breaker.failures == 1
+
+
+def test_retry_attempts_recheck_shared_deadline_after_late_valid_response() -> None:
+    now = [100.0]
+
+    class RetryThenLateValidTransport:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def post_json(self, _payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+            self.timeouts.append(timeout)
+            if len(self.timeouts) == 1:
+                now[0] += 0.6
+                raise RerankError("TIMEOUT")
+            now[0] += timeout + 0.01
+            return {"results": [{"index": 0, "relevance_score": 0.95}]}
+
+    transport = RetryThenLateValidTransport()
+    client = RerankerClient(
+        transport=transport,
+        config=_config(timeout_seconds=1.0, max_retries=1),
+        clock=lambda: now[0],
+    )
+
+    result = client.rerank("query", _candidates(1), top_n=1)
+
+    assert result.degraded is True
+    assert result.failure_reason == "TIMEOUT"
+    assert transport.timeouts == pytest.approx([1.0, 0.4])
 
 
 @pytest.mark.parametrize(
@@ -340,6 +412,93 @@ def test_reranker_client_close_is_idempotent_and_closes_created_transport_once()
     assert transport.close_calls == 1
 
 
+def test_close_before_first_call_rejects_rerank_without_creating_transport() -> None:
+    client = RerankerClient(config=_config())
+
+    with patch("after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport") as transport_type:
+        client.close()
+        result = client.rerank("query", _candidates(1), top_n=1)
+
+    assert result.degraded is True
+    assert result.failure_reason == "CLIENT_CLOSED"
+    assert result.items == _candidates(1)
+    transport_type.assert_not_called()
+
+
+def test_close_waits_for_inflight_rerank_then_closes_transport_once() -> None:
+    request_entered = threading.Event()
+    release_request = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    class BlockingCloseableTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.close_calls = 0
+
+        def post_json(self, _payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+            self.calls += 1
+            request_entered.set()
+            assert release_request.wait(timeout=1)
+            return {"results": [{"index": 0, "relevance_score": 0.8}]}
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    transport = BlockingCloseableTransport()
+    client = RerankerClient(config=_config(timeout_seconds=1.0), transport=transport)
+
+    def close_client() -> None:
+        close_started.set()
+        client.close()
+        close_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rerank_future = pool.submit(client.rerank, "inflight", _candidates(1), 1)
+        assert request_entered.wait(timeout=1)
+        close_future = pool.submit(close_client)
+        assert close_started.wait(timeout=1)
+        assert close_finished.wait(timeout=0.05) is False
+        assert transport.close_calls == 0
+
+        rejected = client.rerank("after-close-started", _candidates(1), top_n=1)
+        assert rejected.failure_reason == "CLIENT_CLOSED"
+        assert transport.calls == 1
+
+        release_request.set()
+        assert rerank_future.result(timeout=1).degraded is False
+        close_future.result(timeout=1)
+
+    assert close_finished.is_set()
+    assert transport.close_calls == 1
+
+
+def test_close_winning_transport_creation_race_returns_client_closed_without_leak() -> None:
+    transport_lookup_started = threading.Event()
+    continue_transport_lookup = threading.Event()
+
+    class PausingClient(RerankerClient):
+        def _get_transport(self):
+            transport_lookup_started.set()
+            assert continue_transport_lookup.wait(timeout=1)
+            return super()._get_transport()
+
+    client = PausingClient(config=_config(timeout_seconds=1.0))
+
+    with patch("after_sales_agent.providers.reranker_client.ManagedHTTPRerankTransport") as transport_type:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            rerank_future = pool.submit(client.rerank, "racing", _candidates(1), 1)
+            assert transport_lookup_started.wait(timeout=1)
+            close_future = pool.submit(client.close)
+            continue_transport_lookup.set()
+
+            result = rerank_future.result(timeout=1)
+            close_future.result(timeout=1)
+
+    assert result.failure_reason == "CLIENT_CLOSED"
+    transport_type.assert_not_called()
+
+
 def test_lifecycle_shares_client_and_breaker_across_requests_and_closes_once() -> None:
     transport = SequenceTransport(RerankError("HTTP_500"))
     lifecycle = RerankerClientLifecycle(
@@ -361,6 +520,47 @@ def test_lifecycle_shares_client_and_breaker_across_requests_and_closes_once() -
 
     lifecycle.close()
     lifecycle.close()
+
+
+def test_lifecycle_close_is_terminal_for_existing_and_future_gets() -> None:
+    factory_calls = 0
+
+    def factory() -> RerankerClient:
+        nonlocal factory_calls
+        factory_calls += 1
+        return RerankerClient(
+            config=_config(),
+            transport=SequenceTransport({"results": [{"index": 0, "relevance_score": 0.8}]}),
+        )
+
+    lifecycle = RerankerClientLifecycle(factory=factory)
+    client = lifecycle.get()
+
+    lifecycle.close()
+
+    assert client.rerank("query", _candidates(1), top_n=1).failure_reason == "CLIENT_CLOSED"
+    with pytest.raises(RerankError) as captured:
+        lifecycle.get()
+    assert captured.value.code == "CLIENT_CLOSED"
+    assert factory_calls == 1
+
+
+def test_lifecycle_close_before_get_does_not_construct_client() -> None:
+    factory_calls = 0
+
+    def factory() -> RerankerClient:
+        nonlocal factory_calls
+        factory_calls += 1
+        return RerankerClient(config=_config())
+
+    lifecycle = RerankerClientLifecycle(factory=factory)
+    lifecycle.close()
+
+    with pytest.raises(RerankError) as captured:
+        lifecycle.get()
+
+    assert captured.value.code == "CLIENT_CLOSED"
+    assert factory_calls == 0
 
 
 def test_circuit_breaker_allows_only_one_recovery_probe_across_threads() -> None:
