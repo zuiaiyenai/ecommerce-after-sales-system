@@ -31,7 +31,7 @@ def extract_pdf_pages(content: bytes) -> list[tuple[int, str]]:
         if reader.is_encrypted:
             raise KnowledgeParseError("PDF_ENCRYPTED")
         pages = [
-            (page_number, (page.extract_text() or "").strip())
+            (page_number, page.extract_text() or "")
             for page_number, page in enumerate(reader.pages, start=1)
         ]
     except KnowledgeParseError:
@@ -41,7 +41,7 @@ def extract_pdf_pages(content: bytes) -> list[tuple[int, str]]:
     except Exception as exc:
         raise KnowledgeParseError("FILE_DECODE_FAILED") from exc
 
-    if not any(text for _, text in pages):
+    if not any(text.strip() for _, text in pages):
         raise KnowledgeParseError("PDF_TEXT_LAYER_MISSING")
     return pages
 
@@ -92,9 +92,9 @@ def _remove_stable_margins(pages: list[tuple[int, str]]) -> list[tuple[int, str]
     page_lines: list[tuple[int, list[str]]] = []
 
     for page_number, text in pages:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        lines = text.splitlines()
         page_lines.append((page_number, lines))
-        for margin, line in _margin_lines(lines):
+        for margin, _, line in _margin_line_indexes(lines):
             normalized = _normalized_margin_line(line)
             if normalized:
                 candidates[(margin, normalized)].add(page_number)
@@ -109,33 +109,25 @@ def _remove_stable_margins(pages: list[tuple[int, str]]) -> list[tuple[int, str]
 
     cleaned: list[tuple[int, str]] = []
     for page_number, lines in page_lines:
-        margin_indexes = {
-            (margin, index)
-            for margin, index, _ in _margin_line_indexes(lines)
+        removable_indexes = {
+            index
+            for margin, index, line in _margin_line_indexes(lines)
+            if (margin, _normalized_margin_line(line)) in repeated
         }
-        kept_lines = [
-            line
-            for index, line in enumerate(lines)
-            if not any(
-                (margin, _normalized_margin_line(line)) in repeated
-                for margin, candidate_index in margin_indexes
-                if candidate_index == index
-            )
-        ]
+        kept_lines = [line for index, line in enumerate(lines) if index not in removable_indexes]
         cleaned.append((page_number, "\n".join(kept_lines)))
     return cleaned
 
 
-def _margin_lines(lines: list[str]) -> list[tuple[str, str]]:
-    return [(margin, line) for margin, _, line in _margin_line_indexes(lines)]
-
-
 def _margin_line_indexes(lines: list[str]) -> list[tuple[str, int, str]]:
     margins: list[tuple[str, int, str]] = []
-    for index, line in enumerate(lines[:2]):
+    top_indexes = [index for index, line in enumerate(lines) if line.strip()][:2]
+    for index in top_indexes:
+        line = lines[index]
         margins.append(("top", index, line))
-    for offset, line in enumerate(reversed(lines[-2:])):
-        margins.append(("bottom", len(lines) - offset - 1, line))
+    bottom_indexes = [index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()][:2]
+    for index in bottom_indexes:
+        margins.append(("bottom", index, lines[index]))
     return margins
 
 

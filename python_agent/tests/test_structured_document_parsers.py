@@ -67,6 +67,25 @@ def test_pdf_does_not_remove_margin_lines_from_short_documents() -> None:
     assert any("Important notice" in block.text for block in blocks)
 
 
+def test_pdf_margin_cleanup_preserves_blank_lines_between_body_paragraphs() -> None:
+    _, blocks = parse_pdf(
+        _pdf_bytes(
+            ("Return policy", "Page one first paragraph", " ", "Page one second paragraph", "Page 1"),
+            ("Return policy", "Page two first paragraph", " ", "Page two second paragraph", "Page 2"),
+            ("Return policy", "Page three first paragraph", " ", "Page three second paragraph", "Page 3"),
+        )
+    )
+
+    assert [block.text for block in blocks] == [
+        "Page one first paragraph",
+        "Page one second paragraph",
+        "Page two first paragraph",
+        "Page two second paragraph",
+        "Page three first paragraph",
+        "Page three second paragraph",
+    ]
+
+
 def test_heading_stack_replaces_same_or_deeper_heading_levels() -> None:
     headings = HeadingStack()
 
