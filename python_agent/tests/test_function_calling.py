@@ -214,6 +214,26 @@ class FunctionCallingAdapterTest(unittest.TestCase):
 
                 self.assertEqual(0, registry.call_count)
 
+    def test_real_registry_rejects_non_finite_and_boolean_numbers_without_execution(self) -> None:
+        invalid_numbers = ("NaN", "Infinity", "-Infinity", "1e999", "true")
+
+        for raw_number in invalid_numbers:
+            with self.subTest(raw_number=raw_number):
+                registry = AgentToolRegistry()
+                registry.call = Mock()
+                adapter = FunctionCallingAdapter(
+                    client=RecordingClient(tool_response(
+                        name="retrieve_knowledge",
+                        arguments=f'{{"query":"refund policy","top_k":{raw_number}}}',
+                    )),
+                    registry=registry,
+                )
+
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+                registry.call.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

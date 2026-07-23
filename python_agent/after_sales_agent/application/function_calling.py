@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from typing import Any
 
 
@@ -162,15 +163,30 @@ class FunctionCallingAdapter:
         elif expected == "boolean":
             valid = isinstance(value, bool)
         elif expected == "number":
-            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+            valid = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and cls._is_finite_number(value)
+            )
         elif expected == "integer":
-            valid = isinstance(value, int) and not isinstance(value, bool)
+            valid = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and cls._is_finite_number(value)
+            )
         elif expected == "null":
             valid = value is None
         else:
             raise FunctionCallingProtocolError(f"{path} has unsupported schema type: {expected}")
         if not valid:
             raise FunctionCallingProtocolError(f"{path} must be {expected}")
+
+    @staticmethod
+    def _is_finite_number(value: int | float) -> bool:
+        try:
+            return math.isfinite(value)
+        except (OverflowError, TypeError):
+            return False
 
     @staticmethod
     def _assistant_message(response: Any) -> dict[str, Any]:
@@ -194,12 +210,19 @@ class FunctionCallingAdapter:
         if not isinstance(raw, str):
             raise FunctionCallingProtocolError("tool call arguments must be a JSON string")
         try:
-            arguments = json.loads(raw)
-        except json.JSONDecodeError as exc:
+            arguments = json.loads(
+                raw,
+                parse_constant=FunctionCallingAdapter._reject_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
             raise FunctionCallingProtocolError("tool call arguments must contain valid JSON") from exc
         if not isinstance(arguments, dict):
             raise FunctionCallingProtocolError("tool call arguments must decode to an object")
         return arguments
+
+    @staticmethod
+    def _reject_json_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON constant is not allowed: {value}")
 
     @staticmethod
     def _normalize_action(name: str, arguments: dict[str, Any], call_id: str) -> dict[str, Any]:
