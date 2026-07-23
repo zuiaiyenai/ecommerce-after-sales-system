@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import math
@@ -73,13 +74,12 @@ class FunctionCallingAdapter:
             self._schema_for_name(name, provider_tools),
             path=f"{name}.arguments",
         )
-        if provider_shape == "ollama":
-            assistant_message = self._ollama_assistant_message(
-                assistant_message,
-                call_id=call_id,
-                name=name,
-                arguments=arguments,
-            )
+        assistant_message = self._canonical_assistant_message(
+            assistant_message,
+            call_id=call_id,
+            name=name,
+            arguments=arguments,
+        )
         return NativeDecision(
             action=self._normalize_action(name, arguments, call_id),
             assistant_message=assistant_message,
@@ -330,7 +330,7 @@ class FunctionCallingAdapter:
             raise FunctionCallingProtocolError("tool call type must be function")
 
     @staticmethod
-    def _ollama_assistant_message(
+    def _canonical_assistant_message(
         source: dict[str, Any],
         *,
         call_id: str,
@@ -348,7 +348,7 @@ class FunctionCallingAdapter:
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": dict(arguments),
+                    "arguments": deepcopy(arguments),
                 },
             }],
         }

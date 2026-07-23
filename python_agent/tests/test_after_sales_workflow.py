@@ -1559,8 +1559,19 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         result = agent.handle(self._payload())
 
         messages = llm.requests[1]["messages"]
-        assistant_message = first["choices"][0]["message"]
-        self.assertEqual(assistant_message, messages[1])
+        self.assertEqual({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-observation",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": {}},
+            }],
+        }, messages[1])
+        self.assertEqual(
+            "{}",
+            first["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        )
         self.assertEqual("tool", messages[2]["role"])
         self.assertEqual("call-observation", messages[2]["tool_call_id"])
         self.assertEqual("lookup", messages[2]["name"])
@@ -1765,6 +1776,8 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertTrue(json.loads(state["function_messages"][-1]["content"])["ok"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
+        self.assertEqual("deterministic", state["current_function_call_mode"])
+        self.assertEqual("none", state["current_provider_tool_call_shape"])
 
     def test_native_handoff_failure_keeps_call_id_until_correlated_observation(self) -> None:
         tools = NativeHandoffFailureTools()
@@ -1800,6 +1813,76 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertEqual("service_unavailable", observation["error_type"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
+        self.assertEqual("deterministic", state["current_function_call_mode"])
+        self.assertEqual("none", state["current_provider_tool_call_shape"])
+
+    def test_native_final_reply_need_human_from_planner_correlates_successful_handoff(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response(
+                    "call-implicit-planner-handoff",
+                    "final_reply",
+                    {"assistant_reply": "需要人工继续核对。", "need_human": True},
+                ),
+            ]),
+        )
+
+        result = agent.handle(self._payload(order_id=""))
+
+        handoff_trace = next(item for item in result["tool_trace"] if item["tool"] == "handoff_to_human")
+        self.assertTrue(handoff_trace["ok"])
+        self.assertEqual("call-implicit-planner-handoff", handoff_trace["tool_call_id"])
+        self.assertEqual("native", handoff_trace["function_call_mode"])
+        self.assertEqual("openai", handoff_trace["provider_tool_call_shape"])
+        self.assertEqual("HUMAN", result["session_mode"])
+
+    def test_native_final_reply_need_human_from_terminal_decider_correlates_failed_handoff(self) -> None:
+        tools = NativeHandoffFailureTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response(
+                    "call-implicit-terminal-handoff",
+                    "final_reply",
+                    {"assistant_reply": "需要人工继续核对。", "need_human": True},
+                ),
+            ]),
+        )
+        state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "继续处理",
+            "steps": 1,
+            "tool_results": [{"tool": "lookup", "ok": True, "data": {}}],
+            "function_messages": [],
+            "last_observation": {},
+            "need_human": False,
+        }
+
+        with patch.object(agent, "_guarded_after_sales_action", return_value=None):
+            agent.decide_next(state)
+
+        self.assertEqual("human_handoff", agent.route_after_decision(state))
+        self.assertEqual("call-implicit-terminal-handoff", state["pending_tool_call_id"])
+        agent.human_handoff(state)
+
+        trace = state["tool_results"][-1]
+        self.assertFalse(trace["ok"])
+        self.assertEqual("call-implicit-terminal-handoff", trace["tool_call_id"])
+        self.assertEqual("native", trace["function_call_mode"])
+        self.assertEqual("openai", trace["provider_tool_call_shape"])
+        self.assertEqual(
+            "call-implicit-terminal-handoff",
+            state["function_messages"][-2]["tool_calls"][0]["id"],
+        )
+        self.assertEqual("call-implicit-terminal-handoff", state["function_messages"][-1]["tool_call_id"])
+        self.assertFalse(json.loads(state["function_messages"][-1]["content"])["ok"])
+        self.assertIsNone(state["pending_tool_call_id"])
+        self.assertIsNone(state["pending_assistant_tool_call"])
+        self.assertEqual("deterministic", state["current_function_call_mode"])
+        self.assertEqual("none", state["current_provider_tool_call_shape"])
 
     def test_native_function_deterministic_tool_does_not_inherit_stale_call_id(self) -> None:
         tools = NativeWorkflowTools()
@@ -1825,6 +1908,117 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertEqual([], state["function_messages"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
+
+    def test_deterministic_limit_handoffs_do_not_inherit_native_or_legacy_trace_source(self) -> None:
+        cases = []
+
+        native_agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=RecordingNativeLlm([]),
+            max_tool_calls=0,
+        )
+        native_state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "查询",
+            "steps": 0,
+            "tool_name": "lookup",
+            "tool_arguments": {"user_id": "trusted-user"},
+            "tool_results": [],
+            "function_messages": [],
+            "pending_tool_call_id": "stale-native-call",
+            "pending_assistant_tool_call": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "stale-native-call",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": {}},
+                }],
+            },
+            "current_function_call_mode": "native",
+            "current_provider_tool_call_shape": "openai",
+            "need_human": False,
+        }
+        native_agent.tool_call(native_state)
+        native_agent.observe_tool_result(native_state)
+        native_agent.decide_next(native_state)
+        native_agent.human_handoff(native_state)
+        cases.append(("native_max_tool", native_state, native_state["tool_results"][-2:]))
+
+        legacy_agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=RecordingNativeLlm([]),
+            max_duplicate_tool_calls=1,
+        )
+        legacy_state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "查询",
+            "steps": 0,
+            "tool_name": "lookup",
+            "tool_arguments": {"user_id": "trusted-user"},
+            "tool_results": [{
+                "tool": "lookup",
+                "arguments": {"user_id": "trusted-user"},
+                "ok": True,
+            }],
+            "function_messages": [],
+            "pending_tool_call_id": None,
+            "pending_assistant_tool_call": None,
+            "current_function_call_mode": "legacy",
+            "current_provider_tool_call_shape": "legacy_json",
+            "need_human": False,
+        }
+        legacy_agent.tool_call(legacy_state)
+        legacy_agent.observe_tool_result(legacy_state)
+        legacy_agent.decide_next(legacy_state)
+        legacy_agent.human_handoff(legacy_state)
+        cases.append(("legacy_duplicate", legacy_state, legacy_state["tool_results"][-2:]))
+
+        max_step_agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=RecordingNativeLlm([]),
+            max_steps=1,
+        )
+        max_step_state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "查询",
+            "steps": 1,
+            "tool_results": [],
+            "function_messages": [],
+            "pending_tool_call_id": "stale-max-step-call",
+            "pending_assistant_tool_call": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "stale-max-step-call",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": {}},
+                }],
+            },
+            "current_function_call_mode": "native",
+            "current_provider_tool_call_shape": "ollama",
+            "need_human": True,
+        }
+        max_step_agent.decide_next(max_step_state)
+        max_step_agent.human_handoff(max_step_state)
+        cases.append(("max_step", max_step_state, max_step_state["tool_results"][-1:]))
+
+        for name, state, new_traces in cases:
+            with self.subTest(name=name):
+                self.assertTrue(new_traces)
+                self.assertTrue(all(
+                    trace["function_call_mode"] == "deterministic"
+                    and trace["provider_tool_call_shape"] == "none"
+                    and "tool_call_id" not in trace
+                    for trace in new_traces
+                ))
+                self.assertIsNone(state["pending_tool_call_id"])
+                self.assertIsNone(state["pending_assistant_tool_call"])
+                self.assertEqual("deterministic", state["current_function_call_mode"])
+                self.assertEqual("none", state["current_provider_tool_call_shape"])
 
 
 class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):

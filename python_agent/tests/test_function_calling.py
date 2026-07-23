@@ -103,7 +103,7 @@ class FunctionCallingAdapterTest(unittest.TestCase):
         registry = RecordingRegistry()
         return FunctionCallingAdapter(client=client, registry=registry, temperature=0.35, max_tokens=321), client, registry
 
-    def test_parses_single_tool_call_and_preserves_exact_assistant_message(self) -> None:
+    def test_parses_single_tool_call_into_canonical_assistant_message(self) -> None:
         response = tool_response()
         adapter, _, registry = self._adapter(response)
 
@@ -115,9 +115,50 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             "tool_arguments": {"keyword": "A100"},
             "tool_call_id": "call-1",
         }, decision.action)
-        self.assertIs(decision.assistant_message, response["choices"][0]["message"])
+        self.assertEqual({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "search_user_orders",
+                    "arguments": {"keyword": "A100"},
+                },
+            }],
+        }, decision.assistant_message)
+        self.assertIsNot(decision.assistant_message, response["choices"][0]["message"])
+        self.assertEqual(
+            '{"keyword":"A100"}',
+            response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        )
         self.assertEqual("openai", decision.provider_tool_call_shape)
         self.assertEqual(0, registry.call_count)
+
+    def test_openai_and_ollama_calls_normalize_to_the_same_canonical_envelope(self) -> None:
+        openai_response = tool_response()
+        openai_adapter, _, _ = self._adapter(openai_response)
+        ollama_response = ollama_tool_response(call_id="call-1", call_type="function")
+        ollama_response["message"]["content"] = None
+        ollama_adapter, _, _ = self._adapter(ollama_response)
+
+        openai = openai_adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+        ollama = ollama_adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+        self.assertEqual(openai.assistant_message, ollama.assistant_message)
+        canonical_call = openai.assistant_message["tool_calls"][0]
+        self.assertEqual("call-1", canonical_call["id"])
+        self.assertEqual("function", canonical_call["type"])
+        self.assertEqual("search_user_orders", canonical_call["function"]["name"])
+        self.assertEqual({"keyword": "A100"}, canonical_call["function"]["arguments"])
+        self.assertEqual(
+            '{"keyword":"A100"}',
+            openai_response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        )
+        self.assertEqual(
+            {"keyword": "A100"},
+            ollama_response["message"]["tool_calls"][0]["function"]["arguments"],
+        )
 
     def test_parses_real_ollama_object_arguments_and_normalizes_missing_envelope_fields(self) -> None:
         response = ollama_tool_response()
@@ -208,8 +249,24 @@ class FunctionCallingAdapterTest(unittest.TestCase):
     def test_forwards_provider_tools_options_and_prior_protocol_messages(self) -> None:
         adapter, client, _ = self._adapter(tool_response())
         prior = [
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "old", "type": "function"}]},
-            {"role": "tool", "tool_call_id": "old", "content": '{"ok":true}'},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "old",
+                    "type": "function",
+                    "function": {
+                        "name": "search_user_orders",
+                        "arguments": {"keyword": "A099"},
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old",
+                "name": "search_user_orders",
+                "content": '{"ok":true}',
+            },
         ]
 
         adapter.decide(system_prompt="system", payload={"message": "hello"}, prior_messages=prior)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import logging
@@ -65,6 +66,103 @@ class LLMClient(Protocol):
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]: ...
     def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]: ...
     def close(self) -> None: ...
+
+
+def _render_tool_history(
+    messages: list[dict[str, Any]],
+    *,
+    provider: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(messages, list):
+        raise LLMInvalidRequestError("LLM messages must be a list")
+    rendered = deepcopy(messages)
+    for index, message in enumerate(rendered):
+        if not isinstance(message, dict):
+            raise LLMInvalidRequestError(f"LLM message {index} must be an object")
+        if message.get("tool_calls") is not None:
+            _render_assistant_tool_message(message, provider=provider, index=index)
+        elif message.get("role") == "tool":
+            _render_tool_observation_message(message, provider=provider, index=index)
+    return rendered
+
+
+def _render_assistant_tool_message(
+    message: dict[str, Any],
+    *,
+    provider: str,
+    index: int,
+) -> None:
+    if message.get("role") != "assistant":
+        raise LLMInvalidRequestError(f"LLM message {index} tool calls require assistant role")
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        raise LLMInvalidRequestError(f"LLM message {index} content must be text or null")
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        raise LLMInvalidRequestError(f"LLM message {index} tool_calls must be a non-empty list")
+    for call_index, call in enumerate(calls):
+        if not isinstance(call, dict):
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} must be an object"
+            )
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} requires id"
+            )
+        if call.get("type") != "function":
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} must use function type"
+            )
+        function = call.get("function")
+        if not isinstance(function, dict):
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} requires function"
+            )
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} requires function name"
+            )
+        arguments = function.get("arguments")
+        if not isinstance(arguments, dict):
+            raise LLMInvalidRequestError(
+                f"LLM message {index} tool call {call_index} arguments must be an object"
+            )
+        if provider == "openai":
+            try:
+                function["arguments"] = json.dumps(
+                    arguments,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise LLMInvalidRequestError(
+                    f"LLM message {index} tool call {call_index} arguments are not JSON-compatible"
+                ) from exc
+        else:
+            call.pop("id", None)
+            call.pop("type", None)
+
+
+def _render_tool_observation_message(
+    message: dict[str, Any],
+    *,
+    provider: str,
+    index: int,
+) -> None:
+    call_id = message.get("tool_call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise LLMInvalidRequestError(f"LLM tool message {index} requires tool_call_id")
+    name = message.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise LLMInvalidRequestError(f"LLM tool message {index} requires name")
+    if not isinstance(message.get("content"), str):
+        raise LLMInvalidRequestError(f"LLM tool message {index} content must be text")
+    if provider == "ollama":
+        message.pop("tool_call_id", None)
+        message.pop("name", None)
 
 
 class AsyncLLMClient(Protocol):
@@ -206,13 +304,23 @@ class BaseHTTPModelClient:
 
 class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]:
-        payload = {"model": self.model, "messages": messages, "stream": False, **kwargs}
+        payload = {
+            "model": self.model,
+            "messages": _render_tool_history(messages, provider="openai"),
+            "stream": False,
+            **kwargs,
+        }
         if tools:
             payload["tools"] = tools
         return self._request("/v1/chat/completions", payload)
 
     def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
-        payload = {"model": self.model, "messages": messages, "stream": True, **kwargs}
+        payload = {
+            "model": self.model,
+            "messages": _render_tool_history(messages, provider="openai"),
+            "stream": True,
+            **kwargs,
+        }
         if tools:
             payload["tools"] = tools
         self._circuit.before_call()
@@ -253,7 +361,14 @@ class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
 class OllamaHTTPClient(BaseHTTPModelClient):
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]:
         options = {"temperature": kwargs.pop("temperature", 0.2), "num_predict": kwargs.pop("max_tokens", 600)}
-        payload = {"model": self.model, "messages": messages, "stream": False, "format": kwargs.pop("response_format", "json"), "keep_alive": self.config.ollama_keep_alive, "options": options}
+        payload = {
+            "model": self.model,
+            "messages": _render_tool_history(messages, provider="ollama"),
+            "stream": False,
+            "format": kwargs.pop("response_format", "json"),
+            "keep_alive": self.config.ollama_keep_alive,
+            "options": options,
+        }
         if tools:
             payload["tools"] = tools
         return self._request("/api/chat", payload)

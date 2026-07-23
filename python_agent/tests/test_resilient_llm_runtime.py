@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from copy import deepcopy
 import json
 import threading
 
@@ -7,8 +8,10 @@ import httpx
 import pytest
 
 from after_sales_agent.providers.resilient_llm_runtime import (
+    FallbackLLMClient,
     LLMAuthenticationError,
     LLMConcurrencyLimitError,
+    LLMInvalidRequestError,
     OllamaHTTPClient,
     OpenAICompatibleHTTPClient,
     ProviderConfig,
@@ -67,6 +70,178 @@ def test_ollama_request_preserves_tools_and_option_mapping():
 
     assert captured[0]["tools"] == tools
     assert captured[0]["options"] == {"temperature": 0.35, "num_predict": 321}
+
+
+def canonical_tool_history():
+    return [
+        {"role": "system", "content": "system"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"keyword": "A100"},
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "lookup",
+            "content": '{"ok":true}',
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_openai_history_is_rerendered_for_ollama_fallback_without_mutating_input():
+    primary_requests = []
+    fallback_requests = []
+
+    def primary_handler(request):
+        primary_requests.append(json.loads(request.content))
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    def fallback_handler(request):
+        fallback_requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "ok"}})
+
+    primary = OpenAICompatibleHTTPClient(
+        config(provider="openai", max_retries=0),
+        httpx.Client(transport=httpx.MockTransport(primary_handler), base_url="https://llm.test"),
+    )
+    fallback = OllamaHTTPClient(
+        config(provider="ollama", max_retries=0),
+        httpx.Client(transport=httpx.MockTransport(fallback_handler), base_url="https://llm.test"),
+    )
+    client = FallbackLLMClient(primary, fallback)
+    messages = canonical_tool_history()
+    original = deepcopy(messages)
+
+    response = client.chat(messages)
+
+    assert response["message"]["content"] == "ok"
+    assert messages == original
+    openai_call = primary_requests[0]["messages"][1]["tool_calls"][0]
+    assert openai_call["id"] == "call-1"
+    assert openai_call["type"] == "function"
+    assert json.loads(openai_call["function"]["arguments"]) == {"keyword": "A100"}
+    assert primary_requests[0]["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "name": "lookup",
+        "content": '{"ok":true}',
+    }
+    ollama_call = fallback_requests[0]["messages"][1]["tool_calls"][0]
+    assert "id" not in ollama_call
+    assert "type" not in ollama_call
+    assert ollama_call["function"] == {
+        "name": "lookup",
+        "arguments": {"keyword": "A100"},
+    }
+    assert fallback_requests[0]["messages"][2] == {
+        "role": "tool",
+        "content": '{"ok":true}',
+    }
+    assert fallback_requests[0]["messages"][0] == original[0]
+    assert fallback_requests[0]["messages"][3] == original[3]
+
+
+def test_ollama_canonical_history_is_rerendered_for_openai():
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = OpenAICompatibleHTTPClient(
+        config(provider="openai"),
+        httpx.Client(transport=httpx.MockTransport(handler), base_url="https://llm.test"),
+    )
+    messages = canonical_tool_history()
+    original = deepcopy(messages)
+
+    client.chat(messages)
+
+    rendered = captured[0]["messages"]
+    assert json.loads(rendered[1]["tool_calls"][0]["function"]["arguments"]) == {
+        "keyword": "A100",
+    }
+    assert rendered[1]["tool_calls"][0]["id"] == "call-1"
+    assert rendered[1]["tool_calls"][0]["type"] == "function"
+    assert rendered[2]["tool_call_id"] == "call-1"
+    assert rendered[2]["name"] == "lookup"
+    assert messages == original
+
+
+@pytest.mark.parametrize("client_type", [OpenAICompatibleHTTPClient, OllamaHTTPClient])
+def test_plain_messages_remain_unchanged_when_tool_calls_are_null(client_type):
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        response = (
+            {"message": {"content": "ok"}}
+            if client_type is OllamaHTTPClient
+            else {"choices": [{"message": {"content": "ok"}}]}
+        )
+        return httpx.Response(200, json=response)
+
+    provider = "ollama" if client_type is OllamaHTTPClient else "openai"
+    client = client_type(
+        config(provider=provider),
+        httpx.Client(transport=httpx.MockTransport(handler), base_url="https://llm.test"),
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "plain reply", "tool_calls": None},
+        {"role": "user", "content": "continue", "metadata": {"turn": 2}},
+    ]
+    original = deepcopy(messages)
+
+    client.chat(messages)
+
+    assert captured[0]["messages"] == original
+    assert messages == original
+
+
+@pytest.mark.parametrize("client_type", [OpenAICompatibleHTTPClient, OllamaHTTPClient])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"keyword":"A100"}'},
+            }],
+        }],
+        [{"role": "tool", "name": "lookup", "content": '{"ok":true}'}],
+    ],
+)
+def test_malformed_canonical_tool_history_fails_closed_without_http_request(client_type, malformed):
+    calls = 0
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={})
+
+    provider = "ollama" if client_type is OllamaHTTPClient else "openai"
+    client = client_type(
+        config(provider=provider),
+        httpx.Client(transport=httpx.MockTransport(handler), base_url="https://llm.test"),
+    )
+
+    with pytest.raises(LLMInvalidRequestError):
+        client.chat(malformed)
+
+    assert calls == 0
 
 
 def test_authentication_error_is_not_retried():

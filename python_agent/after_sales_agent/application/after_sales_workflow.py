@@ -251,8 +251,8 @@ class LangGraphAfterSalesAgent:
             raw = self._order_lookup_action(state)
 
         self._apply_action(state, raw)
-        if state.get("next_action") not in {"tool_call", "human_handoff"}:
-            self._clear_pending_tool_call(state)
+        if self.route_after_plan(state) == "final_reply":
+            self._reset_function_call_context(state)
         return state
 
     @staticmethod
@@ -364,6 +364,12 @@ class LangGraphAfterSalesAgent:
         state["pending_assistant_tool_call"] = None
 
     @staticmethod
+    def _reset_function_call_context(state: AgentGraphState) -> None:
+        LangGraphAfterSalesAgent._clear_pending_tool_call(state)
+        state["current_function_call_mode"] = "deterministic"
+        state["current_provider_tool_call_shape"] = "none"
+
+    @staticmethod
     def _trace_protocol(state: AgentGraphState) -> dict[str, str]:
         mode = state.get("current_function_call_mode")
         shape = state.get("current_provider_tool_call_shape")
@@ -422,7 +428,6 @@ class LangGraphAfterSalesAgent:
             },
         ])
         state["function_messages"] = messages
-        self._clear_pending_tool_call(state)
 
     @staticmethod
     def _is_explicit_human_request(message: str, recent_history: list[dict[str, Any]] | None = None) -> bool:
@@ -449,6 +454,7 @@ class LangGraphAfterSalesAgent:
         )
         if len(prior) >= self.max_tool_calls or duplicate_count >= self.max_duplicate_tool_calls:
             logger.warning("agent_tool_guard tool=%s error_category=guard_limit", name)
+            self._reset_function_call_context(state)
             guarded_trace: dict[str, Any] = {
                 "tool": name,
                 "arguments": arguments,
@@ -457,8 +463,6 @@ class LangGraphAfterSalesAgent:
                 "error": "tool_call_limit_exceeded",
                 **self._trace_protocol(state),
             }
-            if state.get("pending_tool_call_id"):
-                guarded_trace["tool_call_id"] = state["pending_tool_call_id"]
             state["tool_results"] = prior + [guarded_trace]
             state["steps"] = self.max_steps
             state["next_action"] = "final_reply"
@@ -529,6 +533,7 @@ class LangGraphAfterSalesAgent:
             state["last_error_type"] or "none",
         )
         self._correlate_tool_observation(state, latest, observation)
+        self._reset_function_call_context(state)
 
         if not ok:
             return state
@@ -568,6 +573,7 @@ class LangGraphAfterSalesAgent:
 
         if steps >= self.max_steps:
             logger.info("agent_function_guard error_category=max_steps")
+            self._reset_function_call_context(state)
             state["next_action"] = "final_reply"
             state.setdefault("assistant_reply", "已收到您的售后问题，我会根据当前信息继续为您处理。")
             return state
@@ -603,15 +609,15 @@ class LangGraphAfterSalesAgent:
             if guarded.get("action") == "final_reply":
                 action = self._native_terminal_decision(state, guarded)
             self._apply_action(state, action)
-            if state.get("next_action") not in {"tool_call", "human_handoff"}:
-                self._clear_pending_tool_call(state)
+            if self.route_after_decision(state) == "final_reply":
+                self._reset_function_call_context(state)
             return state
 
         raw = self._native_decision(state, self._decider_system_prompt())
         raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
-        if state.get("next_action") not in {"tool_call", "human_handoff"}:
-            self._clear_pending_tool_call(state)
+        if self.route_after_decision(state) == "final_reply":
+            self._reset_function_call_context(state)
         return state
 
     def _native_terminal_decision(
@@ -800,7 +806,7 @@ class LangGraphAfterSalesAgent:
             observation["error_code"] = result.error_code
             observation["retryable"] = result.retryable
         self._correlate_tool_observation(state, trace_entry, observation)
-        self._clear_pending_tool_call(state)
+        self._reset_function_call_context(state)
         handoff_ok = self._is_successful_handoff_result(result)
         if result.ok and not handoff_ok:
             logger.warning("agent_handoff_result tool=handoff_to_human error_category=unconfirmed")
