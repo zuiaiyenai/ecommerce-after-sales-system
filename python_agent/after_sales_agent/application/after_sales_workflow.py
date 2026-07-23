@@ -13,17 +13,22 @@ from typing import Any, ClassVar, Literal, Optional, TypedDict, TYPE_CHECKING
 
 from langgraph.graph import END, StateGraph
 
-from .function_calling import FunctionCallingAdapter
+from .function_calling import FunctionCallingAdapter, FunctionCallingProtocolError
 from .skill_registry import AgentSkillRegistry
 from .tool_registry import AgentToolRegistry
 from ..infra.request_tracing import bind_trace_id
 from ..infra.agent_metrics import AGENT_RUNTIME_METRICS
 from ..providers.llm_client import OpenAICompatibleClient, get_llm_client
+from ..providers.resilient_llm_runtime import LLMError
 
 if TYPE_CHECKING:
     from ..infra.request_tracing import TraceRecorder
 
 logger = logging.getLogger("after_sales_agent.langgraph")
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class AgentGraphState(TypedDict, total=False):
@@ -88,6 +93,8 @@ class LangGraphAfterSalesAgent:
     max_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "8")))
     max_tool_calls: int = field(default_factory=lambda: int(os.getenv("MAX_TOOL_CALLS", "10")))
     max_duplicate_tool_calls: int = field(default_factory=lambda: int(os.getenv("MAX_DUPLICATE_TOOL_CALLS", "2")))
+    native_function_calling_enabled: bool = field(default_factory=lambda: _env_bool("LLM_NATIVE_FUNCTION_CALLING_ENABLED", True))
+    legacy_tool_call_fallback_enabled: bool = field(default_factory=lambda: _env_bool("LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED", True))
     _trace_recorder: ContextVar[Any | None] = field(
         default_factory=lambda: ContextVar("langgraph_trace_recorder", default=None),
         init=False,
@@ -175,7 +182,7 @@ class LangGraphAfterSalesAgent:
             "pending_tool_call_id": None,
             "pending_assistant_tool_call": None,
             "function_messages": [],
-            "decision_protocol": "native_function_calling",
+            "decision_protocol": "native",
         }
         final_state = self.graph.invoke(state)
         normalized_ticket = self._normalize_ticket(final_state.get("ticket"))
@@ -274,21 +281,98 @@ class LangGraphAfterSalesAgent:
         return has_order and (has_attachments or len(msg) >= 8)
 
     def _native_decision(self, state: AgentGraphState, system_prompt: str) -> dict[str, Any]:
-        decision = FunctionCallingAdapter(
-            client=self.llm,
-            registry=self.tools,
-            temperature=0.1,
-            max_tokens=700,
-        ).decide(
-            system_prompt=system_prompt,
-            payload=self._planner_payload(state),
-            prior_messages=list(state.get("function_messages") or []),
-        )
+        payload = self._planner_payload(state)
+        if not self.native_function_calling_enabled:
+            try:
+                return self._legacy_decision(state, system_prompt, payload, "legacy_disabled_native")
+            except (LLMError, FunctionCallingProtocolError) as exc:
+                logger.warning("agent_function_decision protocol=legacy_disabled_native error_category=%s", exc.__class__.__name__)
+                return self._fail_closed_decision(state)
+        try:
+            decision = FunctionCallingAdapter(
+                client=self.llm,
+                registry=self.tools,
+                temperature=0.1,
+                max_tokens=700,
+            ).decide(
+                system_prompt=system_prompt,
+                payload=payload,
+                prior_messages=list(state.get("function_messages") or []),
+            )
+        except (LLMError, FunctionCallingProtocolError) as exc:
+            self._clear_pending_tool_call(state)
+            logger.warning("agent_function_decision protocol=native error_category=%s", exc.__class__.__name__)
+            if not self.legacy_tool_call_fallback_enabled:
+                return self._fail_closed_decision(state)
+            try:
+                return self._legacy_decision(state, system_prompt, payload, "legacy_fallback")
+            except (LLMError, FunctionCallingProtocolError) as fallback_exc:
+                self._clear_pending_tool_call(state)
+                logger.warning("agent_function_decision protocol=legacy_fallback error_category=%s", fallback_exc.__class__.__name__)
+                return self._fail_closed_decision(state)
         action = dict(decision.action)
         state["pending_tool_call_id"] = action.get("tool_call_id")
         state["pending_assistant_tool_call"] = dict(decision.assistant_message)
-        state["decision_protocol"] = "native_function_calling"
+        state["decision_protocol"] = "native"
         return action
+
+    def _legacy_decision(self, state: AgentGraphState, system_prompt: str, payload: dict[str, Any], protocol: str) -> dict[str, Any]:
+        self._clear_pending_tool_call(state)
+        raw = self.llm.chat_json(
+            system_prompt=system_prompt,
+            user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            temperature=0.1,
+            max_tokens=700,
+        )
+        action = self._validate_legacy_action(raw)
+        state["decision_protocol"] = protocol
+        return action
+
+    def _validate_legacy_action(self, raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise FunctionCallingProtocolError("legacy decision must be an object")
+        action = raw.get("action")
+        if action not in {"tool_call", "human_handoff", "final_reply"}:
+            raise FunctionCallingProtocolError("legacy decision has an unsupported action")
+        validated = dict(raw)
+        validated.pop("tool_call_id", None)
+        if action == "tool_call":
+            tool_name = validated.get("tool_name")
+            if not isinstance(tool_name, str) or tool_name not in self.tools.registry():
+                raise FunctionCallingProtocolError("legacy decision has an unknown tool")
+            if not isinstance(validated.get("tool_arguments"), dict):
+                raise FunctionCallingProtocolError("legacy tool arguments must be an object")
+            return validated
+        if "assistant_reply" in validated and not isinstance(validated["assistant_reply"], str):
+            raise FunctionCallingProtocolError("legacy assistant reply must be a string")
+        if "need_human" in validated and not isinstance(validated["need_human"], bool):
+            raise FunctionCallingProtocolError("legacy need_human must be a boolean")
+        if "evidence_needed" in validated and not isinstance(validated["evidence_needed"], list):
+            raise FunctionCallingProtocolError("legacy evidence_needed must be an array")
+        validated["tool_name"] = None
+        validated["tool_arguments"] = {}
+        return validated
+
+    @staticmethod
+    def _fail_closed_decision(state: AgentGraphState) -> dict[str, Any]:
+        state["decision_protocol"] = "fail_closed"
+        if state.get("ticket_id"):
+            return {
+                "action": "human_handoff",
+                "tool_name": None,
+                "tool_arguments": {},
+                "assistant_reply": "当前智能售后服务暂时不可用，正在尝试为您转接人工客服继续核对。",
+                "need_human": True,
+                "evidence_needed": state.get("evidence_needed") or [],
+            }
+        return {
+            "action": "final_reply",
+            "tool_name": None,
+            "tool_arguments": {},
+            "assistant_reply": "当前智能售后服务暂时不可用，请稍后重试或联系人工客服。",
+            "need_human": False,
+            "evidence_needed": state.get("evidence_needed") or [],
+        }
 
     @staticmethod
     def _clear_pending_tool_call(state: AgentGraphState) -> None:
@@ -521,6 +605,8 @@ class LangGraphAfterSalesAgent:
         raw = self._native_decision(state, self._decider_system_prompt())
         logger.info("   📡 LLM terminal decider: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
+        if state.get("decision_protocol") == "fail_closed":
+            return raw
         if raw.get("action") != "final_reply":
             logger.warning("   🛡️ 已拒绝终态 decider 覆盖确定性动作: action=%s tool=%s",
                            raw.get("action"), raw.get("tool_name"))

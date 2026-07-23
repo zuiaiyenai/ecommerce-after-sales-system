@@ -64,6 +64,8 @@ services:
     build: ./python_agent
     env_file: ./python_agent/.env
     environment:
+      LLM_NATIVE_FUNCTION_CALLING_ENABLED: ${LLM_NATIVE_FUNCTION_CALLING_ENABLED:-true}
+      LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED: ${LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED:-true}
       JAVA_TOOLS_BASE_URL: http://java:8080/api/internal/agent-tools
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       AFTER_SALES_REVIEW_IDEMPOTENCY_REDIS_URL: redis://redis:6379/0

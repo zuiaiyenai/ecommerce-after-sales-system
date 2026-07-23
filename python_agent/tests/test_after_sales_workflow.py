@@ -8,6 +8,7 @@ from after_sales_agent.application.after_sales_workflow import LangGraphAfterSal
 from after_sales_agent.application.function_calling import FunctionCallingProtocolError
 from after_sales_agent.application.tool_registry import ToolResult
 from after_sales_agent.api.http_server import build_attachments
+from after_sales_agent.providers.resilient_llm_runtime import LLMResponseParseError
 
 class FakeLlm:
     def __init__(self) -> None:
@@ -60,6 +61,30 @@ class RecordingNativeLlm:
         if not self.responses:
             raise AssertionError("unexpected native chat request")
         return self.responses.pop(0)
+
+
+class SwitchingDecisionLlm:
+    def __init__(self, native_responses: list[object], legacy_responses: list[object]) -> None:
+        self.native_responses = list(native_responses)
+        self.legacy_responses = list(legacy_responses)
+        self.native_calls = 0
+        self.legacy_calls = 0
+        self.legacy_requests: list[dict[str, object]] = []
+
+    def chat(self, _messages: list[dict[str, object]], **_: object) -> dict[str, object]:
+        self.native_calls += 1
+        response = self.native_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response  # type: ignore[return-value]
+
+    def chat_json(self, **kwargs: object) -> dict[str, object]:
+        self.legacy_calls += 1
+        self.legacy_requests.append(kwargs)
+        response = self.legacy_responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response  # type: ignore[return-value]
 
 
 class FakeTools:
@@ -1532,12 +1557,25 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         response["choices"][0]["message"]["tool_calls"].append({
             "id": "call-two", "type": "function", "function": {"name": "lookup", "arguments": "{}"},
         })
-        agent = LangGraphAfterSalesAgent(tools=tools, llm=RecordingNativeLlm([response]))
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([response]),
+            legacy_tool_call_fallback_enabled=False,
+        )
+        state = {
+            "user_id": "trusted-user",
+            "order_id_hint": "trusted-order",
+            "message": "请查询售后进度",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
 
-        with self.assertRaises(FunctionCallingProtocolError):
-            agent.handle(self._payload())
+        agent.classify_or_plan(state)
 
         self.assertEqual([], tools.calls)
+        self.assertEqual("fail_closed", state["decision_protocol"])
+        self.assertEqual("final_reply", state["next_action"])
 
     def test_native_function_final_reply_does_not_execute_control_function(self) -> None:
         tools = NativeWorkflowTools()
@@ -1589,6 +1627,102 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertEqual([], state["function_messages"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
+
+
+class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
+    @staticmethod
+    def _state() -> dict[str, object]:
+        return {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "order_id_hint": "trusted-order",
+            "message": "请查询售后进度",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+    def test_native_function_disabled_uses_legacy_once_without_native_chat(self) -> None:
+        llm = SwitchingDecisionLlm([], [{"action": "final_reply", "assistant_reply": "兼容回复"}])
+        agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=llm,
+            native_function_calling_enabled=False,
+        )
+        state = self._state()
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(0, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_disabled_native", state["decision_protocol"])
+        self.assertIsNone(state.get("pending_tool_call_id"))
+        self.assertEqual([], state["function_messages"])
+
+    def test_native_protocol_failure_uses_one_legacy_action_with_trusted_state(self) -> None:
+        malformed = native_response("call-bad", "unknown_tool", {})
+        llm = SwitchingDecisionLlm(
+            [malformed],
+            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {"user_id": "attacker"}}],
+        )
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+        state = self._state()
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_fallback", state["decision_protocol"])
+        self.assertEqual("tool_call", state["next_action"])
+        self.assertEqual("trusted-user", state["tool_arguments"]["user_id"])
+        self.assertNotIn("tool_call_id", state)
+
+    def test_native_and_legacy_failure_fail_closed_without_business_tool(self) -> None:
+        malformed = native_response("call-bad", "unknown_tool", {})
+        llm = SwitchingDecisionLlm([malformed], [LLMResponseParseError("malformed legacy response")])
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+        state = self._state()
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("fail_closed", state["decision_protocol"])
+        self.assertEqual("final_reply", state["next_action"])
+        self.assertFalse(state["need_human"])
+
+    def test_native_disabled_legacy_failure_fail_closed(self) -> None:
+        llm = SwitchingDecisionLlm([], [LLMResponseParseError("malformed legacy response")])
+        agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=llm,
+            native_function_calling_enabled=False,
+        )
+        state = self._state()
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(0, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("fail_closed", state["decision_protocol"])
+        self.assertEqual("final_reply", state["next_action"])
+
+    def test_terminal_ticket_failure_prefers_unconfirmed_human_handoff(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [native_response("call-bad", "unknown_tool", {})],
+            [LLMResponseParseError("malformed legacy response")],
+        )
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+        state = self._state()
+        state["ticket_id"] = "trusted-ticket"
+        guarded = {"action": "final_reply", "assistant_reply": "确定性回复", "need_human": False}
+
+        action = agent._native_terminal_decision(state, guarded)
+
+        self.assertEqual("fail_closed", state["decision_protocol"])
+        self.assertEqual("human_handoff", action["action"])
+        self.assertTrue(action["need_human"])
+        self.assertNotIn("已完成", action["assistant_reply"])
 
 
 if __name__ == "__main__":
