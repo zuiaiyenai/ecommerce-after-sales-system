@@ -483,7 +483,12 @@ class LangGraphAfterSalesAgent:
         if guarded is not None:
             logger.info("   🛡️ guarded_action 接管: action=%s tool=%s need_human=%s",
                         guarded.get("action"), guarded.get("tool_name"), guarded.get("need_human"))
-            self._apply_action(state, guarded)
+            action = guarded
+            if guarded.get("action") == "final_reply":
+                action = self._native_terminal_decision(state, guarded)
+            self._apply_action(state, action)
+            if state.get("next_action") != "tool_call":
+                self._clear_pending_tool_call(state)
             return state
 
         logger.info("   🤖 LLM decider 决策中...")
@@ -506,6 +511,33 @@ class LangGraphAfterSalesAgent:
         logger.info("   🎯 decide_next 结果: next_action=%s tool=%s need_human=%s",
                     state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
+
+    def _native_terminal_decision(
+        self,
+        state: AgentGraphState,
+        guarded: dict[str, Any],
+    ) -> dict[str, Any]:
+        logger.info("   🤖 LLM decider 优化确定性终态回复中...")
+        raw = self._native_decision(state, self._decider_system_prompt())
+        logger.info("   📡 LLM terminal decider: action=%s tool=%s need_human=%s",
+                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
+        if raw.get("action") != "final_reply":
+            logger.warning("   🛡️ 已拒绝终态 decider 覆盖确定性动作: action=%s tool=%s",
+                           raw.get("action"), raw.get("tool_name"))
+            return guarded
+
+        constrained = dict(raw)
+        constrained["tool_name"] = None
+        constrained["tool_arguments"] = {}
+        constrained["need_human"] = bool(guarded.get("need_human"))
+        constrained["evidence_needed"] = list(guarded.get("evidence_needed") or [])
+        if (
+            self._claims_review_completed(constrained.get("assistant_reply"))
+            and not self._has_successful_tool(state, "submit_ai_review")
+        ):
+            logger.info("   ⚠️ LLM声称初审已完成但实际未提交, 纠正中...")
+            constrained["assistant_reply"] = "我需要先核对您的售后申请和审核条件，暂时不能声称AI初审已完成。请稍后重试或联系人工客服。"
+        return constrained
 
     def _handle_tool_failure(self, state: AgentGraphState) -> dict[str, Any] | None:
         tool = str(state.get("last_tool_name") or state.get("tool_name") or "")

@@ -272,7 +272,10 @@ class FakeExistingTicketImageTools:
         self.calls: list[str] = []
 
     def tool_specs(self) -> list[dict[str, object]]:
-        return []
+        return FakeTools.tool_specs(self)
+
+    def registry(self) -> dict[str, object]:
+        return {"handoff_to_human": object()}
 
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(name)
@@ -1420,22 +1423,14 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         tools = NativeWorkflowTools()
         first = native_response("call-observation", "lookup", {})
         llm = RecordingNativeLlm([
+            first,
             native_response("call-final", "final_reply", {"assistant_reply": "处理完成。"}),
         ])
 
         agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
-        state = {
-            "user_id": "trusted-user",
-            "message": "请查询售后进度",
-            "tool_results": [{"tool": "lookup", "ok": True, "data": {"raw_secret": "do-not-send-to-model"}, "tool_call_id": "call-observation"}],
-            "function_messages": [],
-            "pending_tool_call_id": "call-observation",
-            "pending_assistant_tool_call": first["choices"][0]["message"],
-        }
-        agent.observe_tool_result(state)
-        agent._native_decision(state, agent._decider_system_prompt())
+        result = agent.handle(self._payload())
 
-        messages = llm.requests[0]["messages"]
+        messages = llm.requests[1]["messages"]
         assistant_message = first["choices"][0]["message"]
         self.assertEqual(assistant_message, messages[1])
         self.assertEqual("tool", messages[2]["role"])
@@ -1446,31 +1441,20 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
             json.loads(messages[2]["content"]),
         )
         self.assertNotIn("raw_secret", messages[2]["content"])
+        self.assertEqual("处理完成。", result["assistant_reply"])
 
     def test_native_function_failed_tool_observation_is_correlated(self) -> None:
         tools = NativeWorkflowTools()
         failed = native_response("call-failed", "fail_lookup", {})
         llm = RecordingNativeLlm([
+            failed,
             native_response("call-final", "final_reply", {"assistant_reply": "请稍后再试。"}),
         ])
 
         agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
-        state = {
-            "user_id": "trusted-user",
-            "message": "请查询售后进度",
-            "tool_results": [{
-                "tool": "fail_lookup", "ok": False, "error": "upstream failed: raw-secret-data",
-                "error_code": "UPSTREAM", "error_category": "tool_error", "retryable": False,
-                "tool_call_id": "call-failed",
-            }],
-            "function_messages": [],
-            "pending_tool_call_id": "call-failed",
-            "pending_assistant_tool_call": failed["choices"][0]["message"],
-        }
-        agent.observe_tool_result(state)
-        agent._native_decision(state, agent._decider_system_prompt())
+        agent.handle(self._payload())
 
-        tool_message = llm.requests[0]["messages"][2]
+        tool_message = llm.requests[1]["messages"][2]
         self.assertEqual("call-failed", tool_message["tool_call_id"])
         self.assertEqual("fail_lookup", tool_message["name"])
         self.assertEqual(
@@ -1480,6 +1464,34 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
             },
             json.loads(tool_message["content"]),
         )
+
+    def test_native_function_false_completed_review_claim_is_corrected_end_to_end(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = RecordingNativeLlm([
+            native_response("call-lookup", "lookup", {}),
+            native_response("call-false-claim", "final_reply", {"assistant_reply": "AI初审已完成并进入处理中。"}),
+        ])
+
+        result = LangGraphAfterSalesAgent(tools=tools, llm=llm).handle(self._payload())
+
+        self.assertEqual(2, len(llm.requests))
+        self.assertNotEqual("AI初审已完成并进入处理中。", result["assistant_reply"])
+        self.assertIn("暂时不能声称AI初审已完成", result["assistant_reply"])
+        self.assertNotIn("submit_ai_review", tools.calls)
+
+    def test_native_function_cannot_replace_deterministic_required_action(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = RecordingNativeLlm([
+            native_response("call-lookup", "lookup", {}),
+            native_response("call-forbidden-review", "submit_ai_review", {"verdict": "APPROVE"}),
+        ])
+
+        result = LangGraphAfterSalesAgent(tools=tools, llm=llm).handle(self._payload())
+
+        self.assertEqual(2, len(llm.requests))
+        self.assertIn("search_user_orders", tools.calls)
+        self.assertNotIn("submit_ai_review", tools.calls)
+        self.assertIn("补充具体订单号", result["assistant_reply"])
 
     def test_native_function_apply_action_overwrites_trusted_identifiers(self) -> None:
         tools = NativeWorkflowTools()
