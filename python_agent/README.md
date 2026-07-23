@@ -1,5 +1,19 @@
 # Python Agent
 
+## Native Function Calling
+
+Python Agent uses provider-native `tools`, `tool_calls`, `tool_call_id`, and
+`role=tool` by default. The legacy JSON decision protocol remains only as a
+temporary provider compatibility fallback, limited to once per decision.
+
+```text
+LLM_NATIVE_FUNCTION_CALLING_ENABLED=true
+LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED=true
+```
+
+Set `LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED=false` for strict fail-closed mode;
+native protocol failures will no longer invoke the legacy decision path.
+
 这个目录是当前 Spring Boot 项目内置的售后 AI Agent。
 
 ## 目录作用
