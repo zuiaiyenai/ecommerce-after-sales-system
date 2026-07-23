@@ -1843,6 +1843,159 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         self.assertEqual("legacy_fallback", state["decision_protocol"])
         self.assertEqual("兼容终态回复", action["assistant_reply"])
 
+    def test_terminal_handle_decision_matrix_preserves_protocol_boundaries(self) -> None:
+        cases = {
+            "native_success": {
+                "native": [
+                    native_response("call-plan", "lookup", {}),
+                    native_response("call-terminal", "final_reply", {"assistant_reply": "原生终态回复"}),
+                ],
+                "legacy": [],
+                "agent_kwargs": {},
+                "native_calls": 2,
+                "legacy_calls": 0,
+                "protocol": "native",
+                "reply": "原生终态回复",
+            },
+            "native_disabled": {
+                "native": [],
+                "legacy": [
+                    {"action": "tool_call", "tool_name": "lookup", "tool_arguments": {}},
+                    {"action": "final_reply", "assistant_reply": "兼容终态回复"},
+                ],
+                "agent_kwargs": {"native_function_calling_enabled": False},
+                "native_calls": 0,
+                "legacy_calls": 2,
+                "protocol": "legacy_disabled_native",
+                "reply": "兼容终态回复",
+            },
+            "terminal_protocol_error_uses_one_legacy_attempt": {
+                "native": [
+                    native_response("call-plan", "lookup", {}),
+                    native_response("call-terminal-invalid", "submit_ai_review", {"verdict": 1}),
+                ],
+                "legacy": [{"action": "final_reply", "assistant_reply": "兼容纠正回复"}],
+                "agent_kwargs": {},
+                "native_calls": 2,
+                "legacy_calls": 1,
+                "protocol": "legacy_fallback",
+                "reply": "兼容纠正回复",
+            },
+            "terminal_invalid_legacy_schema_fails_closed": {
+                "native": [
+                    native_response("call-plan", "lookup", {}),
+                    native_response("call-terminal-invalid", "submit_ai_review", {"verdict": 1}),
+                ],
+                "legacy": [{"action": "tool_call", "tool_name": "search_user_orders", "tool_arguments": {"keyword": 1}}],
+                "agent_kwargs": {},
+                "native_calls": 2,
+                "legacy_calls": 1,
+                "protocol": "fail_closed",
+                "reply": "当前智能售后服务暂时不可用",
+            },
+            "terminal_legacy_false_review_completion_is_corrected": {
+                "native": [
+                    native_response("call-plan", "lookup", {}),
+                    native_response("call-terminal-invalid", "submit_ai_review", {"verdict": 1}),
+                ],
+                "legacy": [{"action": "final_reply", "assistant_reply": "AI初审已完成并进入处理中。"}],
+                "agent_kwargs": {},
+                "native_calls": 2,
+                "legacy_calls": 1,
+                "protocol": "legacy_fallback",
+                "reply": "暂时不能声称AI初审已完成",
+            },
+        }
+
+        for name, case in cases.items():
+            with self.subTest(name=name):
+                tools = NativeWorkflowTools()
+                llm = SwitchingDecisionLlm(case["native"], case["legacy"])
+                agent = LangGraphAfterSalesAgent(tools=tools, llm=llm, **case["agent_kwargs"])
+
+                result = agent.handle({"user_id": "trusted-user", "session_id": 501, "message": "帮助"})
+
+                self.assertEqual(case["native_calls"], llm.native_calls)
+                self.assertEqual(case["legacy_calls"], llm.legacy_calls)
+                self.assertEqual(case["protocol"], result["raw"]["decision_protocol"])
+                self.assertIn(case["reply"], result["assistant_reply"])
+                self.assertEqual(1, tools.calls.count("lookup"))
+                self.assertNotIn("submit_ai_review", tools.calls)
+                self.assertEqual(["append_chat_message", "append_chat_message"], tools.calls[-2:])
+                lookup_trace = next(item for item in result["tool_trace"] if item["tool"] == "lookup")
+                if case["protocol"] == "legacy_disabled_native":
+                    self.assertNotIn("tool_call_id", lookup_trace)
+                else:
+                    self.assertEqual("call-plan", lookup_trace["tool_call_id"])
+
+    def test_terminal_fallback_disabled_fails_closed_without_requested_business_tool(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = SwitchingDecisionLlm(
+            [
+                native_response("call-plan", "lookup", {}),
+                native_response("call-terminal-invalid", "submit_ai_review", {"verdict": 1}),
+            ],
+            [],
+        )
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=llm,
+            legacy_tool_call_fallback_enabled=False,
+        )
+
+        result = agent.handle({"user_id": "trusted-user", "session_id": 501, "message": "帮助"})
+
+        self.assertEqual(2, llm.native_calls)
+        self.assertEqual(0, llm.legacy_calls)
+        self.assertEqual("fail_closed", result["raw"]["decision_protocol"])
+        self.assertEqual(1, tools.calls.count("lookup"))
+        self.assertNotIn("submit_ai_review", tools.calls)
+        self.assertEqual(["append_chat_message", "append_chat_message"], tools.calls[-2:])
+
+    def test_function_calling_logs_exclude_model_tool_and_observation_content(self) -> None:
+        secret = "SECRET-FUNCTION-CALL-CONTENT"
+        llm = SwitchingDecisionLlm(
+            [LLMError(secret)],
+            [{"action": "final_reply", "assistant_reply": secret}],
+        )
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+        state = self._state()
+        state["message"] = secret
+
+        with patch("after_sales_agent.application.after_sales_workflow.logger") as logger:
+            agent.classify_or_plan(state)
+            state.update({"tool_name": "fail_lookup", "tool_arguments": {"private": secret}})
+            agent.tool_call(state)
+            agent.observe_tool_result(state)
+            agent.decide_next(state)
+            agent.final_reply({
+                "assistant_reply": secret,
+                "tool_results": [],
+                "attachments": [],
+                "session_mode": "AI",
+                "need_human": False,
+                "steps": 0,
+                "user_id": "trusted-user",
+                "session_id": 501,
+                "message": secret,
+                "order_id_hint": None,
+                "ticket_id": None,
+            })
+
+        logged = "\n".join(
+            repr(call)
+            for method in (logger.info, logger.warning, logger.error)
+            for call in method.call_args_list
+        )
+        self.assertNotIn(secret, logged)
+        self.assertNotIn("raw-secret-data", logged)
+        self.assertIn("protocol=native", logged)
+        self.assertIn(
+            ("agent_function_decision protocol=native error_category=%s", "LLMError"),
+            [call.args for call in logger.warning.call_args_list],
+        )
+
     def test_double_failure_end_to_end_executes_only_final_message_persistence(self) -> None:
         tools = NativeWorkflowTools()
         llm = SwitchingDecisionLlm(

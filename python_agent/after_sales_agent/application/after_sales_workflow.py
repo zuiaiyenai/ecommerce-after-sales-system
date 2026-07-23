@@ -224,13 +224,6 @@ class LangGraphAfterSalesAgent:
     def classify_or_plan(self, state: AgentGraphState) -> AgentGraphState:
         if state.get("final"):
             return state
-        msg = str(state.get("message") or "")
-        logger.info("=" * 70)
-        logger.info("🔍 [classify_or_plan] 用户消息: %s", msg[:200])
-        logger.info("   attachments: %d 个", len(state.get("attachments") or []))
-        logger.info("   order_id_hint: %s", state.get("order_id_hint"))
-        logger.info("   existing tool_results: %d", len(state.get("tool_results") or []))
-
         # Image submissions always need trusted order lookup before review. Do
         # not send base64 images through the text planner.
         if state.get("ticket_id") and not state.get("tool_results"):
@@ -246,21 +239,16 @@ class LangGraphAfterSalesAgent:
 
         raw = self._native_decision(state, self._planner_system_prompt())
         raw = self._guard_completed_review_claim(state, raw)
-        logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
-                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
-        logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
 
         # 小模型安全网：LLM 忽略了已提供的订单上下文时，强制查订单
         # 这不是关键词匹配 — 只检查"有 order_id / 有实质内容 / LLM 没调工具"
         if self._llm_ignored_order_context(state, raw):
-            logger.info("⚡ 安全网触发: LLM 忽略了订单上下文, 强制 search_user_orders")
+            logger.info("agent_function_guard tool=search_user_orders")
             raw = self._order_lookup_action(state)
 
         self._apply_action(state, raw)
         if state.get("next_action") != "tool_call":
             self._clear_pending_tool_call(state)
-        logger.info("🎯 最终决策: next_action=%s tool_name=%s need_human=%s",
-                    state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
 
     @staticmethod
@@ -316,6 +304,11 @@ class LangGraphAfterSalesAgent:
         state["pending_tool_call_id"] = action.get("tool_call_id")
         state["pending_assistant_tool_call"] = dict(decision.assistant_message)
         state["decision_protocol"] = "native"
+        logger.info(
+            "agent_function_decision protocol=native tool=%s call_id=%s",
+            action.get("tool_name"),
+            state["pending_tool_call_id"],
+        )
         return action
 
     def _legacy_decision(self, state: AgentGraphState, system_prompt: str, payload: dict[str, Any], protocol: str) -> dict[str, Any]:
@@ -328,6 +321,12 @@ class LangGraphAfterSalesAgent:
         )
         action = FunctionCallingAdapter(client=self.llm, registry=self.tools).validate_action(raw)
         state["decision_protocol"] = protocol
+        logger.info(
+            "agent_function_decision protocol=%s tool=%s call_id=%s",
+            protocol,
+            action.get("tool_name"),
+            None,
+        )
         return action
 
     @staticmethod
@@ -408,7 +407,7 @@ class LangGraphAfterSalesAgent:
             and json.dumps(item.get("arguments") or {}, ensure_ascii=False, sort_keys=True, default=str) == canonical_arguments
         )
         if len(prior) >= self.max_tool_calls or duplicate_count >= self.max_duplicate_tool_calls:
-            logger.warning("agent_tool_guard tool=%s total=%d duplicates=%d", name, len(prior), duplicate_count)
+            logger.warning("agent_tool_guard tool=%s error_category=guard_limit", name)
             guarded_trace: dict[str, Any] = {"tool": name, "arguments": arguments, "ok": False, "data": None, "error": "tool_call_limit_exceeded"}
             if state.get("pending_tool_call_id"):
                 guarded_trace["tool_call_id"] = state["pending_tool_call_id"]
@@ -418,17 +417,19 @@ class LangGraphAfterSalesAgent:
             state["assistant_reply"] = "当前请求需要人工进一步核验，我已停止重复操作以保护您的订单。"
             state["need_human"] = True
             return state
-        logger.info("🔧 [tool_call] step=%d 调用工具: %s", int(state.get("steps") or 0) + 1, name)
-        # 隐藏敏感字段的日志
-        safe_args = {k: v for k, v in arguments.items() if k not in ("user_id", "session_id")}
-        logger.info("   参数: %s", json.dumps(safe_args, ensure_ascii=False, default=str)[:300])
+        logger.info("agent_tool_call tool=%s call_id=%s", name, state.get("pending_tool_call_id"))
         trace_recorder = self._trace_recorder.get()
         if trace_recorder is not None:
             with trace_recorder.step("agent_tool_call", tool=name):
                 result = self.tools.call(name, arguments)
         else:
             result = self.tools.call(name, arguments)
-        logger.info("   结果: ok=%s error=%s", result.ok, (result.error or "")[:100])
+        logger.info(
+            "agent_tool_result tool=%s call_id=%s error_category=%s",
+            name,
+            state.get("pending_tool_call_id"),
+            result.error_category if not result.ok else "none",
+        )
         AGENT_RUNTIME_METRICS.record_tool(name, result.ok, result.error_category)
         trace = list(state.get("tool_results") or [])
         trace_entry: dict[str, Any] = {
@@ -472,7 +473,12 @@ class LangGraphAfterSalesAgent:
             observation["error_code"] = latest.get("error_code")
             observation["retryable"] = state["last_tool_retryable"]
         state["last_observation"] = observation
-        logger.info("👁️ [observe_tool_result] %s", json.dumps(observation, ensure_ascii=False, default=str)[:500])
+        logger.info(
+            "agent_tool_observation tool=%s call_id=%s error_category=%s",
+            tool,
+            latest.get("tool_call_id"),
+            state["last_error_type"] or "none",
+        )
         self._correlate_tool_observation(state, latest, observation)
 
         if not ok:
@@ -489,51 +495,52 @@ class LangGraphAfterSalesAgent:
                     for index, url in enumerate(urls, start=1)
                     if url
                 ]
-            logger.info("   ✅ 已读取售后单: %s status=%s",
-                        data.get("ticket_no"),
-                        data.get("status"))
+            logger.info("agent_tool_state tool=get_after_sales_ticket")
         elif tool == "submit_ai_review" and isinstance(data, dict):
             state["review_result"] = data
             state["ticket"] = data
-            logger.info("   ✅ AI初审已提交: ticket=%s verdict=%s status=%s",
-                        data.get("ticket_no"),
-                        data.get("verdict") or data.get("ai_review_result"),
-                        data.get("status"))
+            logger.info("agent_tool_state tool=submit_ai_review")
         elif tool == "handoff_to_human":
             state["session_mode"] = "HUMAN"
             state["need_human"] = True
             state["handoff_succeeded"] = True
             AGENT_RUNTIME_METRICS.record_handoff()
-            logger.info("   🚨 已转人工")
+            logger.info("agent_tool_state tool=handoff_to_human")
         return state
 
     def decide_next(self, state: AgentGraphState) -> AgentGraphState:
         steps = int(state.get("steps") or 0)
-        logger.info("🧠 [decide_next] step=%d/%d, tool_results=%d last_observation=%s",
-                    steps, self.max_steps, len(state.get("tool_results") or []),
-                    json.dumps(state.get("last_observation") or {}, ensure_ascii=False, default=str)[:300])
+        logger.info(
+            "agent_function_decider protocol=%s tool=%s error_category=%s",
+            state.get("decision_protocol"),
+            state.get("last_tool_name"),
+            state.get("last_error_type") or "none",
+        )
 
         if steps >= self.max_steps:
-            logger.info("   ⏰ 达到最大步数, 进入 final_reply")
+            logger.info("agent_function_guard error_category=max_steps")
             state["next_action"] = "final_reply"
             state.setdefault("assistant_reply", "已收到您的售后问题，我会根据当前信息继续为您处理。")
             return state
         if state.get("last_tool_failed"):
             failure_action = self._handle_tool_failure(state)
             if failure_action is not None:
-                logger.info("   🧯 tool_failure 接管: error_type=%s action=%s tool=%s",
-                            state.get("last_error_type"), failure_action.get("action"), failure_action.get("tool_name"))
+                logger.info(
+                    "agent_tool_failure tool=%s error_category=%s",
+                    failure_action.get("tool_name") or state.get("last_tool_name"),
+                    state.get("last_error_type"),
+                )
                 self._apply_action(state, failure_action)
                 return state
         if self._has_empty_order_search(state):
-            logger.info("   📭 订单查询为空, 进入 final_reply")
+            logger.info("agent_tool_state tool=search_user_orders error_category=empty_result")
             state["next_action"] = "final_reply"
             state["assistant_reply"] = "我没有查询到可用于售后的订单。请提供订单号，或从订单详情页进入售后咨询后再申请退款/退货。"
             state["evidence_needed"] = ["订单信息"]
             state["need_human"] = False
             return state
         if self._has_failed_order_search(state):
-            logger.info("   ❌ 订单查询失败, 进入 final_reply")
+            logger.info("agent_tool_failure tool=search_user_orders error_category=tool_error")
             state["next_action"] = "final_reply"
             state["assistant_reply"] = "当前订单服务暂时不可用，我还不能核对订单或创建售后单。请稍后重试。"
             state["evidence_needed"] = ["订单信息"]
@@ -542,8 +549,7 @@ class LangGraphAfterSalesAgent:
 
         guarded = self._guarded_after_sales_action(state)
         if guarded is not None:
-            logger.info("   🛡️ guarded_action 接管: action=%s tool=%s need_human=%s",
-                        guarded.get("action"), guarded.get("tool_name"), guarded.get("need_human"))
+            logger.info("agent_function_guard tool=%s", guarded.get("tool_name"))
             action = guarded
             if guarded.get("action") == "final_reply":
                 action = self._native_terminal_decision(state, guarded)
@@ -552,16 +558,11 @@ class LangGraphAfterSalesAgent:
                 self._clear_pending_tool_call(state)
             return state
 
-        logger.info("   🤖 LLM decider 决策中...")
         raw = self._native_decision(state, self._decider_system_prompt())
-        logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
-                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
         if state.get("next_action") != "tool_call":
             self._clear_pending_tool_call(state)
-        logger.info("   🎯 decide_next 结果: next_action=%s tool=%s need_human=%s",
-                    state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
 
     def _native_terminal_decision(
@@ -569,16 +570,15 @@ class LangGraphAfterSalesAgent:
         state: AgentGraphState,
         guarded: dict[str, Any],
     ) -> dict[str, Any]:
-        logger.info("   🤖 LLM decider 优化确定性终态回复中...")
         raw = self._native_decision(state, self._decider_system_prompt())
-        logger.info("   📡 LLM terminal decider: action=%s tool=%s need_human=%s",
-                    raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if state.get("decision_protocol") == "fail_closed":
             return raw
         raw = self._guard_completed_review_claim(state, raw, terminal=True)
         if raw.get("action") != "final_reply":
-            logger.warning("   🛡️ 已拒绝终态 decider 覆盖确定性动作: action=%s tool=%s",
-                           raw.get("action"), raw.get("tool_name"))
+            logger.warning(
+                "agent_function_terminal_guard tool=%s error_category=terminal_action_rejected",
+                raw.get("tool_name"),
+            )
             return guarded
 
         constrained = dict(raw)
@@ -600,7 +600,7 @@ class LangGraphAfterSalesAgent:
             or self._has_successful_tool(state, "submit_ai_review")
         ):
             return raw
-        logger.info("   ⚠️ LLM声称初审已完成但实际未提交, 纠正中...")
+        logger.info("agent_function_guard tool=submit_ai_review error_category=unconfirmed_review")
         if terminal or self._has_successful_tool(state, "search_user_orders"):
             return {
                 "action": "final_reply",
@@ -710,14 +710,12 @@ class LangGraphAfterSalesAgent:
         }
 
     def human_handoff(self, state: AgentGraphState) -> AgentGraphState:
-        logger.info("🚨 [human_handoff] 触发转人工")
+        logger.info("agent_handoff_requested tool=handoff_to_human")
         ticket_id = state.get("ticket_id") or (
             (state.get("ticket") or {}).get("ticket_id")
             if isinstance(state.get("ticket"), dict)
             else None
         )
-        logger.info("   ticket_id=%s session_id=%s order_id=%s",
-                    ticket_id, state.get("session_id"), state.get("order_id_hint"))
         args = {
             "user_id": state.get("user_id"),
             "session_id": state.get("session_id"),
@@ -731,7 +729,7 @@ class LangGraphAfterSalesAgent:
         state["tool_results"] = trace
         handoff_ok = self._is_successful_handoff_result(result)
         if result.ok and not handoff_ok:
-            logger.warning("   ⚠️ 转人工接口返回未确认 HUMAN/WAITING: %s", result.data)
+            logger.warning("agent_handoff_result tool=handoff_to_human error_category=unconfirmed")
         state["session_mode"] = "HUMAN" if handoff_ok else "AI"
         state["need_human"] = True
         state["handoff_succeeded"] = handoff_ok
@@ -755,10 +753,7 @@ class LangGraphAfterSalesAgent:
         reply = state.get("assistant_reply") or self._ticket_reply(state) or "已收到您的售后问题，我会继续为您处理。"
         # 最终防线：确保 reply 不是泄漏的 JSON 数据
         reply = self._sanitize_reply(reply)
-        logger.info("💬 [final_reply] 最终回复: %s", reply[:200])
-        logger.info("   session_mode=%s need_human=%s steps=%d",
-                    state.get("session_mode"), state.get("need_human"), state.get("steps"))
-        logger.info("=" * 70)
+        logger.info("agent_final_reply tool=append_chat_message")
         ticket_id = state.get("ticket_id") or (
             (state.get("ticket") or {}).get("ticket_id")
             if isinstance(state.get("ticket"), dict)
@@ -1515,7 +1510,7 @@ class LangGraphAfterSalesAgent:
             state["need_human"] = False
             if isinstance(raw.get("evidence_needed"), list):
                 state["evidence_needed"] = [str(item) for item in raw["evidence_needed"]]
-            logger.info("   🔒 已阻止非Kafka来源提交AI初审 ticket_id=%s", state.get("ticket_id"))
+            logger.info("agent_tool_guard tool=submit_ai_review error_category=source_not_kafka")
             return
         if raw.get("assistant_reply"):
             sanitized = cls._sanitize_reply(raw.get("assistant_reply"))
