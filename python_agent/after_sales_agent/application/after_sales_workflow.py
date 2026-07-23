@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal, Optional, TypedDict, TYPE_CHECKING
 
 from langgraph.graph import END, StateGraph
 
+from .function_calling import FunctionCallingAdapter
 from .skill_registry import AgentSkillRegistry
 from .tool_registry import AgentToolRegistry
 from ..infra.request_tracing import bind_trace_id
@@ -60,6 +61,10 @@ class AgentGraphState(TypedDict, total=False):
     active_skills: list[dict[str, str]]
     skill_versions: dict[str, str]
     final: bool
+    pending_tool_call_id: Optional[str]
+    pending_assistant_tool_call: Optional[dict[str, Any]]
+    function_messages: list[dict[str, Any]]
+    decision_protocol: str
 
 
 @dataclass
@@ -167,6 +172,10 @@ class LangGraphAfterSalesAgent:
             "active_skills": [],
             "skill_versions": {},
             "final": False,
+            "pending_tool_call_id": None,
+            "pending_assistant_tool_call": None,
+            "function_messages": [],
+            "decision_protocol": "native_function_calling",
         }
         final_state = self.graph.invoke(state)
         normalized_ticket = self._normalize_ticket(final_state.get("ticket"))
@@ -227,12 +236,7 @@ class LangGraphAfterSalesAgent:
                 self._apply_action(state, self._order_lookup_action(state))
             return state
 
-        raw = self.llm.chat_json(
-            system_prompt=self._planner_system_prompt(),
-            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-            temperature=0.1,
-            max_tokens=700,
-        )
+        raw = self._native_decision(state, self._planner_system_prompt())
         logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
@@ -244,6 +248,8 @@ class LangGraphAfterSalesAgent:
             raw = self._order_lookup_action(state)
 
         self._apply_action(state, raw)
+        if state.get("next_action") != "tool_call":
+            self._clear_pending_tool_call(state)
         logger.info("🎯 最终决策: next_action=%s tool_name=%s need_human=%s",
                     state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
@@ -266,6 +272,56 @@ class LangGraphAfterSalesAgent:
         has_attachments = bool(state.get("attachments"))
         # 有订单 + (有附件 或 消息足够长) → LLM 不应该直接 final_reply
         return has_order and (has_attachments or len(msg) >= 8)
+
+    def _native_decision(self, state: AgentGraphState, system_prompt: str) -> dict[str, Any]:
+        decision = FunctionCallingAdapter(
+            client=self.llm,
+            registry=self.tools,
+            temperature=0.1,
+            max_tokens=700,
+        ).decide(
+            system_prompt=system_prompt,
+            payload=self._planner_payload(state),
+            prior_messages=list(state.get("function_messages") or []),
+        )
+        action = dict(decision.action)
+        state["pending_tool_call_id"] = action.get("tool_call_id")
+        state["pending_assistant_tool_call"] = dict(decision.assistant_message)
+        state["decision_protocol"] = "native_function_calling"
+        return action
+
+    @staticmethod
+    def _clear_pending_tool_call(state: AgentGraphState) -> None:
+        state["pending_tool_call_id"] = None
+        state["pending_assistant_tool_call"] = None
+
+    def _correlate_tool_observation(
+        self,
+        state: AgentGraphState,
+        latest: dict[str, Any],
+        observation: dict[str, Any],
+    ) -> None:
+        call_id = state.get("pending_tool_call_id")
+        assistant_message = state.get("pending_assistant_tool_call")
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or not isinstance(assistant_message, dict)
+            or latest.get("tool_call_id") != call_id
+        ):
+            return
+        messages = list(state.get("function_messages") or [])
+        messages.extend([
+            assistant_message,
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": str(latest.get("tool") or ""),
+                "content": json.dumps(observation, ensure_ascii=False, default=str),
+            },
+        ])
+        state["function_messages"] = messages
+        self._clear_pending_tool_call(state)
 
     @staticmethod
     def _is_explicit_human_request(message: str, recent_history: list[dict[str, Any]] | None = None) -> bool:
@@ -292,7 +348,10 @@ class LangGraphAfterSalesAgent:
         )
         if len(prior) >= self.max_tool_calls or duplicate_count >= self.max_duplicate_tool_calls:
             logger.warning("agent_tool_guard tool=%s total=%d duplicates=%d", name, len(prior), duplicate_count)
-            state["tool_results"] = prior + [{"tool": name, "arguments": arguments, "ok": False, "data": None, "error": "tool_call_limit_exceeded"}]
+            guarded_trace: dict[str, Any] = {"tool": name, "arguments": arguments, "ok": False, "data": None, "error": "tool_call_limit_exceeded"}
+            if state.get("pending_tool_call_id"):
+                guarded_trace["tool_call_id"] = state["pending_tool_call_id"]
+            state["tool_results"] = prior + [guarded_trace]
             state["steps"] = self.max_steps
             state["next_action"] = "final_reply"
             state["assistant_reply"] = "当前请求需要人工进一步核验，我已停止重复操作以保护您的订单。"
@@ -311,18 +370,19 @@ class LangGraphAfterSalesAgent:
         logger.info("   结果: ok=%s error=%s", result.ok, (result.error or "")[:100])
         AGENT_RUNTIME_METRICS.record_tool(name, result.ok, result.error_category)
         trace = list(state.get("tool_results") or [])
-        trace.append(
-            {
-                "tool": name,
-                "arguments": state.get("tool_arguments") or {},
-                "ok": result.ok,
-                "data": result.data,
-                "error": result.error,
-                "error_code": result.error_code,
-                "error_category": result.error_category,
-                "retryable": result.retryable,
-            }
-        )
+        trace_entry: dict[str, Any] = {
+            "tool": name,
+            "arguments": state.get("tool_arguments") or {},
+            "ok": result.ok,
+            "data": result.data,
+            "error": result.error,
+            "error_code": result.error_code,
+            "error_category": result.error_category,
+            "retryable": result.retryable,
+        }
+        if state.get("pending_tool_call_id"):
+            trace_entry["tool_call_id"] = state["pending_tool_call_id"]
+        trace.append(trace_entry)
         state["tool_results"] = trace
         state["steps"] = int(state.get("steps") or 0) + 1
         return state
@@ -352,6 +412,7 @@ class LangGraphAfterSalesAgent:
             observation["retryable"] = state["last_tool_retryable"]
         state["last_observation"] = observation
         logger.info("👁️ [observe_tool_result] %s", json.dumps(observation, ensure_ascii=False, default=str)[:500])
+        self._correlate_tool_observation(state, latest, observation)
 
         if not ok:
             return state
@@ -426,12 +487,7 @@ class LangGraphAfterSalesAgent:
             return state
 
         logger.info("   🤖 LLM decider 决策中...")
-        raw = self.llm.chat_json(
-            system_prompt=self._decider_system_prompt(),
-            user_prompt=json.dumps(self._planner_payload(state), ensure_ascii=False, indent=2),
-            temperature=0.1,
-            max_tokens=700,
-        )
+        raw = self._native_decision(state, self._decider_system_prompt())
         logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if self._claims_review_completed(raw.get("assistant_reply")) and not self._has_successful_tool(state, "submit_ai_review"):
@@ -445,6 +501,8 @@ class LangGraphAfterSalesAgent:
                 "evidence_needed": ["订单信息"],
             }
         self._apply_action(state, raw)
+        if state.get("next_action") != "tool_call":
+            self._clear_pending_tool_call(state)
         logger.info("   🎯 decide_next 结果: next_action=%s tool=%s need_human=%s",
                     state.get("next_action"), state.get("tool_name"), state.get("need_human"))
         return state
@@ -787,11 +845,7 @@ class LangGraphAfterSalesAgent:
             "7. 工单和状态是否更新成功，必须以Java工具返回结果为准。\n"
             "⚠️ assistant_reply 必须是给用户看的自然中文文本，绝对禁止包含 JSON、工具调用参数、\n"
             "   base64、长数字ID序列或任何机器可读数据。回复应像真人客服一样亲切、简洁、信息明确。\n"
-            "只输出 JSON："
-            "{\"action\":\"tool_call|final_reply|human_handoff\","
-            "\"tool_name\":\"工具名或null\",\"tool_arguments\":{},"
-            "\"assistant_reply\":\"给用户看的中文自然语言回复（禁止JSON/数据）\","
-            "\"need_human\":false,\"evidence_needed\":[]}"
+            "调用一个提供的 function 完成当前决策。"
         )
 
     @staticmethod
@@ -802,7 +856,7 @@ class LangGraphAfterSalesAgent:
             "没有 ticket_id 时只能做咨询和引导用户去订单详情页申请售后，不得提交AI审核。\n"
             "⚠️ assistant_reply 必须是给用户看的自然中文文本，绝对禁止包含 JSON、工具调用参数、\n"
             "   base64、长数字ID序列或任何机器可读数据。回复应像真人客服一样亲切、简洁、信息明确。\n"
-            "只输出 JSON，字段同规划节点。"
+            "调用一个提供的 function 完成当前决策。"
         )
 
     def _guarded_after_sales_action(self, state: AgentGraphState) -> dict[str, Any] | None:
@@ -1333,6 +1387,8 @@ class LangGraphAfterSalesAgent:
     @classmethod
     def _apply_action(cls, state: AgentGraphState, raw: dict[str, Any]) -> None:
         action = str(raw.get("action") or "final_reply")
+        if not raw.get("tool_call_id"):
+            LangGraphAfterSalesAgent._clear_pending_tool_call(state)
         state["next_action"] = action
         state["tool_name"] = raw.get("tool_name")
         arguments = raw.get("tool_arguments") if isinstance(raw.get("tool_arguments"), dict) else {}

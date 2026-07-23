@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
 from after_sales_agent.application.after_sales_workflow import LangGraphAfterSalesAgent
+from after_sales_agent.application.function_calling import FunctionCallingProtocolError
 from after_sales_agent.application.tool_registry import ToolResult
 from after_sales_agent.api.http_server import build_attachments
 
@@ -22,13 +24,64 @@ class FakeLlm:
             "evidence_needed": [],
         }
 
+    def chat(self, messages: list[dict[str, object]], **_: object) -> dict[str, object]:
+        self.calls += 1
+        return native_response(
+            "call-default-handoff",
+            "handoff_to_human",
+            {"assistant_reply": "已为您转接人工客服，请稍等。"},
+        )
+
+
+def native_response(call_id: str, name: str, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "choices": [{"message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }],
+        }}],
+    }
+
+
+class RecordingNativeLlm:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self.responses = list(responses)
+        self.requests: list[dict[str, object]] = []
+
+    def chat(self, messages: list[dict[str, object]], **kwargs: object) -> dict[str, object]:
+        self.requests.append({"messages": messages, **kwargs})
+        if not self.responses:
+            raise AssertionError("unexpected native chat request")
+        return self.responses.pop(0)
+
 
 class FakeTools:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
     def tool_specs(self) -> list[dict[str, object]]:
-        return []
+        return [
+            {
+                "name": "handoff_to_human",
+                "description": "Move to human service.",
+                "input_schema": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {"assistant_reply": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+            }
+        ]
+
+    def registry(self) -> dict[str, object]:
+        return {"handoff_to_human": object()}
 
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(name)
@@ -64,6 +117,55 @@ class FakeTools:
         if name == "append_chat_message":
             return ToolResult(ok=True, name=name, data={"session_id": 123})
         return ToolResult(ok=False, name=name, error=f"unexpected tool call: {name}")
+
+
+class NativeWorkflowTools:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.arguments: list[dict[str, object]] = []
+
+    def registry(self) -> dict[str, object]:
+        return {name: object() for name in (
+            "lookup", "fail_lookup", "search_user_orders", "submit_ai_review",
+            "handoff_to_human", "append_chat_message",
+        )}
+
+    def tool_specs(self) -> list[dict[str, object]]:
+        def spec(name: str, properties: dict[str, object] | None = None, required: list[str] | None = None) -> dict[str, object]:
+            return {
+                "name": name,
+                "description": name,
+                "input_schema": {
+                    "type": "object",
+                    "required": required or [],
+                    "properties": properties or {},
+                    "additionalProperties": False,
+                },
+            }
+        return [
+            spec("lookup"),
+            spec("fail_lookup"),
+            spec("search_user_orders", {"keyword": {"type": "string"}}, ["keyword"]),
+            spec("submit_ai_review", {"verdict": {"type": "string"}}, ["verdict"]),
+            spec("handoff_to_human", {"assistant_reply": {"type": "string"}}),
+            spec("append_chat_message", {"content": {"type": "string"}}, ["content"]),
+        ]
+
+    def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
+        self.calls.append(name)
+        self.arguments.append(dict(arguments))
+        if name == "fail_lookup":
+            return ToolResult(
+                ok=False, name=name, error="upstream failed: raw-secret-data",
+                error_code="UPSTREAM", error_category="tool_error",
+            )
+        if name == "handoff_to_human":
+            return ToolResult(ok=True, name=name, data={"session_mode": "HUMAN", "status": "WAITING"})
+        if name == "append_chat_message":
+            return ToolResult(ok=True, name=name, data={"session_id": "native-session"})
+        if name == "submit_ai_review":
+            return ToolResult(ok=True, name=name, data={"ticket_no": "AS-NATIVE", "verdict": arguments.get("verdict")})
+        return ToolResult(ok=True, name=name, data={"raw_secret": "do-not-send-to-model"})
 
 
 class FakeHandoffSessionTools(FakeTools):
@@ -237,7 +339,10 @@ class FakeDamageImageTools:
         self.create_arguments: dict[str, object] | None = None
 
     def tool_specs(self) -> list[dict[str, object]]:
-        return []
+        return FakeTools.tool_specs(self)
+
+    def registry(self) -> dict[str, object]:
+        return {"handoff_to_human": object()}
 
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(name)
@@ -1283,6 +1388,195 @@ class LangGraphHumanHandoffTest(unittest.TestCase):
         self.assertEqual("final_reply", state["next_action"])
         self.assertFalse(state["need_human"])
         self.assertIn("无权操作", state["assistant_reply"])
+
+
+class NativeFunctionCallingWorkflowTest(unittest.TestCase):
+    @staticmethod
+    def _payload(**overrides: object) -> dict[str, object]:
+        return {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "请查询售后进度",
+            "order_id": "trusted-order",
+            **overrides,
+        }
+
+    def test_native_function_planner_uses_required_tools_and_traces_call_id(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = RecordingNativeLlm([
+            native_response("call-lookup", "lookup", {}),
+            native_response("call-final", "final_reply", {"assistant_reply": "已查询到处理进度。"}),
+        ])
+
+        result = LangGraphAfterSalesAgent(tools=tools, llm=llm).handle(self._payload())
+
+        self.assertEqual("required", llm.requests[0]["tool_choice"])
+        self.assertTrue(any(item["function"]["name"] == "lookup" for item in llm.requests[0]["tools"]))
+        self.assertIn("调用一个提供的 function", llm.requests[0]["messages"][0]["content"])
+        self.assertEqual("lookup", result["tool_trace"][0]["tool"])
+        self.assertEqual("call-lookup", result["tool_trace"][0]["tool_call_id"])
+
+    def test_native_function_decider_receives_compressed_correlated_observation(self) -> None:
+        tools = NativeWorkflowTools()
+        first = native_response("call-observation", "lookup", {})
+        llm = RecordingNativeLlm([
+            native_response("call-final", "final_reply", {"assistant_reply": "处理完成。"}),
+        ])
+
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+        state = {
+            "user_id": "trusted-user",
+            "message": "请查询售后进度",
+            "tool_results": [{"tool": "lookup", "ok": True, "data": {"raw_secret": "do-not-send-to-model"}, "tool_call_id": "call-observation"}],
+            "function_messages": [],
+            "pending_tool_call_id": "call-observation",
+            "pending_assistant_tool_call": first["choices"][0]["message"],
+        }
+        agent.observe_tool_result(state)
+        agent._native_decision(state, agent._decider_system_prompt())
+
+        messages = llm.requests[0]["messages"]
+        assistant_message = first["choices"][0]["message"]
+        self.assertEqual(assistant_message, messages[1])
+        self.assertEqual("tool", messages[2]["role"])
+        self.assertEqual("call-observation", messages[2]["tool_call_id"])
+        self.assertEqual("lookup", messages[2]["name"])
+        self.assertEqual(
+            {"tool": "lookup", "ok": True, "data_type": "dict"},
+            json.loads(messages[2]["content"]),
+        )
+        self.assertNotIn("raw_secret", messages[2]["content"])
+
+    def test_native_function_failed_tool_observation_is_correlated(self) -> None:
+        tools = NativeWorkflowTools()
+        failed = native_response("call-failed", "fail_lookup", {})
+        llm = RecordingNativeLlm([
+            native_response("call-final", "final_reply", {"assistant_reply": "请稍后再试。"}),
+        ])
+
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+        state = {
+            "user_id": "trusted-user",
+            "message": "请查询售后进度",
+            "tool_results": [{
+                "tool": "fail_lookup", "ok": False, "error": "upstream failed: raw-secret-data",
+                "error_code": "UPSTREAM", "error_category": "tool_error", "retryable": False,
+                "tool_call_id": "call-failed",
+            }],
+            "function_messages": [],
+            "pending_tool_call_id": "call-failed",
+            "pending_assistant_tool_call": failed["choices"][0]["message"],
+        }
+        agent.observe_tool_result(state)
+        agent._native_decision(state, agent._decider_system_prompt())
+
+        tool_message = llm.requests[0]["messages"][2]
+        self.assertEqual("call-failed", tool_message["tool_call_id"])
+        self.assertEqual("fail_lookup", tool_message["name"])
+        self.assertEqual(
+            {
+                "tool": "fail_lookup", "ok": False, "error_type": "tool_error",
+                "error": "upstream failed: raw-secret-data", "error_code": "UPSTREAM", "retryable": False,
+            },
+            json.loads(tool_message["content"]),
+        )
+
+    def test_native_function_apply_action_overwrites_trusted_identifiers(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = RecordingNativeLlm([
+            native_response("call-review", "submit_ai_review", {"verdict": "MANUAL_REVIEW_REQUIRED"}),
+        ])
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+        state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "order_id_hint": "trusted-order",
+            "ticket_id": "trusted-ticket",
+            "review_request_id": "trusted-review",
+            "allow_ai_review_submit": True,
+            "message": "审核",
+            "tool_results": [{"tool": "lookup", "ok": True, "data": {}}],
+            "last_observation": {},
+        }
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual("tool_call", state["next_action"])
+        self.assertEqual(
+            {
+                "verdict": "MANUAL_REVIEW_REQUIRED",
+                "user_id": "trusted-user",
+                "session_id": 501,
+                "order_id": "trusted-order",
+                "ticket_id": "trusted-ticket",
+                "review_request_id": "trusted-review",
+            },
+            state["tool_arguments"],
+        )
+
+    def test_native_function_multiple_calls_fail_closed_without_tool_execution(self) -> None:
+        tools = NativeWorkflowTools()
+        response = native_response("call-one", "lookup", {})
+        response["choices"][0]["message"]["tool_calls"].append({
+            "id": "call-two", "type": "function", "function": {"name": "lookup", "arguments": "{}"},
+        })
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=RecordingNativeLlm([response]))
+
+        with self.assertRaises(FunctionCallingProtocolError):
+            agent.handle(self._payload())
+
+        self.assertEqual([], tools.calls)
+
+    def test_native_function_final_reply_does_not_execute_control_function(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response("call-final", "final_reply", {"assistant_reply": "这是最终答复。"}),
+            ]),
+        )
+
+        result = agent.handle(self._payload(order_id=""))
+
+        self.assertEqual("这是最终答复。", result["assistant_reply"])
+        self.assertNotIn("final_reply", tools.calls)
+
+    def test_native_function_handoff_routes_to_persistence_node(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response("call-handoff", "handoff_to_human", {"assistant_reply": "正在为您转接。"}),
+            ]),
+        )
+
+        result = agent.handle(self._payload(order_id=""))
+
+        self.assertEqual("HUMAN", result["session_mode"])
+        self.assertIn("handoff_to_human", tools.calls)
+
+    def test_native_function_deterministic_tool_does_not_inherit_stale_call_id(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=RecordingNativeLlm([]))
+        state = {
+            "user_id": "trusted-user",
+            "order_id_hint": "trusted-order",
+            "message": "附件问题",
+            "attachments": [{"name": "evidence.jpg", "source": "https://example.com/evidence.jpg"}],
+            "tool_results": [],
+            "function_messages": [],
+            "pending_tool_call_id": "stale-call",
+            "pending_assistant_tool_call": {"role": "assistant", "tool_calls": []},
+        }
+
+        agent.classify_or_plan(state)
+        agent.tool_call(state)
+        agent.observe_tool_result(state)
+
+        self.assertNotIn("tool_call_id", state["tool_results"][0])
+        self.assertEqual([], state["function_messages"])
+        self.assertIsNone(state["pending_tool_call_id"])
+        self.assertIsNone(state["pending_assistant_tool_call"])
 
 
 if __name__ == "__main__":
