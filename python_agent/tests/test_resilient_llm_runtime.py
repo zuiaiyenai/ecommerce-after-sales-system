@@ -209,22 +209,121 @@ def test_plain_messages_remain_unchanged_when_tool_calls_are_null(client_type):
 
 
 @pytest.mark.parametrize("client_type", [OpenAICompatibleHTTPClient, OllamaHTTPClient])
-@pytest.mark.parametrize(
-    "malformed",
-    [
-        [{
-            "role": "assistant",
-            "content": None,
+def test_raw_openai_history_is_normalized_and_rendered_without_mutating_input(client_type):
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        response = (
+            {"message": {"content": "ok"}}
+            if client_type is OllamaHTTPClient
+            else {"choices": [{"message": {"content": "ok"}}]}
+        )
+        return httpx.Response(200, json=response)
+
+    provider = "ollama" if client_type is OllamaHTTPClient else "openai"
+    client = client_type(
+        config(provider=provider),
+        httpx.Client(transport=httpx.MockTransport(handler), base_url="https://llm.test"),
+    )
+    messages = canonical_tool_history()
+    messages[1]["tool_calls"][0]["function"]["arguments"] = '{"keyword":"A100"}'
+    messages[2].pop("name")
+    original = deepcopy(messages)
+
+    client.chat(messages)
+
+    rendered = captured[0]["messages"]
+    if client_type is OpenAICompatibleHTTPClient:
+        assert json.loads(rendered[1]["tool_calls"][0]["function"]["arguments"]) == {
+            "keyword": "A100",
+        }
+        assert rendered[2]["name"] == "lookup"
+        assert rendered[2]["tool_call_id"] == "call-1"
+    else:
+        assert rendered[1]["tool_calls"][0]["function"]["arguments"] == {
+            "keyword": "A100",
+        }
+        assert rendered[2] == {"role": "tool", "content": '{"ok":true}'}
+    assert messages == original
+
+
+def malformed_tool_histories():
+    assistant = canonical_tool_history()[1]
+    observation = canonical_tool_history()[2]
+    second_call = deepcopy(assistant["tool_calls"][0])
+    second_call["id"] = "call-2"
+    cases = {
+        "orphan_tool": [deepcopy(observation)],
+        "wrong_id": [
+            deepcopy(assistant),
+            {**deepcopy(observation), "tool_call_id": "call-wrong"},
+        ],
+        "wrong_name": [
+            deepcopy(assistant),
+            {**deepcopy(observation), "name": "other_lookup"},
+        ],
+        "duplicate_tool": [
+            deepcopy(assistant),
+            deepcopy(observation),
+            deepcopy(observation),
+        ],
+        "unclosed_assistant": [deepcopy(assistant)],
+        "non_adjacent_tool": [
+            deepcopy(assistant),
+            {"role": "assistant", "content": "not an observation"},
+            deepcopy(observation),
+        ],
+        "multiple_calls": [{
+            **deepcopy(assistant),
+            "tool_calls": [
+                deepcopy(assistant["tool_calls"][0]),
+                second_call,
+            ],
+        }],
+        "duplicate_call_id": [
+            deepcopy(assistant),
+            deepcopy(observation),
+            deepcopy(assistant),
+            deepcopy(observation),
+        ],
+        "malformed_json_arguments": [{
+            **deepcopy(assistant),
             "tool_calls": [{
-                "id": "call-1",
-                "type": "function",
-                "function": {"name": "lookup", "arguments": '{"keyword":"A100"}'},
+                **deepcopy(assistant["tool_calls"][0]),
+                "function": {
+                    "name": "lookup",
+                    "arguments": "{",
+                },
             }],
         }],
-        [{"role": "tool", "name": "lookup", "content": '{"ok":true}'}],
-    ],
-)
-def test_malformed_canonical_tool_history_fails_closed_without_http_request(client_type, malformed):
+        "non_object_json_arguments": [{
+            **deepcopy(assistant),
+            "tool_calls": [{
+                **deepcopy(assistant["tool_calls"][0]),
+                "function": {
+                    "name": "lookup",
+                    "arguments": "[]",
+                },
+            }],
+        }],
+        "non_finite_json_arguments": [{
+            **deepcopy(assistant),
+            "tool_calls": [{
+                **deepcopy(assistant["tool_calls"][0]),
+                "function": {
+                    "name": "lookup",
+                    "arguments": '{"score":NaN}',
+                },
+            }],
+        }],
+    }
+    return list(cases.items())
+
+
+@pytest.mark.parametrize("client_type", [OpenAICompatibleHTTPClient, OllamaHTTPClient])
+@pytest.mark.parametrize(("reason", "malformed"), malformed_tool_histories())
+def test_malformed_tool_history_fails_closed_without_http_request(client_type, reason, malformed):
     calls = 0
 
     def handler(_request):
@@ -240,6 +339,30 @@ def test_malformed_canonical_tool_history_fails_closed_without_http_request(clie
 
     with pytest.raises(LLMInvalidRequestError):
         client.chat(malformed)
+
+    assert calls == 0
+
+
+def test_stream_history_validation_fails_before_openai_http_request():
+    calls = 0
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text="data: [DONE]\n\n")
+
+    client = OpenAICompatibleHTTPClient(
+        config(provider="openai"),
+        httpx.Client(transport=httpx.MockTransport(handler), base_url="https://llm.test"),
+    )
+    malformed = malformed_tool_histories()[0][1]
+    tools = [{
+        "type": "function",
+        "function": {"name": "lookup", "parameters": {"type": "object"}},
+    }]
+
+    with pytest.raises(LLMInvalidRequestError):
+        list(client.stream_chat(malformed, tools=tools))
 
     assert calls == 0
 

@@ -241,7 +241,11 @@ class LangGraphAfterSalesAgent:
                 self._apply_action(state, self._order_lookup_action(state))
             return state
 
-        raw = self._native_decision(state, self._planner_system_prompt())
+        raw = self._native_decision(
+            state,
+            self._planner_system_prompt(),
+            self._planner_legacy_system_prompt(),
+        )
         raw = self._guard_completed_review_claim(state, raw)
 
         # 小模型安全网：LLM 忽略了已提供的订单上下文时，强制查订单
@@ -274,11 +278,21 @@ class LangGraphAfterSalesAgent:
         # 有订单 + (有附件 或 消息足够长) → LLM 不应该直接 final_reply
         return has_order and (has_attachments or len(msg) >= 8)
 
-    def _native_decision(self, state: AgentGraphState, system_prompt: str) -> dict[str, Any]:
+    def _native_decision(
+        self,
+        state: AgentGraphState,
+        native_system_prompt: str,
+        legacy_system_prompt: str,
+    ) -> dict[str, Any]:
         payload = self._planner_payload(state)
         if not self.native_function_calling_enabled:
             try:
-                return self._legacy_decision(state, system_prompt, payload, "legacy_disabled_native")
+                return self._legacy_decision(
+                    state,
+                    legacy_system_prompt,
+                    payload,
+                    "legacy_disabled_native",
+                )
             except (LLMError, FunctionCallingProtocolError) as exc:
                 logger.warning("agent_function_decision protocol=legacy_disabled_native error_category=%s", exc.__class__.__name__)
                 return self._fail_closed_decision(state)
@@ -289,7 +303,7 @@ class LangGraphAfterSalesAgent:
                 temperature=0.1,
                 max_tokens=700,
             ).decide(
-                system_prompt=system_prompt,
+                system_prompt=native_system_prompt,
                 payload=payload,
                 prior_messages=list(state.get("function_messages") or []),
             )
@@ -299,7 +313,12 @@ class LangGraphAfterSalesAgent:
             if not self.legacy_tool_call_fallback_enabled:
                 return self._fail_closed_decision(state)
             try:
-                return self._legacy_decision(state, system_prompt, payload, "legacy_fallback")
+                return self._legacy_decision(
+                    state,
+                    legacy_system_prompt,
+                    payload,
+                    "legacy_fallback",
+                )
             except (LLMError, FunctionCallingProtocolError) as fallback_exc:
                 self._clear_pending_tool_call(state)
                 logger.warning("agent_function_decision protocol=legacy_fallback error_category=%s", fallback_exc.__class__.__name__)
@@ -417,13 +436,23 @@ class LangGraphAfterSalesAgent:
             or latest.get("tool_call_id") != call_id
         ):
             return
+        calls = assistant_message.get("tool_calls")
+        if not isinstance(calls, list) or len(calls) != 1:
+            return
+        pending_call = calls[0]
+        if not isinstance(pending_call, dict) or pending_call.get("id") != call_id:
+            return
+        function = pending_call.get("function")
+        pending_name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(pending_name, str) or not pending_name.strip():
+            return
         messages = list(state.get("function_messages") or [])
         messages.extend([
             assistant_message,
             {
                 "role": "tool",
                 "tool_call_id": call_id,
-                "name": str(latest.get("tool") or ""),
+                "name": pending_name.strip(),
                 "content": json.dumps(observation, ensure_ascii=False, default=str),
             },
         ])
@@ -613,7 +642,11 @@ class LangGraphAfterSalesAgent:
                 self._reset_function_call_context(state)
             return state
 
-        raw = self._native_decision(state, self._decider_system_prompt())
+        raw = self._native_decision(
+            state,
+            self._decider_system_prompt(),
+            self._decider_legacy_system_prompt(),
+        )
         raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
         if self.route_after_decision(state) == "final_reply":
@@ -625,7 +658,11 @@ class LangGraphAfterSalesAgent:
         state: AgentGraphState,
         guarded: dict[str, Any],
     ) -> dict[str, Any]:
-        raw = self._native_decision(state, self._decider_system_prompt())
+        raw = self._native_decision(
+            state,
+            self._decider_system_prompt(),
+            self._decider_legacy_system_prompt(),
+        )
         if state.get("decision_protocol") == "fail_closed":
             return raw
         raw = self._guard_completed_review_claim(state, raw, terminal=True)
@@ -795,19 +832,25 @@ class LangGraphAfterSalesAgent:
             trace_entry["tool_call_id"] = state["pending_tool_call_id"]
         trace.append(trace_entry)
         state["tool_results"] = trace
+        handoff_ok = self._is_successful_handoff_result(result)
         observation = self._build_tool_observation(
             "handoff_to_human",
-            result.ok,
+            handoff_ok,
             result.data,
-            result.error,
+            result.error if not result.ok else None,
         )
+        observation["ok"] = handoff_ok
+        observation["session_mode"] = "HUMAN" if handoff_ok else "AI"
+        observation["handoff_succeeded"] = handoff_ok
         if not result.ok:
             observation["error_type"] = result.error_category or self._classify_tool_error(result.error)
             observation["error_code"] = result.error_code
             observation["retryable"] = result.retryable
+        elif not handoff_ok:
+            observation["error_type"] = "unconfirmed"
+            observation["retryable"] = False
         self._correlate_tool_observation(state, trace_entry, observation)
         self._reset_function_call_context(state)
-        handoff_ok = self._is_successful_handoff_result(result)
         if result.ok and not handoff_ok:
             logger.warning("agent_handoff_result tool=handoff_to_human error_category=unconfirmed")
         state["session_mode"] = "HUMAN" if handoff_ok else "AI"
@@ -1056,6 +1099,43 @@ class LangGraphAfterSalesAgent:
             "⚠️ assistant_reply 必须是给用户看的自然中文文本，绝对禁止包含 JSON、工具调用参数、\n"
             "   base64、长数字ID序列或任何机器可读数据。回复应像真人客服一样亲切、简洁、信息明确。\n"
             "调用一个提供的 function 完成当前决策。"
+        )
+
+    @staticmethod
+    def _planner_legacy_system_prompt() -> str:
+        return (
+            "你是电商售后 Planner，使用 legacy JSON 决策协议。"
+            "没有 ticket_id 时只能咨询、查订单或检索政策，不得创建工单或更新状态；"
+            "携带 ticket_id 时必须先校验已有工单。所有业务事实和状态更新必须以 Java 工具结果为准。\n"
+            "只输出一个完整 JSON 对象，不得输出 Markdown、解释文字或代码块。"
+            "对象必须且只能包含 action, tool_name, tool_arguments, assistant_reply, need_human, evidence_needed "
+            "这六个字段，完整 envelope 为 "
+            '{"action":"tool_call|human_handoff|final_reply","tool_name":null,'
+            '"tool_arguments":{},"assistant_reply":"","need_human":false,"evidence_needed":[]}。\n'
+            "tool_call 时 tool_name 必须是 available_tools 中的名称且 tool_arguments 必须是对象；"
+            "human_handoff 或 final_reply 时 tool_name 必须为 null 且 tool_arguments 必须为 {}。"
+            "不得伪造订单、工单、审核或人工转接成功，不得绕过权限、Kafka 审核来源和 Java 状态机。\n"
+            "assistant_reply 必须是给用户看的简洁自然中文，禁止包含 JSON、工具参数、base64、"
+            "内部标识或长数字 ID；need_human 必须是布尔值，evidence_needed 必须是字符串数组。"
+        )
+
+    @staticmethod
+    def _decider_legacy_system_prompt() -> str:
+        return (
+            "你是售后 Agent 的 Terminal Decider，使用 legacy JSON 决策协议。"
+            "根据 tool_results 和 last_observation 决定继续调用工具、转人工或最终回复；"
+            "不得编造工具未返回的业务事实，AI 初审必须以 submit_ai_review 成功结果为准，"
+            "没有 ticket_id 时不得提交 AI 审核。\n"
+            "只输出一个完整 JSON 对象，不得输出 Markdown、解释文字或代码块。"
+            "对象必须且只能包含 action, tool_name, tool_arguments, assistant_reply, need_human, evidence_needed "
+            "这六个字段，完整 envelope 为 "
+            '{"action":"tool_call|human_handoff|final_reply","tool_name":null,'
+            '"tool_arguments":{},"assistant_reply":"","need_human":false,"evidence_needed":[]}。\n'
+            "tool_call 时 tool_name 必须是 available_tools 中的名称且 tool_arguments 必须是对象；"
+            "human_handoff 或 final_reply 时 tool_name 必须为 null 且 tool_arguments 必须为 {}。"
+            "不得声称未被 Java 确认的状态更新、审核完成或人工接入成功，不得绕过权限和安全门禁。\n"
+            "assistant_reply 必须是给用户看的简洁自然中文，禁止包含 JSON、工具参数、base64、"
+            "内部标识或长数字 ID；need_human 必须是布尔值，evidence_needed 必须是字符串数组。"
         )
 
     def _guarded_after_sales_action(self, state: AgentGraphState) -> dict[str, Any] | None:

@@ -1773,7 +1773,11 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         )
         self.assertEqual("tool", state["function_messages"][-1]["role"])
         self.assertEqual("call-handoff-success", state["function_messages"][-1]["tool_call_id"])
-        self.assertTrue(json.loads(state["function_messages"][-1]["content"])["ok"])
+        self.assertEqual("handoff_to_human", state["function_messages"][-1]["name"])
+        observation = json.loads(state["function_messages"][-1]["content"])
+        self.assertTrue(observation["ok"])
+        self.assertEqual("HUMAN", observation["session_mode"])
+        self.assertTrue(observation["handoff_succeeded"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
         self.assertEqual("deterministic", state["current_function_call_mode"])
@@ -1808,8 +1812,11 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         tool_message = state["function_messages"][-1]
         self.assertEqual("tool", tool_message["role"])
         self.assertEqual("call-handoff-failure", tool_message["tool_call_id"])
+        self.assertEqual("handoff_to_human", tool_message["name"])
         observation = json.loads(tool_message["content"])
         self.assertFalse(observation["ok"])
+        self.assertEqual("AI", observation["session_mode"])
+        self.assertFalse(observation["handoff_succeeded"])
         self.assertEqual("service_unavailable", observation["error_type"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
@@ -1878,11 +1885,54 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
             state["function_messages"][-2]["tool_calls"][0]["id"],
         )
         self.assertEqual("call-implicit-terminal-handoff", state["function_messages"][-1]["tool_call_id"])
-        self.assertFalse(json.loads(state["function_messages"][-1]["content"])["ok"])
+        self.assertEqual("final_reply", state["function_messages"][-1]["name"])
+        observation = json.loads(state["function_messages"][-1]["content"])
+        self.assertFalse(observation["ok"])
+        self.assertEqual("AI", observation["session_mode"])
+        self.assertFalse(observation["handoff_succeeded"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
         self.assertEqual("deterministic", state["current_function_call_mode"])
         self.assertEqual("none", state["current_provider_tool_call_shape"])
+
+    def test_native_implicit_handoff_http_success_without_java_confirmation_is_not_reported_as_human(self) -> None:
+        tools = FakeUnconfirmedHandoffTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response(
+                    "call-implicit-unconfirmed",
+                    "final_reply",
+                    {"assistant_reply": "需要人工继续核对。", "need_human": True},
+                ),
+            ]),
+        )
+        state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "请继续处理",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+        agent.classify_or_plan(state)
+        agent.human_handoff(state)
+
+        trace = state["tool_results"][-1]
+        self.assertTrue(trace["ok"])
+        self.assertEqual("handoff_to_human", trace["tool"])
+        self.assertEqual("call-implicit-unconfirmed", trace["tool_call_id"])
+        tool_message = state["function_messages"][-1]
+        self.assertEqual("final_reply", tool_message["name"])
+        self.assertEqual("call-implicit-unconfirmed", tool_message["tool_call_id"])
+        observation = json.loads(tool_message["content"])
+        self.assertFalse(observation["ok"])
+        self.assertEqual("AI", observation["session_mode"])
+        self.assertFalse(observation["handoff_succeeded"])
+        self.assertEqual("AI", state["session_mode"])
+        self.assertFalse(state["handoff_succeeded"])
+        self.assertIsNone(state["pending_tool_call_id"])
 
     def test_native_function_deterministic_tool_does_not_inherit_stale_call_id(self) -> None:
         tools = NativeWorkflowTools()
@@ -2035,13 +2085,21 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         }
 
     def test_native_function_disabled_uses_legacy_once_without_native_chat(self) -> None:
-        llm = SwitchingDecisionLlm([], [{"action": "final_reply", "assistant_reply": "兼容回复"}])
+        llm = SwitchingDecisionLlm([], [{
+            "action": "final_reply",
+            "tool_name": None,
+            "tool_arguments": {},
+            "assistant_reply": "兼容回复",
+            "need_human": False,
+            "evidence_needed": [],
+        }])
         agent = LangGraphAfterSalesAgent(
             tools=NativeWorkflowTools(),
             llm=llm,
             native_function_calling_enabled=False,
         )
         state = self._state()
+        state["order_id_hint"] = None
 
         agent.classify_or_plan(state)
 
@@ -2050,6 +2108,66 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         self.assertEqual("legacy_disabled_native", state["decision_protocol"])
         self.assertIsNone(state.get("pending_tool_call_id"))
         self.assertEqual([], state["function_messages"])
+        legacy_prompt = str(llm.legacy_requests[0]["system_prompt"])
+        self.assertIn("Planner", legacy_prompt)
+        self.assertIn("只输出一个完整 JSON 对象", legacy_prompt)
+        for field in (
+            "action",
+            "tool_name",
+            "tool_arguments",
+            "assistant_reply",
+            "need_human",
+            "evidence_needed",
+        ):
+            self.assertIn(field, legacy_prompt)
+        self.assertNotIn("调用一个提供的 function", legacy_prompt)
+        self.assertIsInstance(json.loads(str(llm.legacy_requests[0]["user_prompt"])), dict)
+
+    def test_native_planner_prompt_requires_function_without_legacy_json_envelope(self) -> None:
+        llm = RecordingNativeLlm([
+            native_response("call-final", "final_reply", {"assistant_reply": "正常回复"}),
+        ])
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+        state = self._state()
+        state["order_id_hint"] = None
+
+        agent.classify_or_plan(state)
+
+        native_prompt = str(llm.requests[0]["messages"][0]["content"])
+        self.assertIn("调用一个提供的 function", native_prompt)
+        self.assertNotIn("只输出一个完整 JSON 对象", native_prompt)
+        self.assertNotIn('"action"', native_prompt)
+
+    def test_native_terminal_failure_uses_independent_legacy_decider_prompt_once(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [LLMError("native unavailable")],
+            [{
+                "action": "final_reply",
+                "tool_name": None,
+                "tool_arguments": {},
+                "assistant_reply": "兼容终态回复",
+                "need_human": False,
+                "evidence_needed": [],
+            }],
+        )
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+        state = self._state()
+        guarded = {
+            "action": "final_reply",
+            "assistant_reply": "确定性回复",
+            "need_human": False,
+            "evidence_needed": [],
+        }
+
+        result = agent._native_terminal_decision(state, guarded)
+
+        self.assertEqual("兼容终态回复", result["assistant_reply"])
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        legacy_prompt = str(llm.legacy_requests[0]["system_prompt"])
+        self.assertIn("Terminal Decider", legacy_prompt)
+        self.assertIn("只输出一个完整 JSON 对象", legacy_prompt)
+        self.assertNotIn("调用一个提供的 function", legacy_prompt)
 
     def test_native_function_disabled_legacy_tool_trace_has_explicit_mode(self) -> None:
         tools = NativeWorkflowTools()
