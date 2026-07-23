@@ -99,6 +99,38 @@ class SwitchingDecisionLlm:
         return response  # type: ignore[return-value]
 
 
+class HandoffPathRecordingAgent(LangGraphAfterSalesAgent):
+    def __init__(self, **kwargs: object) -> None:
+        self.tool_call_node_calls = 0
+        self.observe_node_calls = 0
+        self.handoff_node_calls = 0
+        self.handoff_input: dict[str, object] = {}
+        self.handoff_output: dict[str, object] = {}
+        super().__init__(**kwargs)
+
+    def tool_call(self, state: dict[str, object]) -> dict[str, object]:
+        self.tool_call_node_calls += 1
+        return super().tool_call(state)  # type: ignore[arg-type, return-value]
+
+    def observe_tool_result(self, state: dict[str, object]) -> dict[str, object]:
+        self.observe_node_calls += 1
+        return super().observe_tool_result(state)  # type: ignore[arg-type, return-value]
+
+    def human_handoff(self, state: dict[str, object]) -> dict[str, object]:
+        self.handoff_node_calls += 1
+        self.handoff_input = dict(state)
+        result = super().human_handoff(state)  # type: ignore[arg-type]
+        self.handoff_output = {
+            "session_mode": result.get("session_mode"),
+            "need_human": result.get("need_human"),
+            "handoff_succeeded": result.get("handoff_succeeded"),
+            "last_observation": dict(result.get("last_observation") or {}),
+            "handoff_trace": dict((result.get("tool_results") or [])[-1]),
+            "assistant_reply": result.get("assistant_reply"),
+        }
+        return result  # type: ignore[return-value]
+
+
 class FakeTools:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -2188,6 +2220,126 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         trace = state["tool_results"][-1]
         self.assertEqual("legacy", trace["function_call_mode"])
         self.assertEqual("legacy_json", trace["provider_tool_call_shape"])
+
+    def test_legacy_handoff_tool_call_routes_once_through_dedicated_node(self) -> None:
+        cases = {
+            "confirmed": (
+                NativeWorkflowTools(),
+                "HUMAN",
+                True,
+                True,
+                None,
+            ),
+            "http_failure": (
+                NativeHandoffFailureTools(),
+                "AI",
+                False,
+                False,
+                "service_unavailable",
+            ),
+            "unconfirmed": (
+                FakeUnconfirmedHandoffTools(),
+                "AI",
+                False,
+                True,
+                "unconfirmed",
+            ),
+        }
+
+        for name, (tools, expected_mode, succeeded, transport_ok, error_type) in cases.items():
+            with self.subTest(name=name):
+                llm = SwitchingDecisionLlm([], [{
+                    "action": "tool_call",
+                    "tool_name": "handoff_to_human",
+                    "tool_arguments": {"assistant_reply": "正在连接人工客服。"},
+                    "assistant_reply": "需要人工继续核对。",
+                    "need_human": False,
+                    "evidence_needed": ["订单凭证"],
+                }])
+                agent = HandoffPathRecordingAgent(
+                    tools=tools,
+                    llm=llm,
+                    native_function_calling_enabled=False,
+                )
+
+                result = agent.handle({
+                    "user_id": "trusted-user",
+                    "session_id": 501,
+                    "message": "需要继续核对售后情况",
+                    "order_id": "",
+                })
+
+                self.assertEqual(0, llm.native_calls)
+                self.assertEqual(1, llm.legacy_calls)
+                self.assertEqual(0, agent.tool_call_node_calls)
+                self.assertEqual(0, agent.observe_node_calls)
+                self.assertEqual(1, agent.handoff_node_calls)
+                self.assertEqual(1, tools.calls.count("handoff_to_human"))
+                self.assertEqual("human_handoff", agent.handoff_input["next_action"])
+                self.assertEqual("需要人工继续核对。", agent.handoff_input["assistant_reply"])
+                self.assertEqual(["订单凭证"], agent.handoff_input["evidence_needed"])
+                self.assertIsNone(agent.handoff_input.get("pending_tool_call_id"))
+                self.assertEqual([], agent.handoff_input["function_messages"])
+                self.assertEqual(expected_mode, result["session_mode"])
+                self.assertEqual(expected_mode, agent.handoff_output["session_mode"])
+                self.assertEqual(succeeded, agent.handoff_output["handoff_succeeded"])
+                self.assertTrue(agent.handoff_output["need_human"])
+                observation = agent.handoff_output["last_observation"]
+                self.assertEqual(succeeded, observation["ok"])
+                self.assertEqual(expected_mode, observation["session_mode"])
+                self.assertEqual(succeeded, observation["handoff_succeeded"])
+                if error_type is not None:
+                    self.assertEqual(error_type, observation["error_type"])
+                trace = agent.handoff_output["handoff_trace"]
+                self.assertEqual("handoff_to_human", trace["tool"])
+                self.assertEqual(transport_ok, trace["ok"])
+                self.assertEqual("legacy", trace["function_call_mode"])
+                self.assertEqual("legacy_json", trace["provider_tool_call_shape"])
+                self.assertNotIn("tool_call_id", trace)
+                if not succeeded:
+                    self.assertNotIn(
+                        "已为您转接人工客服，请稍等",
+                        str(agent.handoff_output["assistant_reply"]),
+                    )
+
+    def test_direct_handoff_observation_requires_java_human_waiting_confirmation(self) -> None:
+        agent = LangGraphAfterSalesAgent(
+            tools=NativeWorkflowTools(),
+            llm=RecordingNativeLlm([]),
+        )
+        state = {
+            "user_id": "trusted-user",
+            "session_mode": "AI",
+            "need_human": False,
+            "handoff_succeeded": None,
+            "assistant_reply": "已为您转接人工客服，请稍等。",
+            "tool_results": [{
+                "tool": "handoff_to_human",
+                "arguments": {"user_id": "trusted-user"},
+                "ok": True,
+                "data": {"mode": "AI", "status": "ACTIVE"},
+                "error": None,
+                "function_call_mode": "deterministic",
+                "provider_tool_call_shape": "none",
+            }],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+        agent.observe_tool_result(state)
+
+        self.assertEqual("AI", state["session_mode"])
+        self.assertTrue(state["need_human"])
+        self.assertFalse(state["handoff_succeeded"])
+        self.assertFalse(state["last_tool_ok"])
+        self.assertTrue(state["last_tool_failed"])
+        self.assertEqual("unconfirmed", state["last_error_type"])
+        self.assertFalse(state["last_observation"]["ok"])
+        self.assertEqual("AI", state["last_observation"]["session_mode"])
+        self.assertFalse(state["last_observation"]["handoff_succeeded"])
+        self.assertEqual("unconfirmed", state["last_observation"]["error_type"])
+        self.assertNotIn("已为您转接人工客服，请稍等", state["assistant_reply"])
+        self.assertTrue(state["tool_results"][-1]["ok"])
 
     def test_native_protocol_failure_uses_one_legacy_action_with_trusted_state(self) -> None:
         malformed = native_response("call-bad", "unknown_tool", {})

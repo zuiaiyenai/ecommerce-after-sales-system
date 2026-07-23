@@ -119,6 +119,22 @@ class FunctionCallingAdapter:
                 self._schema_for_name(name, provider_tools),
                 path=f"{name}.arguments",
             )
+            if name == "handoff_to_human":
+                normalized: dict[str, Any] = {
+                    "action": "human_handoff",
+                    "need_human": True,
+                }
+                assistant_reply = raw.get("assistant_reply") or arguments.get("assistant_reply")
+                if assistant_reply:
+                    normalized["assistant_reply"] = assistant_reply
+                evidence_needed = (
+                    raw.get("evidence_needed")
+                    if "evidence_needed" in raw
+                    else arguments.get("evidence_needed")
+                )
+                if evidence_needed is not None:
+                    normalized["evidence_needed"] = evidence_needed
+                return normalized
             return validated
 
         if raw.get("tool_name") not in (None, ""):

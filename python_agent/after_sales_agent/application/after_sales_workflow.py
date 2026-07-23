@@ -538,15 +538,28 @@ class LangGraphAfterSalesAgent:
             return state
 
         tool = str(latest.get("tool") or "")
-        ok = bool(latest.get("ok"))
+        transport_ok = bool(latest.get("ok"))
+        ok = (
+            self._is_successful_handoff_trace(latest)
+            if tool == "handoff_to_human"
+            else transport_ok
+        )
         error = str(latest.get("error") or "") or None
         data = latest.get("data")
+        unconfirmed_handoff = tool == "handoff_to_human" and transport_ok and not ok
 
         state["last_tool_name"] = tool
         state["last_tool_ok"] = ok
         state["last_tool_failed"] = not ok
         state["last_tool_error"] = error
-        state["last_error_type"] = None if ok else str(latest.get("error_category") or self._classify_tool_error(error))
+        if ok:
+            state["last_error_type"] = None
+        elif unconfirmed_handoff:
+            state["last_error_type"] = "unconfirmed"
+        else:
+            state["last_error_type"] = str(
+                latest.get("error_category") or self._classify_tool_error(error)
+            )
         state["last_tool_retryable"] = bool(latest.get("retryable"))
 
         observation = self._build_tool_observation(tool, ok, data, error)
@@ -554,6 +567,9 @@ class LangGraphAfterSalesAgent:
             observation["error_type"] = state["last_error_type"]
             observation["error_code"] = latest.get("error_code")
             observation["retryable"] = state["last_tool_retryable"]
+        if tool == "handoff_to_human":
+            observation["session_mode"] = "HUMAN" if ok else "AI"
+            observation["handoff_succeeded"] = ok
         state["last_observation"] = observation
         logger.info(
             "agent_tool_observation tool=%s call_id=%s error_category=%s",
@@ -563,6 +579,17 @@ class LangGraphAfterSalesAgent:
         )
         self._correlate_tool_observation(state, latest, observation)
         self._reset_function_call_context(state)
+
+        if tool == "handoff_to_human":
+            state["session_mode"] = "HUMAN" if ok else "AI"
+            state["need_human"] = True
+            state["handoff_succeeded"] = ok
+            if ok:
+                AGENT_RUNTIME_METRICS.record_handoff()
+                logger.info("agent_tool_state tool=handoff_to_human")
+            else:
+                state["assistant_reply"] = "当前人工转接暂时未确认成功，我已保留您的售后申请记录，请稍后重试或联系人工客服。"
+            return state
 
         if not ok:
             return state
@@ -583,12 +610,6 @@ class LangGraphAfterSalesAgent:
             state["review_result"] = data
             state["ticket"] = data
             logger.info("agent_tool_state tool=submit_ai_review")
-        elif tool == "handoff_to_human":
-            state["session_mode"] = "HUMAN"
-            state["need_human"] = True
-            state["handoff_succeeded"] = True
-            AGENT_RUNTIME_METRICS.record_handoff()
-            logger.info("agent_tool_state tool=handoff_to_human")
         return state
 
     def decide_next(self, state: AgentGraphState) -> AgentGraphState:
@@ -849,6 +870,7 @@ class LangGraphAfterSalesAgent:
         elif not handoff_ok:
             observation["error_type"] = "unconfirmed"
             observation["retryable"] = False
+        state["last_observation"] = observation
         self._correlate_tool_observation(state, trace_entry, observation)
         self._reset_function_call_context(state)
         if result.ok and not handoff_ok:

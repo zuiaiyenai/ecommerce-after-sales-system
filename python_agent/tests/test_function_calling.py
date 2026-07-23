@@ -396,6 +396,27 @@ class FunctionCallingAdapterTest(unittest.TestCase):
         self.assertEqual(3, action["tool_arguments"]["top_k"])
         registry.call.assert_not_called()
 
+    def test_validate_action_normalizes_legacy_handoff_tool_call_without_forging_call_id(self) -> None:
+        adapter, _, registry = self._adapter(tool_response())
+
+        action = adapter.validate_action({
+            "action": "tool_call",
+            "tool_name": "handoff_to_human",
+            "tool_arguments": {"assistant_reply": "正在连接人工客服。"},
+            "assistant_reply": "需要人工继续核对。",
+            "need_human": False,
+            "evidence_needed": ["订单凭证"],
+        })
+
+        self.assertEqual({
+            "action": "human_handoff",
+            "assistant_reply": "需要人工继续核对。",
+            "need_human": True,
+            "evidence_needed": ["订单凭证"],
+        }, action)
+        self.assertNotIn("tool_call_id", action)
+        self.assertEqual(0, registry.call_count)
+
     def test_validate_action_rejects_schema_invalid_and_forged_arguments(self) -> None:
         registry = AgentToolRegistry()
         registry.call = Mock()
@@ -407,6 +428,7 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             {"action": "tool_call", "tool_name": "review_images", "tool_arguments": {}},
             {"action": "tool_call", "tool_name": "review_images", "tool_arguments": {"attachments": [{"kind": "image", "unknown": True}]}},
             {"action": "tool_call", "tool_name": "get_merchant_policy", "tool_arguments": {}},
+            {"action": "tool_call", "tool_name": "handoff_to_human", "tool_arguments": {"assistant_reply": 1}},
             {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": "x", "top_k": float("inf")}},
             {"action": "tool_call", "tool_name": "submit_ai_review", "tool_arguments": {"verdict": "APPROVE", "ticket_id": "forged"}},
         ]
