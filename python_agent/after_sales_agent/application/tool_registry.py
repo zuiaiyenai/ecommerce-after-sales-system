@@ -124,7 +124,7 @@ class AgentToolRegistry:
             self._tool_spec("get_order_detail", "Get one order after Java ownership validation.", [], True, "low", True, {}),
             self._tool_spec("get_existing_after_sales", "Find an open after-sales ticket for an owned order.", [], True, "low", True, {}),
             self._tool_spec("get_after_sales_ticket", "Get an existing ticket after Java ownership validation.", [], True, "low", True, {}),
-            self._tool_spec("get_merchant_policy", "Read merchant policy configuration; never mutates business state.", [], True, "low", True, {
+            self._tool_spec("get_merchant_policy", "Read merchant policy configuration; never mutates business state.", ["merchant_code"], True, "low", True, {
                 "merchant_code": {"type": "string"},
             }),
             self._tool_spec(
@@ -153,7 +153,7 @@ class AgentToolRegistry:
                     "top_k": {"type": "number"},
                 },
             ),
-            self._tool_spec("review_images", "Analyze evidence images without changing ticket state.", [], True, "medium", True, {
+            self._tool_spec("review_images", "Analyze evidence images without changing ticket state.", ["attachments"], True, "medium", True, {
                 "attachments": {
                     "type": "array",
                     "items": {

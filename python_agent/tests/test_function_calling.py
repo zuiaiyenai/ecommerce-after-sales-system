@@ -69,6 +69,34 @@ def tool_response(
     }]}}]}
 
 
+def ollama_tool_response(
+    *,
+    name: str = "search_user_orders",
+    arguments: object | None = None,
+    call_id: str | None = None,
+    call_type: str | None = None,
+) -> dict[str, Any]:
+    tool_call: dict[str, Any] = {
+        "function": {
+            "name": name,
+            "arguments": {"keyword": "A100"} if arguments is None else arguments,
+        },
+    }
+    if call_id is not None:
+        tool_call["id"] = call_id
+    if call_type is not None:
+        tool_call["type"] = call_type
+    return {
+        "model": "qwen3:8b",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [tool_call],
+        },
+        "done": True,
+    }
+
+
 class FunctionCallingAdapterTest(unittest.TestCase):
     def _adapter(self, response: dict[str, Any]) -> tuple[FunctionCallingAdapter, RecordingClient, RecordingRegistry]:
         client = RecordingClient(response)
@@ -88,7 +116,52 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             "tool_call_id": "call-1",
         }, decision.action)
         self.assertIs(decision.assistant_message, response["choices"][0]["message"])
+        self.assertEqual("openai", decision.provider_tool_call_shape)
         self.assertEqual(0, registry.call_count)
+
+    def test_parses_real_ollama_object_arguments_and_normalizes_missing_envelope_fields(self) -> None:
+        response = ollama_tool_response()
+        adapter, _, registry = self._adapter(response)
+
+        first = adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+        second = adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+        self.assertEqual("ollama", first.provider_tool_call_shape)
+        self.assertEqual("tool_call", first.action["action"])
+        self.assertEqual({"keyword": "A100"}, first.action["tool_arguments"])
+        self.assertRegex(first.action["tool_call_id"], r"^call_ollama_[0-9a-f]{32}$")
+        self.assertNotEqual(first.action["tool_call_id"], second.action["tool_call_id"])
+        normalized_call = first.assistant_message["tool_calls"][0]
+        self.assertEqual(first.action["tool_call_id"], normalized_call["id"])
+        self.assertEqual("function", normalized_call["type"])
+        self.assertEqual({"keyword": "A100"}, normalized_call["function"]["arguments"])
+        self.assertEqual("assistant", first.assistant_message["role"])
+        self.assertEqual(0, registry.call_count)
+
+    def test_rejects_malformed_or_ambiguous_ollama_shapes(self) -> None:
+        two_calls = ollama_tool_response()
+        two_calls["message"]["tool_calls"].append({
+            "function": {"name": "search_user_orders", "arguments": {"keyword": "A200"}},
+        })
+        ambiguous = ollama_tool_response()
+        ambiguous["choices"] = tool_response()["choices"]
+        malformed = [
+            {"message": {"role": "assistant", "tool_calls": []}},
+            two_calls,
+            ollama_tool_response(arguments=[]),
+            ollama_tool_response(arguments='{"keyword":"A100"}'),
+            ollama_tool_response(call_id=" "),
+            ollama_tool_response(call_type="custom"),
+            {"message": {"role": "assistant", "tool_calls": [{"function": {"arguments": {}}}]}},
+            ambiguous,
+        ]
+
+        for response in malformed:
+            with self.subTest(response=response):
+                adapter, _, registry = self._adapter(response)
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+                self.assertEqual(0, registry.call_count)
 
     def test_normalizes_control_calls(self) -> None:
         final_adapter, _, _ = self._adapter(tool_response(
@@ -155,9 +228,11 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             ("search_user_orders", {"keyword": 100}),
             ("search_user_orders", {"status_filter": "SHIPPED"}),
             ("retrieve_knowledge", {}),
+            ("review_images", {}),
             ("review_images", {"attachments": {}}),
             ("review_images", {"attachments": ["not-an-object"]}),
             ("review_images", {"attachments": [{"kind": "image", "unexpected": True}]}),
+            ("get_merchant_policy", {}),
             ("search_user_orders", {"unexpected": "field"}),
         ]
 
@@ -167,6 +242,21 @@ class FunctionCallingAdapterTest(unittest.TestCase):
                 registry.call = Mock()
                 adapter = FunctionCallingAdapter(
                     client=RecordingClient(tool_response(name=name, arguments=json.dumps(arguments))),
+                    registry=registry,
+                )
+
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+                registry.call.assert_not_called()
+
+    def test_native_requires_runtime_defaulted_model_fields_without_execution(self) -> None:
+        for name in ("review_images", "get_merchant_policy"):
+            with self.subTest(name=name):
+                registry = AgentToolRegistry()
+                registry.call = Mock()
+                adapter = FunctionCallingAdapter(
+                    client=RecordingClient(tool_response(name=name, arguments="{}")),
                     registry=registry,
                 )
 
@@ -257,7 +347,9 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {}},
             {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": 1}},
             {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": "x", "unknown": True}},
+            {"action": "tool_call", "tool_name": "review_images", "tool_arguments": {}},
             {"action": "tool_call", "tool_name": "review_images", "tool_arguments": {"attachments": [{"kind": "image", "unknown": True}]}},
+            {"action": "tool_call", "tool_name": "get_merchant_policy", "tool_arguments": {}},
             {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": "x", "top_k": float("inf")}},
             {"action": "tool_call", "tool_name": "submit_ai_review", "tool_arguments": {"verdict": "APPROVE", "ticket_id": "forged"}},
         ]
@@ -266,6 +358,22 @@ class FunctionCallingAdapterTest(unittest.TestCase):
             with self.subTest(action=action):
                 with self.assertRaises(FunctionCallingProtocolError):
                     adapter.validate_action(action)
+
+        registry.call.assert_not_called()
+
+    def test_legacy_requires_runtime_defaulted_model_fields_without_execution(self) -> None:
+        registry = AgentToolRegistry()
+        registry.call = Mock()
+        adapter = FunctionCallingAdapter(client=RecordingClient(tool_response()), registry=registry)
+
+        for name in ("review_images", "get_merchant_policy"):
+            with self.subTest(name=name):
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.validate_action({
+                        "action": "tool_call",
+                        "tool_name": name,
+                        "tool_arguments": {},
+                    })
 
         registry.call.assert_not_called()
 

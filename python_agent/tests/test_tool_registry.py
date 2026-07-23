@@ -40,6 +40,16 @@ class ToolRegistrySchemaTest(unittest.TestCase):
         self.assertEqual("boolean", submit["visual_uncertain"]["type"])
         self.assertEqual("number", submit["ai_review_confidence"]["type"])
 
+    def test_runtime_defaulted_fields_remain_required_for_model_calls(self) -> None:
+        self.assertEqual(
+            ["attachments"],
+            self.specs["review_images"]["input_schema"]["required"],
+        )
+        self.assertEqual(
+            ["merchant_code"],
+            self.specs["get_merchant_policy"]["input_schema"]["required"],
+        )
+
     def test_final_reply_is_not_an_executable_registry_tool(self) -> None:
         self.assertNotIn("final_reply", self.registry.registry())
         self.assertNotIn("final_reply", self.specs)

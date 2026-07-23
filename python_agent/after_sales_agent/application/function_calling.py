@@ -4,12 +4,14 @@ from dataclasses import dataclass
 import json
 import math
 from typing import Any
+import uuid
 
 
 @dataclass(frozen=True)
 class NativeDecision:
     action: dict[str, Any]
     assistant_message: dict[str, Any]
+    provider_tool_call_shape: str
 
 
 class FunctionCallingProtocolError(ValueError):
@@ -51,13 +53,10 @@ class FunctionCallingAdapter:
             temperature=self._temperature,
             max_tokens=self._max_tokens,
         )
-        assistant_message = self._assistant_message(response)
+        assistant_message, provider_shape = self._assistant_message(response)
         tool_call = self._single_tool_call(assistant_message)
-        call_id = tool_call.get("id")
-        if not isinstance(call_id, str) or not call_id.strip():
-            raise FunctionCallingProtocolError("tool call id is required")
-        if tool_call.get("type") != "function":
-            raise FunctionCallingProtocolError("tool call type must be function")
+        call_id = self._call_id(tool_call, provider_shape)
+        self._validate_call_type(tool_call, provider_shape)
 
         function = tool_call.get("function")
         if not isinstance(function, dict):
@@ -68,15 +67,23 @@ class FunctionCallingAdapter:
         name = name.strip()
         if name not in self._known_names():
             raise FunctionCallingProtocolError(f"unknown tool call: {name}")
-        arguments = self._arguments(function.get("arguments"))
+        arguments = self._arguments(function.get("arguments"), provider_shape)
         self._validate_schema_value(
             arguments,
             self._schema_for_name(name, provider_tools),
             path=f"{name}.arguments",
         )
+        if provider_shape == "ollama":
+            assistant_message = self._ollama_assistant_message(
+                assistant_message,
+                call_id=call_id,
+                name=name,
+                arguments=arguments,
+            )
         return NativeDecision(
             action=self._normalize_action(name, arguments, call_id),
             assistant_message=assistant_message,
+            provider_tool_call_shape=provider_shape,
         )
 
     def validate_action(self, raw: Any) -> dict[str, Any]:
@@ -257,14 +264,27 @@ class FunctionCallingAdapter:
             return False
 
     @staticmethod
-    def _assistant_message(response: Any) -> dict[str, Any]:
-        try:
-            message = response["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise FunctionCallingProtocolError("model response has no assistant message") from exc
+    def _assistant_message(response: Any) -> tuple[dict[str, Any], str]:
+        if not isinstance(response, dict):
+            raise FunctionCallingProtocolError("model response must be an object")
+        has_openai_shape = "choices" in response
+        has_ollama_shape = "message" in response
+        if has_openai_shape == has_ollama_shape:
+            raise FunctionCallingProtocolError("model response has an ambiguous assistant message shape")
+        if has_openai_shape:
+            try:
+                message = response["choices"][0]["message"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise FunctionCallingProtocolError("model response has no assistant message") from exc
+            provider_shape = "openai"
+        else:
+            message = response["message"]
+            provider_shape = "ollama"
         if not isinstance(message, dict):
             raise FunctionCallingProtocolError("model assistant message must be an object")
-        return message
+        if provider_shape == "ollama" and message.get("role") != "assistant":
+            raise FunctionCallingProtocolError("Ollama tool response must use the assistant role")
+        return message, provider_shape
 
     @staticmethod
     def _single_tool_call(assistant_message: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +294,11 @@ class FunctionCallingAdapter:
         return calls[0]
 
     @staticmethod
-    def _arguments(raw: Any) -> dict[str, Any]:
+    def _arguments(raw: Any, provider_shape: str) -> dict[str, Any]:
+        if provider_shape == "ollama":
+            if not isinstance(raw, dict):
+                raise FunctionCallingProtocolError("Ollama tool call arguments must be an object")
+            return dict(raw)
         if not isinstance(raw, str):
             raise FunctionCallingProtocolError("tool call arguments must be a JSON string")
         try:
@@ -287,6 +311,47 @@ class FunctionCallingAdapter:
         if not isinstance(arguments, dict):
             raise FunctionCallingProtocolError("tool call arguments must decode to an object")
         return arguments
+
+    @staticmethod
+    def _call_id(tool_call: dict[str, Any], provider_shape: str) -> str:
+        call_id = tool_call.get("id")
+        if provider_shape == "ollama" and call_id is None:
+            return f"call_ollama_{uuid.uuid4().hex}"
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise FunctionCallingProtocolError("tool call id is required")
+        return call_id
+
+    @staticmethod
+    def _validate_call_type(tool_call: dict[str, Any], provider_shape: str) -> None:
+        call_type = tool_call.get("type")
+        if provider_shape == "ollama" and call_type is None:
+            return
+        if call_type != "function":
+            raise FunctionCallingProtocolError("tool call type must be function")
+
+    @staticmethod
+    def _ollama_assistant_message(
+        source: dict[str, Any],
+        *,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        content = source.get("content")
+        if content is not None and not isinstance(content, str):
+            raise FunctionCallingProtocolError("Ollama assistant content must be text or null")
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": dict(arguments),
+                },
+            }],
+        }
 
     @staticmethod
     def _reject_json_constant(value: str) -> None:

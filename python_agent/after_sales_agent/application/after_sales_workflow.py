@@ -70,6 +70,8 @@ class AgentGraphState(TypedDict, total=False):
     pending_assistant_tool_call: Optional[dict[str, Any]]
     function_messages: list[dict[str, Any]]
     decision_protocol: str
+    current_function_call_mode: str
+    current_provider_tool_call_shape: str
 
 
 @dataclass
@@ -183,6 +185,8 @@ class LangGraphAfterSalesAgent:
             "pending_assistant_tool_call": None,
             "function_messages": [],
             "decision_protocol": "native",
+            "current_function_call_mode": "deterministic",
+            "current_provider_tool_call_shape": "none",
         }
         final_state = self.graph.invoke(state)
         normalized_ticket = self._normalize_ticket(final_state.get("ticket"))
@@ -247,7 +251,7 @@ class LangGraphAfterSalesAgent:
             raw = self._order_lookup_action(state)
 
         self._apply_action(state, raw)
-        if state.get("next_action") != "tool_call":
+        if state.get("next_action") not in {"tool_call", "human_handoff"}:
             self._clear_pending_tool_call(state)
         return state
 
@@ -301,6 +305,8 @@ class LangGraphAfterSalesAgent:
                 logger.warning("agent_function_decision protocol=legacy_fallback error_category=%s", fallback_exc.__class__.__name__)
                 return self._fail_closed_decision(state)
         action = dict(decision.action)
+        action["_function_call_mode"] = "native"
+        action["_provider_tool_call_shape"] = decision.provider_tool_call_shape
         state["pending_tool_call_id"] = action.get("tool_call_id")
         state["pending_assistant_tool_call"] = dict(decision.assistant_message)
         state["decision_protocol"] = "native"
@@ -320,6 +326,8 @@ class LangGraphAfterSalesAgent:
             max_tokens=700,
         )
         action = FunctionCallingAdapter(client=self.llm, registry=self.tools).validate_action(raw)
+        action["_function_call_mode"] = "legacy"
+        action["_provider_tool_call_shape"] = "legacy_json"
         state["decision_protocol"] = protocol
         logger.info(
             "agent_function_decision protocol=%s tool=%s call_id=%s",
@@ -354,6 +362,39 @@ class LangGraphAfterSalesAgent:
     def _clear_pending_tool_call(state: AgentGraphState) -> None:
         state["pending_tool_call_id"] = None
         state["pending_assistant_tool_call"] = None
+
+    @staticmethod
+    def _trace_protocol(state: AgentGraphState) -> dict[str, str]:
+        mode = state.get("current_function_call_mode")
+        shape = state.get("current_provider_tool_call_shape")
+        if mode == "native" and shape in {"openai", "ollama"}:
+            return {
+                "function_call_mode": "native",
+                "provider_tool_call_shape": str(shape),
+            }
+        if mode == "legacy" and shape == "legacy_json":
+            return {
+                "function_call_mode": "legacy",
+                "provider_tool_call_shape": "legacy_json",
+            }
+        return {
+            "function_call_mode": "deterministic",
+            "provider_tool_call_shape": "none",
+        }
+
+    @staticmethod
+    def _java_visible_tool_results(state: AgentGraphState) -> list[Any]:
+        internal_fields = {"function_call_mode", "provider_tool_call_shape"}
+        return [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in internal_fields
+            }
+            if isinstance(item, dict)
+            else item
+            for item in state.get("tool_results") or []
+        ]
 
     def _correlate_tool_observation(
         self,
@@ -408,7 +449,14 @@ class LangGraphAfterSalesAgent:
         )
         if len(prior) >= self.max_tool_calls or duplicate_count >= self.max_duplicate_tool_calls:
             logger.warning("agent_tool_guard tool=%s error_category=guard_limit", name)
-            guarded_trace: dict[str, Any] = {"tool": name, "arguments": arguments, "ok": False, "data": None, "error": "tool_call_limit_exceeded"}
+            guarded_trace: dict[str, Any] = {
+                "tool": name,
+                "arguments": arguments,
+                "ok": False,
+                "data": None,
+                "error": "tool_call_limit_exceeded",
+                **self._trace_protocol(state),
+            }
             if state.get("pending_tool_call_id"):
                 guarded_trace["tool_call_id"] = state["pending_tool_call_id"]
             state["tool_results"] = prior + [guarded_trace]
@@ -441,6 +489,7 @@ class LangGraphAfterSalesAgent:
             "error_code": result.error_code,
             "error_category": result.error_category,
             "retryable": result.retryable,
+            **self._trace_protocol(state),
         }
         if state.get("pending_tool_call_id"):
             trace_entry["tool_call_id"] = state["pending_tool_call_id"]
@@ -554,14 +603,14 @@ class LangGraphAfterSalesAgent:
             if guarded.get("action") == "final_reply":
                 action = self._native_terminal_decision(state, guarded)
             self._apply_action(state, action)
-            if state.get("next_action") != "tool_call":
+            if state.get("next_action") not in {"tool_call", "human_handoff"}:
                 self._clear_pending_tool_call(state)
             return state
 
         raw = self._native_decision(state, self._decider_system_prompt())
         raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
-        if state.get("next_action") != "tool_call":
+        if state.get("next_action") not in {"tool_call", "human_handoff"}:
             self._clear_pending_tool_call(state)
         return state
 
@@ -725,8 +774,33 @@ class LangGraphAfterSalesAgent:
         }
         result = self.tools.call("handoff_to_human", args)
         trace = list(state.get("tool_results") or [])
-        trace.append({"tool": "handoff_to_human", "arguments": args, "ok": result.ok, "data": result.data, "error": result.error})
+        trace_entry: dict[str, Any] = {
+            "tool": "handoff_to_human",
+            "arguments": args,
+            "ok": result.ok,
+            "data": result.data,
+            "error": result.error,
+            "error_code": result.error_code,
+            "error_category": result.error_category,
+            "retryable": result.retryable,
+            **self._trace_protocol(state),
+        }
+        if state.get("pending_tool_call_id"):
+            trace_entry["tool_call_id"] = state["pending_tool_call_id"]
+        trace.append(trace_entry)
         state["tool_results"] = trace
+        observation = self._build_tool_observation(
+            "handoff_to_human",
+            result.ok,
+            result.data,
+            result.error,
+        )
+        if not result.ok:
+            observation["error_type"] = result.error_category or self._classify_tool_error(result.error)
+            observation["error_code"] = result.error_code
+            observation["retryable"] = result.retryable
+        self._correlate_tool_observation(state, trace_entry, observation)
+        self._clear_pending_tool_call(state)
         handoff_ok = self._is_successful_handoff_result(result)
         if result.ok and not handoff_ok:
             logger.warning("agent_handoff_result tool=handoff_to_human error_category=unconfirmed")
@@ -780,16 +854,35 @@ class LangGraphAfterSalesAgent:
             "role": "ASSISTANT",
             "content": reply,
             "message_type": "TEXT",
-            "knowledge_hits_json": json.dumps(state.get("tool_results") or [], ensure_ascii=False),
+            "knowledge_hits_json": json.dumps(
+                self._java_visible_tool_results(state),
+                ensure_ascii=False,
+            ),
         }
         trace = list(state.get("tool_results") or [])
         user_result = self.tools.call("append_chat_message", append_user)
-        trace.append({"tool": "append_chat_message", "arguments": append_user, "ok": user_result.ok, "data": user_result.data, "error": user_result.error})
+        trace.append({
+            "tool": "append_chat_message",
+            "arguments": append_user,
+            "ok": user_result.ok,
+            "data": user_result.data,
+            "error": user_result.error,
+            "function_call_mode": "deterministic",
+            "provider_tool_call_shape": "none",
+        })
         if user_result.ok and isinstance(user_result.data, dict) and not state.get("session_id"):
             state["session_id"] = user_result.data.get("session_id")
         append_assistant["session_id"] = state.get("session_id")
         assistant_result = self.tools.call("append_chat_message", append_assistant)
-        trace.append({"tool": "append_chat_message", "arguments": append_assistant, "ok": assistant_result.ok, "data": assistant_result.data, "error": assistant_result.error})
+        trace.append({
+            "tool": "append_chat_message",
+            "arguments": append_assistant,
+            "ok": assistant_result.ok,
+            "data": assistant_result.data,
+            "error": assistant_result.error,
+            "function_call_mode": "deterministic",
+            "provider_tool_call_shape": "none",
+        })
         state["tool_results"] = trace
         state["assistant_reply"] = reply
         state["final"] = True
@@ -1487,6 +1580,23 @@ class LangGraphAfterSalesAgent:
     @classmethod
     def _apply_action(cls, state: AgentGraphState, raw: dict[str, Any]) -> None:
         action = str(raw.get("action") or "final_reply")
+        function_call_mode = raw.get("_function_call_mode")
+        provider_tool_call_shape = raw.get("_provider_tool_call_shape")
+        if (
+            function_call_mode == "native"
+            and provider_tool_call_shape in {"openai", "ollama"}
+        ):
+            state["current_function_call_mode"] = "native"
+            state["current_provider_tool_call_shape"] = str(provider_tool_call_shape)
+        elif (
+            function_call_mode == "legacy"
+            and provider_tool_call_shape == "legacy_json"
+        ):
+            state["current_function_call_mode"] = "legacy"
+            state["current_provider_tool_call_shape"] = "legacy_json"
+        else:
+            state["current_function_call_mode"] = "deterministic"
+            state["current_provider_tool_call_shape"] = "none"
         if not raw.get("tool_call_id"):
             LangGraphAfterSalesAgent._clear_pending_tool_call(state)
         state["next_action"] = action

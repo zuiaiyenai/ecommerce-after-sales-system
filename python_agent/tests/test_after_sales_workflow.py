@@ -51,6 +51,18 @@ def native_response(call_id: str, name: str, arguments: dict[str, object]) -> di
     }
 
 
+def ollama_response(name: str, arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "model": "qwen3:8b",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": name, "arguments": arguments}}],
+        },
+        "done": True,
+    }
+
+
 class RecordingNativeLlm:
     def __init__(self, responses: list[dict[str, object]]) -> None:
         self.responses = list(responses)
@@ -199,6 +211,22 @@ class NativeWorkflowTools:
         if name == "submit_ai_review":
             return ToolResult(ok=True, name=name, data={"ticket_no": "AS-NATIVE", "verdict": arguments.get("verdict")})
         return ToolResult(ok=True, name=name, data={"raw_secret": "do-not-send-to-model"})
+
+
+class NativeHandoffFailureTools(NativeWorkflowTools):
+    def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
+        if name == "handoff_to_human":
+            self.calls.append(name)
+            self.arguments.append(dict(arguments))
+            return ToolResult(
+                ok=False,
+                name=name,
+                error="handoff unavailable",
+                error_code="SERVICE_UNAVAILABLE",
+                error_category="service_unavailable",
+                retryable=True,
+            )
+        return super().call(name, arguments)
 
 
 class FakeHandoffSessionTools(FakeTools):
@@ -1451,6 +1479,73 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertIn("调用一个提供的 function", llm.requests[0]["messages"][0]["content"])
         self.assertEqual("lookup", result["tool_trace"][0]["tool"])
         self.assertEqual("call-lookup", result["tool_trace"][0]["tool_call_id"])
+        self.assertEqual("native", result["tool_trace"][0]["function_call_mode"])
+        self.assertEqual("openai", result["tool_trace"][0]["provider_tool_call_shape"])
+        self.assertTrue(all("function_call_mode" in item for item in result["tool_trace"]))
+        self.assertTrue(all("provider_tool_call_shape" in item for item in result["tool_trace"]))
+        self.assertTrue(all(
+            item["function_call_mode"] == "deterministic"
+            and item["provider_tool_call_shape"] == "none"
+            for item in result["tool_trace"]
+            if item["tool"] == "append_chat_message"
+        ))
+        assistant_append = next(
+            arguments
+            for name, arguments in zip(tools.calls, tools.arguments)
+            if name == "append_chat_message" and arguments.get("role") == "ASSISTANT"
+        )
+        java_visible_trace = json.loads(str(assistant_append["knowledge_hits_json"]))
+        self.assertTrue(java_visible_trace)
+        self.assertTrue(all(
+            "function_call_mode" not in item
+            and "provider_tool_call_shape" not in item
+            for item in java_visible_trace
+        ))
+
+    def test_ollama_native_shape_succeeds_in_strict_mode_without_legacy(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = RecordingNativeLlm([
+            ollama_response("handoff_to_human", {"assistant_reply": "Connecting you now."}),
+        ])
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=llm,
+            legacy_tool_call_fallback_enabled=False,
+        )
+
+        result = agent.handle(self._payload(order_id=""))
+
+        handoff_trace = next(item for item in result["tool_trace"] if item["tool"] == "handoff_to_human")
+        self.assertRegex(handoff_trace["tool_call_id"], r"^call_ollama_[0-9a-f]{32}$")
+        self.assertEqual("native", handoff_trace["function_call_mode"])
+        self.assertEqual("ollama", handoff_trace["provider_tool_call_shape"])
+        self.assertEqual("HUMAN", result["session_mode"])
+
+    def test_malformed_ollama_shape_fails_closed_without_tool_execution(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"name": "lookup", "arguments": []}}],
+                },
+            }]),
+            legacy_tool_call_fallback_enabled=False,
+        )
+        state = {
+            "user_id": "trusted-user",
+            "message": "help",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual([], tools.calls)
+        self.assertEqual("fail_closed", state["decision_protocol"])
+        self.assertEqual("final_reply", state["next_action"])
 
     def test_native_function_decider_receives_compressed_correlated_observation(self) -> None:
         tools = NativeWorkflowTools()
@@ -1525,6 +1620,19 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         self.assertIn("search_user_orders", tools.calls)
         self.assertNotIn("submit_ai_review", tools.calls)
         self.assertIn("补充具体订单号", result["assistant_reply"])
+        self.assertEqual(
+            ("native", "openai"),
+            (
+                result["tool_trace"][0]["function_call_mode"],
+                result["tool_trace"][0]["provider_tool_call_shape"],
+            ),
+        )
+        deterministic_search = next(
+            item for item in result["tool_trace"]
+            if item["tool"] == "search_user_orders"
+        )
+        self.assertEqual("deterministic", deterministic_search["function_call_mode"])
+        self.assertEqual("none", deterministic_search["provider_tool_call_shape"])
 
     def test_native_function_apply_action_overwrites_trusted_identifiers(self) -> None:
         tools = NativeWorkflowTools()
@@ -1612,6 +1720,86 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
 
         self.assertEqual("HUMAN", result["session_mode"])
         self.assertIn("handoff_to_human", tools.calls)
+        handoff_trace = next(item for item in result["tool_trace"] if item["tool"] == "handoff_to_human")
+        self.assertEqual("call-handoff", handoff_trace["tool_call_id"])
+        self.assertEqual("native", handoff_trace["function_call_mode"])
+        self.assertEqual("openai", handoff_trace["provider_tool_call_shape"])
+        self.assertTrue(all(
+            "tool_call_id" not in item
+            for item in result["tool_trace"]
+            if item["tool"] == "append_chat_message"
+        ))
+
+    def test_native_handoff_success_keeps_call_id_until_correlated_observation(self) -> None:
+        tools = NativeWorkflowTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response("call-handoff-success", "handoff_to_human", {"assistant_reply": "Connecting."}),
+            ]),
+        )
+        state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "human please",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+        agent.classify_or_plan(state)
+        self.assertEqual("call-handoff-success", state["pending_tool_call_id"])
+        agent.human_handoff(state)
+
+        trace = state["tool_results"][-1]
+        self.assertTrue(trace["ok"])
+        self.assertEqual("call-handoff-success", trace["tool_call_id"])
+        self.assertEqual("native", trace["function_call_mode"])
+        self.assertEqual("openai", trace["provider_tool_call_shape"])
+        self.assertEqual(
+            "call-handoff-success",
+            state["function_messages"][-2]["tool_calls"][0]["id"],
+        )
+        self.assertEqual("tool", state["function_messages"][-1]["role"])
+        self.assertEqual("call-handoff-success", state["function_messages"][-1]["tool_call_id"])
+        self.assertTrue(json.loads(state["function_messages"][-1]["content"])["ok"])
+        self.assertIsNone(state["pending_tool_call_id"])
+        self.assertIsNone(state["pending_assistant_tool_call"])
+
+    def test_native_handoff_failure_keeps_call_id_until_correlated_observation(self) -> None:
+        tools = NativeHandoffFailureTools()
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=RecordingNativeLlm([
+                native_response("call-handoff-failure", "handoff_to_human", {"assistant_reply": "Connecting."}),
+            ]),
+        )
+        state = {
+            "user_id": "trusted-user",
+            "session_id": 501,
+            "message": "human please",
+            "tool_results": [],
+            "function_messages": [],
+            "last_observation": {},
+        }
+
+        agent.classify_or_plan(state)
+        self.assertEqual("call-handoff-failure", state["pending_tool_call_id"])
+        agent.human_handoff(state)
+
+        trace = state["tool_results"][-1]
+        self.assertFalse(trace["ok"])
+        self.assertEqual("call-handoff-failure", trace["tool_call_id"])
+        self.assertEqual("native", trace["function_call_mode"])
+        self.assertEqual("openai", trace["provider_tool_call_shape"])
+        tool_message = state["function_messages"][-1]
+        self.assertEqual("tool", tool_message["role"])
+        self.assertEqual("call-handoff-failure", tool_message["tool_call_id"])
+        observation = json.loads(tool_message["content"])
+        self.assertFalse(observation["ok"])
+        self.assertEqual("service_unavailable", observation["error_type"])
+        self.assertIsNone(state["pending_tool_call_id"])
+        self.assertIsNone(state["pending_assistant_tool_call"])
 
     def test_native_function_deterministic_tool_does_not_inherit_stale_call_id(self) -> None:
         tools = NativeWorkflowTools()
@@ -1632,6 +1820,8 @@ class NativeFunctionCallingWorkflowTest(unittest.TestCase):
         agent.observe_tool_result(state)
 
         self.assertNotIn("tool_call_id", state["tool_results"][0])
+        self.assertEqual("deterministic", state["tool_results"][0]["function_call_mode"])
+        self.assertEqual("none", state["tool_results"][0]["provider_tool_call_shape"])
         self.assertEqual([], state["function_messages"])
         self.assertIsNone(state["pending_tool_call_id"])
         self.assertIsNone(state["pending_assistant_tool_call"])
@@ -1666,6 +1856,26 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         self.assertEqual("legacy_disabled_native", state["decision_protocol"])
         self.assertIsNone(state.get("pending_tool_call_id"))
         self.assertEqual([], state["function_messages"])
+
+    def test_native_function_disabled_legacy_tool_trace_has_explicit_mode(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = SwitchingDecisionLlm(
+            [],
+            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {}}],
+        )
+        agent = LangGraphAfterSalesAgent(
+            tools=tools,
+            llm=llm,
+            native_function_calling_enabled=False,
+        )
+        state = self._state()
+
+        agent.classify_or_plan(state)
+        agent.tool_call(state)
+
+        trace = state["tool_results"][-1]
+        self.assertEqual("legacy", trace["function_call_mode"])
+        self.assertEqual("legacy_json", trace["provider_tool_call_shape"])
 
     def test_native_protocol_failure_uses_one_legacy_action_with_trusted_state(self) -> None:
         malformed = native_response("call-bad", "unknown_tool", {})
@@ -1791,6 +2001,8 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         self.assertEqual(["lookup"], tools.calls)
         self.assertEqual("trusted-user", tools.arguments[0]["user_id"])
         self.assertEqual("trusted-order", tools.arguments[0]["order_id"])
+        self.assertEqual("legacy", state["tool_results"][-1]["function_call_mode"])
+        self.assertEqual("legacy_json", state["tool_results"][-1]["provider_tool_call_shape"])
 
     def test_legacy_fallback_cannot_submit_review_from_non_kafka_source(self) -> None:
         tools = NativeWorkflowTools()
