@@ -38,13 +38,14 @@ class FunctionCallingAdapter:
         payload: dict[str, Any],
         prior_messages: list[dict[str, Any]],
     ) -> NativeDecision:
+        provider_tools = self._provider_tools()
         response = self._client.chat(
             [
                 {"role": "system", "content": system_prompt},
                 *prior_messages,
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
             ],
-            tools=self._provider_tools(),
+            tools=provider_tools,
             tool_choice="required",
             temperature=self._temperature,
             max_tokens=self._max_tokens,
@@ -67,6 +68,11 @@ class FunctionCallingAdapter:
         if name not in self._known_names():
             raise FunctionCallingProtocolError(f"unknown tool call: {name}")
         arguments = self._arguments(function.get("arguments"))
+        self._validate_schema_value(
+            arguments,
+            self._schema_for_name(name, provider_tools),
+            path=f"{name}.arguments",
+        )
         return NativeDecision(
             action=self._normalize_action(name, arguments, call_id),
             assistant_message=assistant_message,
@@ -104,6 +110,67 @@ class FunctionCallingAdapter:
 
     def _known_names(self) -> set[str]:
         return set(self._registry.registry()) | {"final_reply"}
+
+    @staticmethod
+    def _schema_for_name(name: str, provider_tools: list[dict[str, Any]]) -> dict[str, Any]:
+        for tool in provider_tools:
+            function = tool.get("function")
+            if isinstance(function, dict) and function.get("name") == name:
+                schema = function.get("parameters")
+                if isinstance(schema, dict):
+                    return schema
+                break
+        raise FunctionCallingProtocolError(f"tool call schema is unavailable: {name}")
+
+    @classmethod
+    def _validate_schema_value(cls, value: Any, schema: dict[str, Any], *, path: str) -> None:
+        expected = schema.get("type")
+        if expected == "object":
+            if not isinstance(value, dict):
+                raise FunctionCallingProtocolError(f"{path} must be an object")
+            properties = schema.get("properties")
+            required = schema.get("required", [])
+            if not isinstance(properties, dict) or not isinstance(required, list):
+                raise FunctionCallingProtocolError(f"{path} has an invalid object schema")
+            missing = [name for name in required if name not in value]
+            if missing:
+                raise FunctionCallingProtocolError(f"{path} is missing required fields: {', '.join(missing)}")
+            unknown = set(value) - set(properties)
+            if schema.get("additionalProperties") is not False:
+                raise FunctionCallingProtocolError(f"{path} schema must reject additional properties")
+            if unknown:
+                raise FunctionCallingProtocolError(
+                    f"{path} contains unknown fields: {', '.join(sorted(unknown))}"
+                )
+            for name, child in value.items():
+                child_schema = properties.get(name)
+                if not isinstance(child_schema, dict):
+                    raise FunctionCallingProtocolError(f"{path}.{name} has no valid schema")
+                cls._validate_schema_value(child, child_schema, path=f"{path}.{name}")
+            return
+        if expected == "array":
+            if not isinstance(value, list):
+                raise FunctionCallingProtocolError(f"{path} must be an array")
+            items = schema.get("items")
+            if not isinstance(items, dict):
+                raise FunctionCallingProtocolError(f"{path} has an invalid array schema")
+            for index, item in enumerate(value):
+                cls._validate_schema_value(item, items, path=f"{path}[{index}]")
+            return
+        if expected == "string":
+            valid = isinstance(value, str)
+        elif expected == "boolean":
+            valid = isinstance(value, bool)
+        elif expected == "number":
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif expected == "integer":
+            valid = isinstance(value, int) and not isinstance(value, bool)
+        elif expected == "null":
+            valid = value is None
+        else:
+            raise FunctionCallingProtocolError(f"{path} has unsupported schema type: {expected}")
+        if not valid:
+            raise FunctionCallingProtocolError(f"{path} must be {expected}")
 
     @staticmethod
     def _assistant_message(response: Any) -> dict[str, Any]:

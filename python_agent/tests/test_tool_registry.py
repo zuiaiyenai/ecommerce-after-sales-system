@@ -44,6 +44,36 @@ class ToolRegistrySchemaTest(unittest.TestCase):
         self.assertNotIn("final_reply", self.registry.registry())
         self.assertNotIn("final_reply", self.specs)
 
+    def test_graph_owned_nested_audit_fields_are_not_model_visible(self) -> None:
+        properties = self.specs["submit_ai_review"]["input_schema"]["properties"]
+
+        for internal_field in (
+            "ai_review_audit_json",
+            "policy_citations",
+            "skill_versions",
+            "image_review",
+        ):
+            with self.subTest(internal_field=internal_field):
+                self.assertNotIn(internal_field, properties)
+
+    def test_all_nested_model_visible_objects_are_closed(self) -> None:
+        def assert_closed(schema: dict[str, object], path: str) -> None:
+            if schema.get("type") == "object":
+                self.assertIs(False, schema.get("additionalProperties"), path)
+                properties = schema.get("properties")
+                self.assertIsInstance(properties, dict, path)
+                for name, child in properties.items():
+                    self.assertIsInstance(child, dict, f"{path}.{name}")
+                    assert_closed(child, f"{path}.{name}")
+            if schema.get("type") == "array":
+                items = schema.get("items")
+                self.assertIsInstance(items, dict, f"{path}[]")
+                assert_closed(items, f"{path}[]")
+
+        for name, spec in self.specs.items():
+            with self.subTest(tool=name):
+                assert_closed(spec["input_schema"], name)
+
 
 if __name__ == "__main__":
     unittest.main()

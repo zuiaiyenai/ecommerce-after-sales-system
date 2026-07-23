@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
+from unittest.mock import Mock
 
 from after_sales_agent.application.function_calling import (
     FunctionCallingAdapter,
     FunctionCallingProtocolError,
 )
+from after_sales_agent.application.tool_registry import AgentToolRegistry
 
 
 class RecordingClient:
@@ -146,6 +149,70 @@ class FunctionCallingAdapterTest(unittest.TestCase):
         names = [item["function"]["name"] for item in request["tools"]]
         self.assertEqual(["search_user_orders", "handoff_to_human", "final_reply"], names)
         self.assertEqual("object", request["tools"][0]["function"]["parameters"]["type"])
+
+    def test_real_registry_rejects_invalid_arguments_without_executing_tools(self) -> None:
+        invalid_calls = [
+            ("search_user_orders", {"keyword": 100}),
+            ("search_user_orders", {"status_filter": "SHIPPED"}),
+            ("retrieve_knowledge", {}),
+            ("review_images", {"attachments": {}}),
+            ("review_images", {"attachments": ["not-an-object"]}),
+            ("review_images", {"attachments": [{"kind": "image", "unexpected": True}]}),
+            ("search_user_orders", {"unexpected": "field"}),
+        ]
+
+        for name, arguments in invalid_calls:
+            with self.subTest(name=name, arguments=arguments):
+                registry = AgentToolRegistry()
+                registry.call = Mock()
+                adapter = FunctionCallingAdapter(
+                    client=RecordingClient(tool_response(name=name, arguments=json.dumps(arguments))),
+                    registry=registry,
+                )
+
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+                registry.call.assert_not_called()
+
+    def test_real_registry_rejects_forged_trusted_ids_without_executing_tools(self) -> None:
+        for trusted_id in ("user_id", "session_id", "order_id", "ticket_id", "review_request_id"):
+            with self.subTest(trusted_id=trusted_id):
+                registry = AgentToolRegistry()
+                registry.call = Mock()
+                adapter = FunctionCallingAdapter(
+                    client=RecordingClient(tool_response(arguments=json.dumps({
+                        "keyword": "A100",
+                        trusted_id: "forged",
+                    }))),
+                    registry=registry,
+                )
+
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+                registry.call.assert_not_called()
+
+    def test_control_schema_rejects_missing_extra_and_wrong_typed_arguments(self) -> None:
+        invalid_arguments = [
+            {},
+            {"assistant_reply": "已记录", "need_human": "true"},
+            {"assistant_reply": "已记录", "evidence_needed": "图片"},
+            {"assistant_reply": "已记录", "evidence_needed": [1]},
+            {"assistant_reply": "已记录", "user_id": "forged"},
+        ]
+
+        for arguments in invalid_arguments:
+            with self.subTest(arguments=arguments):
+                adapter, _, registry = self._adapter(tool_response(
+                    name="final_reply",
+                    arguments=json.dumps(arguments, ensure_ascii=False),
+                ))
+
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.decide(system_prompt="system", payload={}, prior_messages=[])
+
+                self.assertEqual(0, registry.call_count)
 
 
 if __name__ == "__main__":
