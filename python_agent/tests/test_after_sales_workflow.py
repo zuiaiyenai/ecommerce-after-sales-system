@@ -8,7 +8,7 @@ from after_sales_agent.application.after_sales_workflow import LangGraphAfterSal
 from after_sales_agent.application.function_calling import FunctionCallingProtocolError
 from after_sales_agent.application.tool_registry import ToolResult
 from after_sales_agent.api.http_server import build_attachments
-from after_sales_agent.providers.resilient_llm_runtime import LLMResponseParseError
+from after_sales_agent.providers.resilient_llm_runtime import LLMError, LLMResponseParseError
 
 class FakeLlm:
     def __init__(self) -> None:
@@ -152,7 +152,7 @@ class NativeWorkflowTools:
     def registry(self) -> dict[str, object]:
         return {name: object() for name in (
             "lookup", "fail_lookup", "search_user_orders", "submit_ai_review",
-            "handoff_to_human", "append_chat_message",
+            "handoff_to_human", "append_chat_message", "nested_lookup",
         )}
 
     def tool_specs(self) -> list[dict[str, object]]:
@@ -174,6 +174,14 @@ class NativeWorkflowTools:
             spec("submit_ai_review", {"verdict": {"type": "string"}}, ["verdict"]),
             spec("handoff_to_human", {"assistant_reply": {"type": "string"}}),
             spec("append_chat_message", {"content": {"type": "string"}}, ["content"]),
+            spec("nested_lookup", {
+                "filter": {
+                    "type": "object",
+                    "properties": {"status": {"type": "string"}},
+                    "required": ["status"],
+                    "additionalProperties": False,
+                },
+            }, ["filter"]),
         ]
 
     def call(self, name: str, arguments: dict[str, object]) -> ToolResult:
@@ -1663,7 +1671,7 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         malformed = native_response("call-bad", "unknown_tool", {})
         llm = SwitchingDecisionLlm(
             [malformed],
-            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {"user_id": "attacker"}}],
+            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {}}],
         )
         agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
         state = self._state()
@@ -1676,6 +1684,180 @@ class NativeFunctionCallingFallbackWorkflowTest(unittest.TestCase):
         self.assertEqual("tool_call", state["next_action"])
         self.assertEqual("trusted-user", state["tool_arguments"]["user_id"])
         self.assertNotIn("tool_call_id", state)
+
+    def test_native_success_never_calls_legacy(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [native_response("call-final", "final_reply", {"assistant_reply": "正常回复"})],
+            [],
+        )
+        state = self._state()
+        state["order_id_hint"] = None
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(0, llm.legacy_calls)
+        self.assertEqual("native", state["decision_protocol"])
+
+    def test_native_failure_matrix_attempts_legacy_exactly_once(self) -> None:
+        multiple = native_response("call-one", "lookup", {})
+        multiple["choices"][0]["message"]["tool_calls"].append({
+            "id": "call-two", "type": "function", "function": {"name": "lookup", "arguments": "{}"},
+        })
+        malformed_json = native_response("call-json", "lookup", {})
+        malformed_json["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = "{"
+        wrong_type = native_response("call-type", "search_user_orders", {"keyword": 12})
+        cases = {
+            "provider_error": LLMError("provider rejected tools"),
+            "missing_call": {"choices": [{"message": {"role": "assistant", "tool_calls": []}}]},
+            "multiple_calls": multiple,
+            "malformed_json": malformed_json,
+            "unknown_tool": native_response("call-unknown", "unknown_tool", {}),
+            "wrong_type": wrong_type,
+        }
+
+        for name, native_failure in cases.items():
+            with self.subTest(name=name):
+                llm = SwitchingDecisionLlm(
+                    [native_failure],
+                    [{"action": "final_reply", "assistant_reply": "兼容回复"}],
+                )
+                agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+                state = self._state()
+                state["order_id_hint"] = None
+
+                agent.classify_or_plan(state)
+
+                self.assertEqual(1, llm.native_calls)
+                self.assertEqual(1, llm.legacy_calls)
+                self.assertEqual("legacy_fallback", state["decision_protocol"])
+
+    def test_legacy_schema_invalid_actions_fail_closed_before_registry(self) -> None:
+        invalid_actions = [
+            {"action": "tool_call", "tool_name": "search_user_orders", "tool_arguments": {}},
+            {"action": "tool_call", "tool_name": "search_user_orders", "tool_arguments": {"keyword": 1}},
+            {"action": "tool_call", "tool_name": "lookup", "tool_arguments": {"unknown": True}},
+            {"action": "tool_call", "tool_name": "nested_lookup", "tool_arguments": {"filter": {"status": "OPEN", "unknown": True}}},
+            {"action": "tool_call", "tool_name": "submit_ai_review", "tool_arguments": {"verdict": "APPROVE", "ticket_id": "forged"}},
+        ]
+
+        for invalid in invalid_actions:
+            with self.subTest(invalid=invalid):
+                tools = NativeWorkflowTools()
+                llm = SwitchingDecisionLlm(
+                    [native_response("call-unknown", "unknown_tool", {})],
+                    [invalid],
+                )
+                agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+                state = self._state()
+
+                agent.classify_or_plan(state)
+
+                self.assertEqual(1, llm.native_calls)
+                self.assertEqual(1, llm.legacy_calls)
+                self.assertEqual("fail_closed", state["decision_protocol"])
+                self.assertEqual([], tools.calls)
+
+    def test_legacy_non_dict_fails_closed(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [["not", "an", "object"]],
+        )
+        state = self._state()
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("fail_closed", state["decision_protocol"])
+
+    def test_valid_legacy_fallback_executes_only_after_trusted_id_injection(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {}}],
+        )
+        state = self._state()
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+
+        agent.classify_or_plan(state)
+        agent.tool_call(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_fallback", state["decision_protocol"])
+        self.assertEqual(["lookup"], tools.calls)
+        self.assertEqual("trusted-user", tools.arguments[0]["user_id"])
+        self.assertEqual("trusted-order", tools.arguments[0]["order_id"])
+
+    def test_legacy_fallback_cannot_submit_review_from_non_kafka_source(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [{"action": "tool_call", "tool_name": "submit_ai_review", "tool_arguments": {"verdict": "APPROVE"}}],
+        )
+        state = self._state()
+        state.update({"ticket_id": "trusted-ticket", "tool_results": [{"tool": "lookup", "ok": True}]})
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_fallback", state["decision_protocol"])
+        self.assertEqual("final_reply", state["next_action"])
+        self.assertNotIn("submit_ai_review", tools.calls)
+
+    def test_legacy_planner_false_completion_claim_is_guarded(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [{"action": "final_reply", "assistant_reply": "AI初审已完成并进入处理中。"}],
+        )
+        state = self._state()
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+
+        agent.classify_or_plan(state)
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_fallback", state["decision_protocol"])
+        self.assertNotIn("已完成并进入处理中", state.get("assistant_reply", ""))
+
+    def test_terminal_decider_accepts_valid_legacy_final_reply(self) -> None:
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [{"action": "final_reply", "assistant_reply": "兼容终态回复"}],
+        )
+        state = self._state()
+        agent = LangGraphAfterSalesAgent(tools=NativeWorkflowTools(), llm=llm)
+
+        action = agent._native_terminal_decision(
+            state,
+            {"action": "final_reply", "assistant_reply": "确定性回复", "need_human": False},
+        )
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("legacy_fallback", state["decision_protocol"])
+        self.assertEqual("兼容终态回复", action["assistant_reply"])
+
+    def test_double_failure_end_to_end_executes_only_final_message_persistence(self) -> None:
+        tools = NativeWorkflowTools()
+        llm = SwitchingDecisionLlm(
+            [native_response("call-unknown", "unknown_tool", {})],
+            [{"action": "tool_call", "tool_name": "lookup", "tool_arguments": {"unknown": True}}],
+        )
+        agent = LangGraphAfterSalesAgent(tools=tools, llm=llm)
+
+        result = agent.handle({"user_id": "trusted-user", "session_id": 501, "message": "帮助"})
+
+        self.assertEqual(1, llm.native_calls)
+        self.assertEqual(1, llm.legacy_calls)
+        self.assertEqual("fail_closed", result["raw"]["decision_protocol"])
+        self.assertNotIn("lookup", tools.calls)
+        self.assertEqual(["append_chat_message", "append_chat_message"], tools.calls)
 
     def test_native_and_legacy_failure_fail_closed_without_business_tool(self) -> None:
         malformed = native_response("call-bad", "unknown_tool", {})

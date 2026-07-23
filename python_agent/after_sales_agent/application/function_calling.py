@@ -79,6 +79,74 @@ class FunctionCallingAdapter:
             assistant_message=assistant_message,
         )
 
+    def validate_action(self, raw: Any) -> dict[str, Any]:
+        """Validate an untrusted legacy action against native-visible schemas."""
+        if not isinstance(raw, dict):
+            raise FunctionCallingProtocolError("decision must be an object")
+        action = raw.get("action")
+        if action not in {"tool_call", "human_handoff", "final_reply"}:
+            raise FunctionCallingProtocolError("decision has an unsupported action")
+
+        allowed = {
+            "action", "tool_name", "tool_arguments", "assistant_reply",
+            "need_human", "evidence_needed",
+        }
+        unknown_envelope = set(raw) - allowed
+        if unknown_envelope:
+            raise FunctionCallingProtocolError(
+                f"decision contains unknown fields: {', '.join(sorted(unknown_envelope))}"
+            )
+        self._validate_optional_output_fields(raw)
+        provider_tools = self._provider_tools()
+        validated = dict(raw)
+
+        if action == "tool_call":
+            name = raw.get("tool_name")
+            if not isinstance(name, str) or name not in self._known_names() or name == "final_reply":
+                raise FunctionCallingProtocolError("decision has an unknown tool")
+            arguments = raw.get("tool_arguments")
+            if not isinstance(arguments, dict):
+                raise FunctionCallingProtocolError("tool arguments must be an object")
+            self._validate_schema_value(
+                arguments,
+                self._schema_for_name(name, provider_tools),
+                path=f"{name}.arguments",
+            )
+            return validated
+
+        if raw.get("tool_name") not in (None, ""):
+            raise FunctionCallingProtocolError("terminal decision cannot select a tool")
+        if raw.get("tool_arguments") not in (None, {}):
+            raise FunctionCallingProtocolError("terminal decision cannot carry tool arguments")
+        arguments = {
+            key: raw[key]
+            for key in ("assistant_reply", "evidence_needed")
+            if key in raw
+        }
+        if action == "final_reply" and "need_human" in raw:
+            arguments["need_human"] = raw["need_human"]
+        schema_name = "final_reply" if action == "final_reply" else "handoff_to_human"
+        self._validate_schema_value(
+            arguments,
+            self._schema_for_name(schema_name, provider_tools),
+            path=f"{schema_name}.arguments",
+        )
+        validated.pop("tool_name", None)
+        validated.pop("tool_arguments", None)
+        if action == "human_handoff":
+            validated["need_human"] = True
+        return validated
+
+    @classmethod
+    def _validate_optional_output_fields(cls, raw: dict[str, Any]) -> None:
+        for key, schema in (
+            ("assistant_reply", {"type": "string"}),
+            ("need_human", {"type": "boolean"}),
+            ("evidence_needed", {"type": "array", "items": {"type": "string"}}),
+        ):
+            if key in raw:
+                cls._validate_schema_value(raw[key], schema, path=f"decision.{key}")
+
     def _provider_tools(self) -> list[dict[str, Any]]:
         tools = []
         for spec in self._registry.tool_specs():

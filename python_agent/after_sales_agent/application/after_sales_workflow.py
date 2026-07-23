@@ -202,6 +202,7 @@ class LangGraphAfterSalesAgent:
                 "runtime": "langgraph_react",
                 "steps": final_state.get("steps") or 0,
                 "mode": "ticket_review" if final_state.get("ticket_id") else "consultation",
+                "decision_protocol": final_state.get("decision_protocol") or "fail_closed",
                 "allow_ai_review_submit": bool(final_state.get("allow_ai_review_submit")),
                 "skill_versions": final_state.get("skill_versions") or {},
             },
@@ -244,6 +245,7 @@ class LangGraphAfterSalesAgent:
             return state
 
         raw = self._native_decision(state, self._planner_system_prompt())
+        raw = self._guard_completed_review_claim(state, raw)
         logger.info("📡 LLM planner 原始返回: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         logger.info("   assistant_reply 预览: %s", str(raw.get("assistant_reply") or "")[:150])
@@ -324,34 +326,9 @@ class LangGraphAfterSalesAgent:
             temperature=0.1,
             max_tokens=700,
         )
-        action = self._validate_legacy_action(raw)
+        action = FunctionCallingAdapter(client=self.llm, registry=self.tools).validate_action(raw)
         state["decision_protocol"] = protocol
         return action
-
-    def _validate_legacy_action(self, raw: Any) -> dict[str, Any]:
-        if not isinstance(raw, dict):
-            raise FunctionCallingProtocolError("legacy decision must be an object")
-        action = raw.get("action")
-        if action not in {"tool_call", "human_handoff", "final_reply"}:
-            raise FunctionCallingProtocolError("legacy decision has an unsupported action")
-        validated = dict(raw)
-        validated.pop("tool_call_id", None)
-        if action == "tool_call":
-            tool_name = validated.get("tool_name")
-            if not isinstance(tool_name, str) or tool_name not in self.tools.registry():
-                raise FunctionCallingProtocolError("legacy decision has an unknown tool")
-            if not isinstance(validated.get("tool_arguments"), dict):
-                raise FunctionCallingProtocolError("legacy tool arguments must be an object")
-            return validated
-        if "assistant_reply" in validated and not isinstance(validated["assistant_reply"], str):
-            raise FunctionCallingProtocolError("legacy assistant reply must be a string")
-        if "need_human" in validated and not isinstance(validated["need_human"], bool):
-            raise FunctionCallingProtocolError("legacy need_human must be a boolean")
-        if "evidence_needed" in validated and not isinstance(validated["evidence_needed"], list):
-            raise FunctionCallingProtocolError("legacy evidence_needed must be an array")
-        validated["tool_name"] = None
-        validated["tool_arguments"] = {}
-        return validated
 
     @staticmethod
     def _fail_closed_decision(state: AgentGraphState) -> dict[str, Any]:
@@ -579,16 +556,7 @@ class LangGraphAfterSalesAgent:
         raw = self._native_decision(state, self._decider_system_prompt())
         logger.info("   📡 LLM decider: action=%s tool=%s need_human=%s",
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
-        if self._claims_review_completed(raw.get("assistant_reply")) and not self._has_successful_tool(state, "submit_ai_review"):
-            logger.info("   ⚠️ LLM声称初审已完成但实际未提交, 纠正中...")
-            raw = self._order_lookup_action(state) if not self._has_successful_tool(state, "search_user_orders") else {
-                "action": "final_reply",
-                "tool_name": None,
-                "tool_arguments": {},
-                "assistant_reply": "我需要先核对您的售后申请和审核条件，暂时不能声称AI初审已完成。请稍后重试或联系人工客服。",
-                "need_human": False,
-                "evidence_needed": ["订单信息"],
-            }
+        raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
         if state.get("next_action") != "tool_call":
             self._clear_pending_tool_call(state)
@@ -607,6 +575,7 @@ class LangGraphAfterSalesAgent:
                     raw.get("action"), raw.get("tool_name"), raw.get("need_human"))
         if state.get("decision_protocol") == "fail_closed":
             return raw
+        raw = self._guard_completed_review_claim(state, raw, terminal=True)
         if raw.get("action") != "final_reply":
             logger.warning("   🛡️ 已拒绝终态 decider 覆盖确定性动作: action=%s tool=%s",
                            raw.get("action"), raw.get("tool_name"))
@@ -617,13 +586,31 @@ class LangGraphAfterSalesAgent:
         constrained["tool_arguments"] = {}
         constrained["need_human"] = bool(guarded.get("need_human"))
         constrained["evidence_needed"] = list(guarded.get("evidence_needed") or [])
-        if (
-            self._claims_review_completed(constrained.get("assistant_reply"))
-            and not self._has_successful_tool(state, "submit_ai_review")
-        ):
-            logger.info("   ⚠️ LLM声称初审已完成但实际未提交, 纠正中...")
-            constrained["assistant_reply"] = "我需要先核对您的售后申请和审核条件，暂时不能声称AI初审已完成。请稍后重试或联系人工客服。"
         return constrained
+
+    def _guard_completed_review_claim(
+        self,
+        state: AgentGraphState,
+        raw: dict[str, Any],
+        *,
+        terminal: bool = False,
+    ) -> dict[str, Any]:
+        if (
+            not self._claims_review_completed(raw.get("assistant_reply"))
+            or self._has_successful_tool(state, "submit_ai_review")
+        ):
+            return raw
+        logger.info("   ⚠️ LLM声称初审已完成但实际未提交, 纠正中...")
+        if terminal or self._has_successful_tool(state, "search_user_orders"):
+            return {
+                "action": "final_reply",
+                "tool_name": None,
+                "tool_arguments": {},
+                "assistant_reply": "我需要先核对您的售后申请和审核条件，暂时不能声称AI初审已完成。请稍后重试或联系人工客服。",
+                "need_human": False,
+                "evidence_needed": ["订单信息"],
+            }
+        return self._order_lookup_action(state)
 
     def _handle_tool_failure(self, state: AgentGraphState) -> dict[str, Any] | None:
         tool = str(state.get("last_tool_name") or state.get("tool_name") or "")

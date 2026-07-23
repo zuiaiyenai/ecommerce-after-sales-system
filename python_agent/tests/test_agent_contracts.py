@@ -255,7 +255,10 @@ class AgentContractTest(unittest.TestCase):
 
         self.assertTrue(specs["search_user_orders"]["read_only"])
         self.assertEqual("high", specs["submit_ai_review"]["risk_level"])
-        self.assertIn("ticket_id", specs["submit_ai_review"]["input_schema"]["required"])
+        review_schema = specs["submit_ai_review"]["input_schema"]
+        self.assertIn("verdict", review_schema["required"])
+        self.assertNotIn("ticket_id", review_schema["required"])
+        self.assertNotIn("ticket_id", review_schema["properties"])
         self.assertTrue(specs["submit_ai_review"]["idempotent"])
         as_of_schema = specs["retrieve_knowledge"]["input_schema"]["properties"]["as_of_time"]
         self.assertEqual("string", as_of_schema["type"])
@@ -264,6 +267,21 @@ class AgentContractTest(unittest.TestCase):
             "string",
             specs["retrieve_knowledge"]["input_schema"]["properties"]["policy_version"]["type"],
         )
+
+    def test_workflow_injects_trusted_ticket_id_after_model_schema_validation(self) -> None:
+        state = {
+            "user_id": "trusted-user",
+            "ticket_id": "trusted-ticket",
+            "allow_ai_review_submit": True,
+        }
+
+        LangGraphAfterSalesAgent._apply_action(state, {
+            "action": "tool_call",
+            "tool_name": "submit_ai_review",
+            "tool_arguments": {"verdict": "APPROVE"},
+        })
+
+        self.assertEqual("trusted-ticket", state["tool_arguments"]["ticket_id"])
 
     def test_retrieve_knowledge_parses_timezone_aware_as_of_time(self) -> None:
         retriever = Mock()

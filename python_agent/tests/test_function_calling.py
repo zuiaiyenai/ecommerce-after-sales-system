@@ -234,6 +234,57 @@ class FunctionCallingAdapterTest(unittest.TestCase):
 
                 registry.call.assert_not_called()
 
+    def test_validate_action_reuses_strict_registry_schema_without_execution(self) -> None:
+        registry = AgentToolRegistry()
+        registry.call = Mock()
+        adapter = FunctionCallingAdapter(client=RecordingClient(tool_response()), registry=registry)
+
+        action = adapter.validate_action({
+            "action": "tool_call",
+            "tool_name": "retrieve_knowledge",
+            "tool_arguments": {"query": "refund policy", "top_k": 3},
+        })
+
+        self.assertEqual("retrieve_knowledge", action["tool_name"])
+        self.assertEqual(3, action["tool_arguments"]["top_k"])
+        registry.call.assert_not_called()
+
+    def test_validate_action_rejects_schema_invalid_and_forged_arguments(self) -> None:
+        registry = AgentToolRegistry()
+        registry.call = Mock()
+        adapter = FunctionCallingAdapter(client=RecordingClient(tool_response()), registry=registry)
+        invalid_actions = [
+            {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {}},
+            {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": 1}},
+            {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": "x", "unknown": True}},
+            {"action": "tool_call", "tool_name": "review_images", "tool_arguments": {"attachments": [{"kind": "image", "unknown": True}]}},
+            {"action": "tool_call", "tool_name": "retrieve_knowledge", "tool_arguments": {"query": "x", "top_k": float("inf")}},
+            {"action": "tool_call", "tool_name": "submit_ai_review", "tool_arguments": {"verdict": "APPROVE", "ticket_id": "forged"}},
+        ]
+
+        for action in invalid_actions:
+            with self.subTest(action=action):
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.validate_action(action)
+
+        registry.call.assert_not_called()
+
+    def test_validate_action_applies_control_schema_and_rejects_forged_envelope(self) -> None:
+        adapter, _, registry = self._adapter(tool_response())
+
+        validated = adapter.validate_action({"action": "final_reply", "assistant_reply": "请稍后重试"})
+
+        self.assertEqual({"action": "final_reply", "assistant_reply": "请稍后重试"}, validated)
+        for action in (
+            {"action": "final_reply"},
+            {"action": "final_reply", "assistant_reply": "ok", "user_id": "forged"},
+            {"action": "human_handoff", "assistant_reply": 1},
+        ):
+            with self.subTest(action=action):
+                with self.assertRaises(FunctionCallingProtocolError):
+                    adapter.validate_action(action)
+        self.assertEqual(0, registry.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()
