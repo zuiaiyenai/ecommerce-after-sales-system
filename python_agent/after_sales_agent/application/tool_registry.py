@@ -117,11 +117,16 @@ class AgentToolRegistry:
 
     def tool_specs(self) -> list[dict[str, Any]]:
         return [
-            self._tool_spec("search_user_orders", "Search only the current user's orders.", ["user_id"], True, "low", True),
-            self._tool_spec("get_order_detail", "Get one order after Java ownership validation.", ["user_id", "order_id"], True, "low", True),
-            self._tool_spec("get_existing_after_sales", "Find an open after-sales ticket for an owned order.", ["user_id", "order_id"], True, "low", True),
-            self._tool_spec("get_after_sales_ticket", "Get an existing ticket after Java ownership validation.", ["user_id", "ticket_id"], True, "low", True),
-            self._tool_spec("get_merchant_policy", "Read merchant policy configuration; never mutates business state.", ["merchant_code"], True, "low", True),
+            self._tool_spec("search_user_orders", "Search only the current user's orders.", [], True, "low", True, {
+                "keyword": {"type": "string"},
+                "status_filter": {"type": "array", "items": {"type": "string"}},
+            }),
+            self._tool_spec("get_order_detail", "Get one order after Java ownership validation.", [], True, "low", True, {}),
+            self._tool_spec("get_existing_after_sales", "Find an open after-sales ticket for an owned order.", [], True, "low", True, {}),
+            self._tool_spec("get_after_sales_ticket", "Get an existing ticket after Java ownership validation.", [], True, "low", True, {}),
+            self._tool_spec("get_merchant_policy", "Read merchant policy configuration; never mutates business state.", [], True, "low", True, {
+                "merchant_code": {"type": "string"},
+            }),
             self._tool_spec(
                 "retrieve_knowledge",
                 "Retrieve RAG evidence with explicit metadata filters.",
@@ -130,6 +135,12 @@ class AgentToolRegistry:
                 "low",
                 True,
                 properties={
+                    "query": {"type": "string"},
+                    "merchant_code": {"type": "string"},
+                    "product_category": {"type": "string"},
+                    "scene": {"type": "string"},
+                    "intent": {"type": "string"},
+                    "source_type": {"type": "string"},
                     "policy_version": {
                         "type": "string",
                         "description": "Java-owned policy version snapshot for historical policy lookup.",
@@ -138,14 +149,55 @@ class AgentToolRegistry:
                         "type": "string",
                         "format": "date-time",
                         "description": "Timezone-aware ISO 8601 business effective time.",
-                    }
+                    },
+                    "top_k": {"type": "number"},
                 },
             ),
-            self._tool_spec("review_images", "Analyze evidence images without changing ticket state.", ["attachments"], True, "medium", True),
-            self._tool_spec("submit_ai_review", "Submit a guarded review result for an existing ticket.", ["user_id", "ticket_id", "review_request_id", "verdict"], False, "high", True),
-            self._tool_spec("handoff_to_human", "Move a session into human-service mode.", ["user_id"], False, "medium", True),
-            self._tool_spec("append_chat_message", "Persist one chat message through Java.", ["user_id", "session_id", "content"], False, "medium", True),
-            self._tool_spec("request_missing_evidence", "Persist a generic missing-evidence request.", ["user_id", "session_id"], False, "medium", True),
+            self._tool_spec("review_images", "Analyze evidence images without changing ticket state.", [], True, "medium", True, {
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"}, "name": {"type": "string"},
+                            "source": {"type": "string"}, "file_url": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "order_hint": {"type": "string"},
+            }),
+            self._tool_spec("submit_ai_review", "Submit a guarded review result for an existing ticket.", ["verdict"], False, "high", True, {
+                "verdict": {"type": "string"}, "after_sales_type": {"type": "string"},
+                "reason": {"type": "string"}, "reason_detail": {"type": "string"},
+                "refund_amount": {"type": "number"}, "ai_review_confidence": {"type": "number"},
+                "ai_suggested_after_sale_type": {"type": "string"}, "policy_code": {"type": "string"},
+                "policy_version": {"type": "string"}, "evidence_urls": {"type": "array", "items": {"type": "string"}},
+                "ai_review_audit_json": {"type": "object"}, "auto_approved": {"type": "boolean"},
+                "evidence_needed": {"type": "array", "items": {"type": "string"}},
+                "assistant_reply": {"type": "string"}, "visual_uncertain": {"type": "boolean"},
+                "policy_uncertain": {"type": "boolean"}, "evidence_consistent": {"type": "boolean"},
+                "visual_confidence": {"type": "number"}, "risk_review_reasons": {"type": "array", "items": {"type": "string"}},
+                "policy_citations": {"type": "array", "items": {"type": "object"}},
+                "policy_match_score": {"type": "number"}, "filter_level": {"type": "string"},
+                "reranker_succeeded": {"type": "boolean"}, "trusted_policy_eligible": {"type": "boolean"},
+                "skill_versions": {"type": "object"}, "image_review": {"type": "object"},
+                "knowledge_query": {"type": "string"}, "knowledge_retrieval_mode": {"type": "string"},
+                "knowledge_hit_count": {"type": "number"}, "knowledge_hits_json": {"type": "string"},
+                "knowledge_trace_json": {"type": "string"},
+            }),
+            self._tool_spec("handoff_to_human", "Move a session into human-service mode.", [], False, "medium", True, {
+                "assistant_reply": {"type": "string"}, "evidence_needed": {"type": "array", "items": {"type": "string"}},
+            }),
+            self._tool_spec("append_chat_message", "Persist one chat message through Java.", ["content"], False, "medium", True, {
+                "content": {"type": "string"}, "message_type": {"type": "string"},
+                "file_url": {"type": "string"}, "emotion_label": {"type": "string"},
+                "emotion_score": {"type": "number"}, "emotion_confidence": {"type": "number"},
+                "need_human_priority": {"type": "boolean"},
+            }),
+            self._tool_spec("request_missing_evidence", "Persist a generic missing-evidence request.", [], False, "medium", True, {
+                "assistant_reply": {"type": "string"}, "evidence_needed": {"type": "array", "items": {"type": "string"}},
+            }),
         ]
 
     @staticmethod
@@ -165,7 +217,7 @@ class AgentToolRegistry:
                 "type": "object",
                 "required": required,
                 "properties": properties or {},
-                "additionalProperties": True,
+                "additionalProperties": False,
             },
             "read_only": read_only,
             "risk_level": risk_level,
