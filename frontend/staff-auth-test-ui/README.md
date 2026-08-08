@@ -1,6 +1,6 @@
 # 电商售后客服端（Vue3 + Vite）
 
-本目录是合并进当前项目的网页客服端，定位为商家客服工作台。它与 `frontend/uniapp` 用户端分开维护，默认使用本地 mock 数据，可以在后端接口完成后切换到真实接口。
+本目录是合并进当前项目的网页客服端，定位为商家客服工作台。它与 `frontend/uniapp` 用户端分开维护，默认开发和生产构建均使用真实后端 API；mock 仅用于显式 demo/test。
 
 ## 启动
 
@@ -27,19 +27,19 @@ http://127.0.0.1:5173
 
 ## 接口模式
 
-默认走 mock 数据，不依赖后端：
+默认走真实 API：
 
 ```bash
 npm.cmd run dev
 ```
 
-需要尝试真实接口时，启动前设置：
+需要使用 mock 数据做纯前端演示时，必须显式执行：
 
 ```bash
-npm.cmd run dev:real
+npm.cmd run dev:mock
 ```
 
-真实接口路径集中在 `src/api/merchantCs.js`，当前约定为 `/api/merchant-cs/*`。
+`src/api/merchantCs.real.js` 和 `src/api/merchantCs.mock.js` 是独立 adapter，`src/api/merchantCs.js` 只提供稳定导出入口。`npm.cmd run build` 固定使用真实 adapter，缺少 `VITE_API_BASE_URL` 时会明确失败；仅 `npm.cmd run build:mock` 会构建 mock 演示版本。
 
 ## 当前页面
 

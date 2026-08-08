@@ -1,15 +1,5 @@
-﻿<template>
+<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">申请售后</text>
-      <view class="nav-right"></view>
-    </view>
-
-    <!-- 售后原因选择 -->
     <view class="card">
       <text class="card-title">售后原因</text>
       <view class="divider"></view>
@@ -23,46 +13,50 @@
         >
           <view class="reason-icon">{{ item.icon }}</view>
           <text class="reason-label">{{ item.label }}</text>
-          <view class="reason-check" v-if="selectedReason === item.value">✓</view>
+          <view v-if="selectedReason === item.value" class="reason-check">✓</view>
         </view>
       </view>
     </view>
 
-    <!-- 中间：问题描述输入 -->
     <view class="card">
-      <text class="card-title">问题描述</text>
+      <view class="title-row">
+        <text class="card-title">问题描述</text>
+        <text class="required-badge">必填</text>
+      </view>
       <view class="divider"></view>
       <textarea
         v-model="description"
         class="desc-input"
-        placeholder="请详细描述您遇到的问题，例如：商品有破损、尺码不合适等..."
+        placeholder="请尽量描述清楚异常情况，例如：耳机没有声音、收到商品破损、少发了一件配件。"
         maxlength="500"
       />
       <view class="desc-footer">
+        <text class="desc-tip">请描述至少20字，以便AI客服准确判断</text>
         <text class="char-count">{{ description.length }}/500</text>
       </view>
     </view>
 
-    <!-- 下方：图片上传 -->
     <view class="card">
-      <text class="card-title">上传凭证</text>
+      <view class="title-row">
+        <text class="card-title">上传凭证</text>
+        <text class="required-badge">建议上传</text>
+      </view>
       <view class="divider"></view>
       <view class="image-grid">
         <view v-for="(img, index) in images" :key="index" class="image-item">
           <image :src="img" mode="aspectFill" class="preview-img" @tap="previewImage(index)" />
           <view class="delete-btn" @tap.stop="removeImage(index)">×</view>
         </view>
-        <view class="add-image" @tap="chooseImage" v-if="images.length < 5">
+        <view v-if="images.length < 5" class="add-image" @tap="chooseImage">
           <text class="add-icon">+</text>
           <text class="add-text">添加图片</text>
         </view>
       </view>
-      <text class="image-tip">最多上传5张，支持jpg/png格式</text>
+      <text class="image-tip">建议上传商品照片、破损照片或包装照片，最多 5 张。AI客服会根据图片快速判断。</text>
     </view>
 
-    <!-- 提交按钮 -->
     <button class="submit-btn" :disabled="!selectedReason || submitting" @tap="submit">
-      {{ submitting ? '提交中...' : '提交申请' }}
+      {{ submitting ? '进入对话中...' : '提交申请' }}
     </button>
   </view>
 </template>
@@ -70,13 +64,16 @@
 <script setup>
 import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { BASE_URL, request } from '../../utils/request'
+import { request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
+
+const PENDING_APPLY_PREFIX = 'after_sales_pending_apply'
 
 const selectedReason = ref('')
 const description = ref('')
 const images = ref([])
 const submitting = ref(false)
-const orderId = ref(null)
+const orderId = ref('')
 const orderData = ref(null)
 
 const reasons = [
@@ -84,23 +81,29 @@ const reasons = [
   { value: 'WRONG_ITEM', label: '发错货', icon: '错' },
   { value: 'SIZE_ISSUE', label: '尺码不合适', icon: '码' },
   { value: 'DAMAGE', label: '物流损坏', icon: '损' },
-  { value: 'NOT_MATCH', label: '与描述不符', icon: '异' },
-  { value: 'OTHER', label: '其他原因', icon: '…' }
+  { value: 'NOT_MATCH', label: '与描述不符', icon: '差' },
+  { value: 'OTHER', label: '其他原因', icon: '其' }
 ]
 
+function getPendingApplyKey(id) {
+  return `${PENDING_APPLY_PREFIX}:${id || 'default'}`
+}
+
 onLoad(async (options) => {
-  if (options.orderId) {
-    // 用字符串，避免 JS 大数精度丢失（雪花ID 超过 2^53）
-    orderId.value = String(options.orderId)
-    try {
-      orderData.value = await request({ url: '/orders/' + orderId.value })
-    } catch (e) {}
+  if (!options.orderId) return
+  orderId.value = String(options.orderId)
+  try {
+    orderData.value = await request({ url: '/orders/' + orderId.value })
+    if (orderData.value && resolveOrderAfterSalesSnapshot(orderData.value).hasAnyAfterSales) {
+      uni.showToast({ title: '该订单已有售后记录', icon: 'none' })
+      setTimeout(() => {
+        uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
+      }, 800)
+    }
+  } catch (error) {
+    orderData.value = null
   }
 })
-
-function goBack() {
-  uni.navigateBack()
-}
 
 function selectReason(value) {
   selectedReason.value = value
@@ -112,7 +115,7 @@ function chooseImage() {
     sizeType: ['compressed'],
     sourceType: ['album', 'camera'],
     success: (res) => {
-      images.value = [...images.value, ...res.tempFilePaths]
+      images.value = [...images.value, ...(res.tempFilePaths || [])].slice(0, 5)
     }
   })
 }
@@ -133,322 +136,265 @@ async function submit() {
     uni.showToast({ title: '请选择售后原因', icon: 'none' })
     return
   }
-  if (!orderId.value || !orderData.value) {
-    uni.showToast({ title: '订单信息缺失，请从订单列表重新进入', icon: 'none' })
+  if (!description.value.trim() || description.value.trim().length < 20) {
+    uni.showToast({ title: '问题描述至少需要20字，以便AI客服准确判断', icon: 'none' })
+    return
+  }
+  if (!orderData.value || !orderId.value) {
+    uni.showToast({ title: '订单信息加载失败', icon: 'none' })
     return
   }
 
   submitting.value = true
   try {
-    // 不传图片直接提交，跳过上传失败阻塞
-    const firstItem = orderData.value.items && orderData.value.items[0]
-    const refundAmount = orderData.value.payAmount || orderData.value.totalAmount || '0.00'
-    const ticketData = {
+    const reasonLabel = reasons.find((item) => item.value === selectedReason.value)?.label || selectedReason.value
+
+    // 直接调用后端创建售后申请（状态=PENDING）
+    const afterSalesData = {
       orderId: orderId.value,
-      orderNo: orderData.value.orderNo || '',
-      productName: firstItem ? firstItem.productName : '',
-      afterSaleType: selectedReason.value,
+      afterSaleType: 'RETURN_REFUND',
       reason: selectedReason.value,
-      reasonDetail: selectedReason.value,
-      description: description.value,
-      refundAmount,
+      reasonDetail: reasonLabel,
+      description: description.value.trim(),
+      refundAmount: null,
       attachmentUrls: []
     }
 
-    // 尝试上传图片，失败不阻塞提交流程
-    if (images.value && images.value.length > 0) {
-      for (const imgPath of images.value) {
-        try {
-          const url = await uploadImage(imgPath)
-          if (url) ticketData.attachmentUrls.push(url)
-        } catch (e) {
-          // 图片上传失败，继续提交
-        }
-      }
+    const result = await request({
+      url: '/aftersales',
+      method: 'POST',
+      data: afterSalesData
+    })
+    const ticketId = result?.ticketId || result?.ticket_id || ''
+    const ticketNo = result?.ticketNo || result?.ticket_no || ''
+
+    // 创建成功后，跳转到对话页面，带上图片信息
+    const pendingPayload = {
+      orderId: orderId.value,
+      ticketId,
+      orderNo: orderData.value.orderNo || '',
+      reasonValue: selectedReason.value,
+      reasonLabel,
+      description: description.value.trim(),
+      initialMessage: `我的售后申请已提交，原因是${reasonLabel}。${description.value.trim()}`,
+      imagePaths: [...images.value],
+      createdAt: Date.now(),
+      ticketNo
     }
 
-    const createdTicket = await request({ url: '/aftersales', method: 'POST', data: ticketData })
-
-    // Update order status to AFTERSALE. Do not block navigation if only the status update fails.
-    if (orderId.value) {
-      try {
-        await request({ url: '/orders/' + orderId.value + '/status?status=AFTERSALE', method: 'PUT' })
-      } catch (e) {
-        console.error('更新订单售后状态失败', e)
-      }
-    }
-
-    uni.showToast({ title: '提交成功', icon: 'success' })
-
-    setTimeout(() => {
-      if (createdTicket && createdTicket.ticketNo) {
-        uni.redirectTo({ url: '/pages/after-sale/detail?ticketNo=' + encodeURIComponent(createdTicket.ticketNo) })
-        return
-      }
-      uni.redirectTo({ url: '/pages/after-sale/detail?orderId=' + orderId.value })
-    }, 1500)
+    uni.setStorageSync(getPendingApplyKey(orderId.value), pendingPayload)
+    const params = [
+      `orderId=${encodeURIComponent(orderId.value)}`,
+      'fromApply=1',
+      ticketId ? `ticketId=${encodeURIComponent(ticketId)}` : '',
+      ticketNo ? `ticketNo=${encodeURIComponent(ticketNo)}` : ''
+    ].filter(Boolean).join('&')
+    uni.redirectTo({
+      url: `/pages/chat/consult?${params}`
+    })
   } catch (error) {
-    uni.showToast({ title: error.message || '提交失败，请重试', icon: 'none', duration: 3000 })
-  } finally {
+    const errorMsg = error.message || error.msg || '创建售后申请失败'
+    if (errorMsg.includes('已有进行中的售后申请')) {
+      uni.showToast({ title: '该订单已有售后申请，正在跳转...', icon: 'none' })
+      setTimeout(() => {
+        uni.redirectTo({
+          url: `/pages/chat/consult?orderId=${orderId.value}`
+        })
+      }, 1500)
+    } else {
+      uni.showToast({ title: errorMsg, icon: 'none' })
+    }
     submitting.value = false
   }
-}
-
-function uploadImage(filePath) {
-  return new Promise((resolve, reject) => {
-    const token = uni.getStorageSync('token') || ''
-    uni.uploadFile({
-      url: `${BASE_URL}/upload/image`,
-      filePath: filePath,
-      name: 'file',
-      header: {
-        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
-      },
-      success: (res) => {
-        try {
-          const data = JSON.parse(res.data)
-          if (data.code === 200 && data.data && data.data.url) {
-            resolve(data.data.url)
-          } else {
-            reject(new Error(data.message || '上传失败'))
-          }
-        } catch (e) {
-          reject(new Error('上传响应解析失败'))
-        }
-      },
-      fail: (err) => {
-        reject(err)
-      }
-    })
-  })
 }
 </script>
 
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 24rpx 28rpx;
+  padding: 24rpx 28rpx 60rpx;
   background: #f0eeea;
 }
 
-/* 顶部导航 */
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
-/* 卡片 */
 .card {
   margin-top: 24rpx;
   padding: 28rpx;
   background: #ffffff;
   border-radius: 24rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
-  box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+  border: 1rpx solid rgba(0, 0, 0, 0.04);
+  box-shadow: 0 2rpx 16rpx rgba(0, 0, 0, 0.03);
+}
+
+.card:first-child {
+  margin-top: 0;
 }
 
 .card-title {
-  display: block;
-  font-size: 28rpx;
+  font-size: 30rpx;
   font-weight: 700;
   color: #1a1a1a;
 }
 
-.divider {
-  height: 1rpx;
-  margin: 20rpx 0;
-  background: linear-gradient(90deg, rgba(0,0,0,0.06), rgba(0,0,0,0.02), rgba(0,0,0,0.06));
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
 }
 
-/* 售后原因 */
+.required-badge {
+  padding: 4rpx 12rpx;
+  background: #fff4e8;
+  border-radius: 8rpx;
+  font-size: 20rpx;
+  color: #c97b5a;
+  font-weight: 600;
+}
+
+.divider {
+  height: 1rpx;
+  background: rgba(0, 0, 0, 0.06);
+  margin: 24rpx 0;
+}
+
 .reason-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16rpx;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20rpx;
 }
 
 .reason-item {
   position: relative;
-  display: flex;
-  align-items: center;
   padding: 24rpx 20rpx;
-  background: #f5f3ef;
-  border-radius: 16rpx;
+  border-radius: 20rpx;
+  background: #f8f6f2;
   border: 2rpx solid transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
 }
 
 .reason-item.active {
   border-color: #c97b5a;
-  background: #fff5f0;
+  background: #fff4ef;
 }
 
 .reason-icon {
-  width: 52rpx;
-  height: 52rpx;
-  line-height: 52rpx;
-  text-align: center;
-  border-radius: 14rpx;
-  background: #ffffff;
-  color: #1a1a1a;
-  font-size: 24rpx;
-  font-weight: 800;
-  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 16rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(201, 123, 90, 0.12);
+  color: #c97b5a;
+  font-weight: 700;
 }
 
 .reason-label {
-  flex: 1;
-  margin-left: 14rpx;
   font-size: 26rpx;
-  font-weight: 600;
   color: #1a1a1a;
+  font-weight: 600;
 }
 
 .reason-check {
   position: absolute;
-  top: 8rpx;
-  right: 8rpx;
-  width: 32rpx;
-  height: 32rpx;
-  line-height: 32rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: #c97b5a;
-  color: #ffffff;
-  font-size: 20rpx;
+  top: 18rpx;
+  right: 18rpx;
+  color: #c97b5a;
+  font-size: 28rpx;
 }
 
-/* 描述输入 */
 .desc-input {
   width: 100%;
-  height: 240rpx;
-  padding: 20rpx;
-  background: #f5f3ef;
-  border-radius: 16rpx;
+  min-height: 220rpx;
   font-size: 26rpx;
+  line-height: 1.7;
   color: #1a1a1a;
-  box-sizing: border-box;
-  line-height: 1.6;
 }
 
 .desc-footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   margin-top: 12rpx;
 }
 
-.char-count {
+.desc-tip {
+  font-size: 22rpx;
+  color: #c97b5a;
+}
+
+.char-count,
+.image-tip {
   font-size: 22rpx;
   color: #999;
 }
 
-/* 图片上传 */
 .image-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 16rpx;
 }
 
-.image-item {
+.image-item,
+.add-image {
+  width: 180rpx;
+  height: 180rpx;
+  border-radius: 20rpx;
+  overflow: hidden;
   position: relative;
-  width: 160rpx;
-  height: 160rpx;
 }
 
 .preview-img {
   width: 100%;
   height: 100%;
-  border-radius: 14rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
 }
 
 .delete-btn {
   position: absolute;
-  top: -10rpx;
-  right: -10rpx;
+  top: 10rpx;
+  right: 10rpx;
   width: 36rpx;
   height: 36rpx;
-  line-height: 36rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.6);
-  color: #ffffff;
+  border-radius: 18rpx;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 24rpx;
 }
 
 .add-image {
-  width: 160rpx;
-  height: 160rpx;
+  background: #f8f6f2;
+  border: 2rpx dashed rgba(201, 123, 90, 0.35);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #f5f3ef;
-  border-radius: 14rpx;
-  border: 2rpx dashed rgba(0,0,0,0.1);
+  gap: 10rpx;
 }
 
 .add-icon {
-  font-size: 52rpx;
-  color: #999;
-  font-weight: 300;
+  font-size: 44rpx;
+  color: #c97b5a;
 }
 
 .add-text {
-  margin-top: 8rpx;
-  font-size: 20rpx;
-  color: #999;
+  font-size: 24rpx;
+  color: #8a776c;
 }
 
-.image-tip {
-  display: block;
-  margin-top: 16rpx;
-  font-size: 22rpx;
-  color: #999;
-}
-
-/* 提交按钮 */
 .submit-btn {
-  margin-top: 32rpx;
-  height: 88rpx;
-  line-height: 88rpx;
-  border-radius: 20rpx;
-  background: linear-gradient(135deg, #c97b5a, #b86a4a);
-  color: #ffffff;
-  font-size: 30rpx;
+  margin-top: 36rpx;
+  border-radius: 999rpx;
+  background: #c97b5a;
+  color: #fff;
+  font-size: 28rpx;
   font-weight: 700;
-  border: none;
-  box-shadow: 0 4rpx 16rpx rgba(244,90,11,0.3);
 }
 
 .submit-btn[disabled] {
-  opacity: 0.5;
-  box-shadow: none;
+  opacity: 0.45;
 }
 </style>

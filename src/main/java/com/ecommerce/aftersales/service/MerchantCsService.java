@@ -9,6 +9,12 @@ public interface MerchantCsService {
 
     LoginResponse login(LoginRequest request);
 
+    String sendAuthCode(AuthCodeRequest request);
+
+    StaffProfile register(RegisterRequest request);
+
+    void resetPassword(ResetPasswordRequest request);
+
     void logout();
 
     StaffProfile getCurrentStaff();
@@ -27,6 +33,8 @@ public interface MerchantCsService {
 
     List<MessageView> listSessionMessages(Long sessionId);
 
+    SessionAiAssistView getSessionAiAssist(Long sessionId);
+
     MessageView sendSessionMessage(Long sessionId, SendMessageRequest request);
 
     SessionView requestSessionEvaluation(Long sessionId);
@@ -44,6 +52,8 @@ public interface MerchantCsService {
     TicketView approveTicket(Long ticketId, String auditOpinion);
 
     TicketView rejectTicket(Long ticketId, String rejectReason);
+
+    TicketView completeTicket(Long ticketId, String completeNote);
 
     PageResult<OrderView> listOrders(long page, long size, String status, String keyword);
 
@@ -64,4 +74,6 @@ public interface MerchantCsService {
     ProductView updateProduct(Long productId, ProductUpsertRequest request);
 
     ProductView updateProductStatus(Long productId, String status);
+
+    PageResult<ReviewView> getReviews(long page, long size, String score, String keyword);
 }

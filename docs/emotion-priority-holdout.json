@@ -1,0 +1,942 @@
+{
+  "evaluated_at": "2026-07-16T14:10:28+08:00",
+  "provider": "remote",
+  "model": "deepseek-v4-pro",
+  "dataset": "tools\\emotion_priority_holdout.json",
+  "annotation": "rule-authored single-annotator challenge labels; no independent double annotation",
+  "cases": 50,
+  "successful_calls": 50,
+  "failed_calls": 0,
+  "completion_rate": 1.0,
+  "exact_prompt_overlap_count": 0,
+  "exact_prompt_overlap_ids": [],
+  "label_metrics": {
+    "strict_accuracy": 0.94,
+    "tolerant_accuracy": 1.0,
+    "macro_f1": 0.9414,
+    "confusion_matrix": {
+      "satisfied": {
+        "satisfied": 5,
+        "calm": 1,
+        "anxious": 0,
+        "dissatisfied": 0,
+        "angry": 0,
+        "__error__": 0
+      },
+      "calm": {
+        "satisfied": 0,
+        "calm": 12,
+        "anxious": 2,
+        "dissatisfied": 0,
+        "angry": 0,
+        "__error__": 0
+      },
+      "anxious": {
+        "satisfied": 0,
+        "calm": 0,
+        "anxious": 10,
+        "dissatisfied": 0,
+        "angry": 0,
+        "__error__": 0
+      },
+      "dissatisfied": {
+        "satisfied": 0,
+        "calm": 0,
+        "anxious": 0,
+        "dissatisfied": 10,
+        "angry": 0,
+        "__error__": 0
+      },
+      "angry": {
+        "satisfied": 0,
+        "calm": 0,
+        "anxious": 0,
+        "dissatisfied": 0,
+        "angry": 10,
+        "__error__": 0
+      }
+    },
+    "per_label": {
+      "satisfied": {
+        "support": 6,
+        "precision": 1.0,
+        "recall": 0.8333,
+        "f1": 0.9091
+      },
+      "calm": {
+        "support": 14,
+        "precision": 0.9231,
+        "recall": 0.8571,
+        "f1": 0.8889
+      },
+      "anxious": {
+        "support": 10,
+        "precision": 0.8333,
+        "recall": 1.0,
+        "f1": 0.9091
+      },
+      "dissatisfied": {
+        "support": 10,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "angry": {
+        "support": 10,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    }
+  },
+  "priority_metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "tp": 21,
+    "fp": 0,
+    "fn": 0,
+    "tn": 29
+  },
+  "latency_ms": {
+    "avg": 1529.55,
+    "p50": 1441.42,
+    "p95": 1929.66,
+    "max": 3353.77
+  },
+  "error_counts": {},
+  "results": [
+    {
+      "id": "sat-01",
+      "message": "收到退款了，多谢你一直帮忙",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "satisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.1,
+      "confidence": 0.92,
+      "latency_ms": 3162.58,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "sat-02",
+      "message": "问题搞定啦，五星好评",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "satisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.08,
+      "confidence": 0.95,
+      "latency_ms": 3353.77,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "sat-03",
+      "message": "可以了，这次处理挺快",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.18,
+      "confidence": 0.92,
+      "latency_ms": 1407.68,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "sat-04",
+      "message": "已经解决，不用再跟进了，谢谢",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "satisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.12,
+      "confidence": 0.92,
+      "latency_ms": 1703.35,
+      "ok": true,
+      "notes": "上下文由负面恢复为正向"
+    },
+    {
+      "id": "sat-05",
+      "message": "嗯嗯明白，辛苦啦",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "satisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.15,
+      "confidence": 0.92,
+      "latency_ms": 1285.34,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "sat-06",
+      "message": "补发的商品收到了，一切正常",
+      "expected_label": "satisfied",
+      "acceptable_labels": [
+        "satisfied",
+        "calm"
+      ],
+      "predicted_label": "satisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.12,
+      "confidence": 0.92,
+      "latency_ms": 1731.77,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-01",
+      "message": "退货地址在哪里看",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1371.64,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-02",
+      "message": "寄回去的运费由谁承担",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1313.56,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-03",
+      "message": "我刚上传的照片系统能看到吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1352.93,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-04",
+      "message": "订单显示签收但家人没看到，应该怎么查",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.3,
+      "confidence": 0.9,
+      "latency_ms": 1417.31,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-05",
+      "message": "提交后可以修改退款原因吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1289.56,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-06",
+      "message": "换货一般需要经过哪些步骤",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1032.75,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-07",
+      "message": "客服让我写清楚“投诉原因”，这个字段怎么填",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.28,
+      "confidence": 0.9,
+      "latency_ms": 1002.75,
+      "ok": true,
+      "notes": "引用投诉一词，不是用户威胁"
+    },
+    {
+      "id": "calm-08",
+      "message": "我不是要投诉，只想确认退款大概哪天到",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.38,
+      "confidence": 0.9,
+      "latency_ms": 1544.0,
+      "ok": true,
+      "notes": "否定升级意图"
+    },
+    {
+      "id": "calm-09",
+      "message": "如果尺码不合适可以申请换货吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1186.97,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-10",
+      "message": "包装已经拆开了还能退吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.25,
+      "confidence": 0.92,
+      "latency_ms": 1382.16,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-11",
+      "message": "寄商品时发票也要一起放进去吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1538.2,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-12",
+      "message": "退款最后会退回原来的支付方式吗",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1255.9,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "calm-13",
+      "message": "先告诉我退货地址就行",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.9,
+      "latency_ms": 1296.37,
+      "ok": true,
+      "notes": "不应被历史负面永久抬高"
+    },
+    {
+      "id": "calm-14",
+      "message": "人工客服通常几点在线",
+      "expected_label": "calm",
+      "acceptable_labels": [
+        "calm"
+      ],
+      "predicted_label": "calm",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.22,
+      "confidence": 0.92,
+      "latency_ms": 1284.3,
+      "ok": true,
+      "notes": "询问人工时间，不等于请求立即转接"
+    },
+    {
+      "id": "anx-01",
+      "message": "我明天要出差，今天能告诉我审核结果吗",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.38,
+      "confidence": 0.9,
+      "latency_ms": 1455.27,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-02",
+      "message": "页面一直显示审核中，我有点担心会错过期限",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.38,
+      "confidence": 0.92,
+      "latency_ms": 1422.68,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-03",
+      "message": "麻烦尽快帮我看一下，礼物后天就要用了",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.42,
+      "confidence": 0.88,
+      "latency_ms": 1514.84,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-04",
+      "message": "刚才上传失败了两次，会不会影响这次申请",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.32,
+      "confidence": 0.9,
+      "latency_ms": 1686.76,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-05",
+      "message": "钱迟迟没退回来，我现在有点担心",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.42,
+      "confidence": 0.9,
+      "latency_ms": 1924.11,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-06",
+      "message": "能帮我催一下吗，已经第四天了",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.42,
+      "confidence": 0.9,
+      "latency_ms": 1446.22,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-07",
+      "message": "我不是生气，就是时间比较赶",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.38,
+      "confidence": 0.88,
+      "latency_ms": 1394.1,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-08",
+      "message": "要是今天还没有消息，我接下来该怎么办",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.45,
+      "confidence": 0.88,
+      "latency_ms": 1934.2,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-09",
+      "message": "请帮我转人工确认一下具体进度",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "calm",
+        "anxious"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.42,
+      "confidence": 0.9,
+      "latency_ms": 1250.75,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "anx-10",
+      "message": "机器人没回答到我的问题，我想让真人看一下",
+      "expected_label": "anxious",
+      "acceptable_labels": [
+        "calm",
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "anxious",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.42,
+      "confidence": 0.9,
+      "latency_ms": 1887.89,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-01",
+      "message": "每次都让我继续等，这个体验真的不好",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1727.43,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-02",
+      "message": "商品才用一天就坏了，这种质量我无法接受",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.65,
+      "confidence": 0.92,
+      "latency_ms": 1548.78,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-03",
+      "message": "你们的回复太敷衍了，根本没有解决问题",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.65,
+      "confidence": 0.92,
+      "latency_ms": 1174.2,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-04",
+      "message": "我按要求补了三次材料，结果还说不完整",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1466.52,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-05",
+      "message": "退款没有说明原因就被驳回，我不认可这个结果",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1538.48,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-06",
+      "message": "真是谢谢你们，半个月一点进展都没有",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.72,
+      "confidence": 0.92,
+      "latency_ms": 1273.16,
+      "ok": true,
+      "notes": "反讽"
+    },
+    {
+      "id": "dis-07",
+      "message": "说好二十四小时处理，现在已经第三天了",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1527.95,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-08",
+      "message": "能不能不要再复制同一句话给我",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1308.25,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-09",
+      "message": "我只要求按规则退款，不需要反复说抱歉",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "anxious",
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.62,
+      "confidence": 0.91,
+      "latency_ms": 1793.02,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "dis-10",
+      "message": "这次售后让我很失望，但先按正常流程处理吧",
+      "expected_label": "dissatisfied",
+      "acceptable_labels": [
+        "dissatisfied"
+      ],
+      "predicted_label": "dissatisfied",
+      "expected_priority": false,
+      "predicted_priority": false,
+      "score": 0.52,
+      "confidence": 0.88,
+      "latency_ms": 1375.72,
+      "ok": true,
+      "notes": "负面情绪与人工优先级解耦"
+    },
+    {
+      "id": "ang-01",
+      "message": "再拖下去我会向平台和消协一起反馈",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.82,
+      "confidence": 0.92,
+      "latency_ms": 1271.77,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-02",
+      "message": "我会保留证据，并公开这次不合理的处理过程",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.82,
+      "confidence": 0.92,
+      "latency_ms": 1501.3,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-03",
+      "message": "别再推诿了，今天不给结果我就举报",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.88,
+      "confidence": 0.92,
+      "latency_ms": 1386.07,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-04",
+      "message": "这种欺骗消费者的做法我一定追究到底",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.82,
+      "confidence": 0.92,
+      "latency_ms": 1740.67,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-05",
+      "message": "你们把人当傻子吗？我现在正式投诉",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.9,
+      "confidence": 0.92,
+      "latency_ms": 1508.49,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-06",
+      "message": "在不处里我就去12315了",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.88,
+      "confidence": 0.92,
+      "latency_ms": 1436.62,
+      "ok": true,
+      "notes": "错别字"
+    },
+    {
+      "id": "ang-07",
+      "message": "气死了😡，我要把这家店曝光出来",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.92,
+      "confidence": 0.95,
+      "latency_ms": 1513.47,
+      "ok": true,
+      "notes": "表情符号"
+    },
+    {
+      "id": "ang-08",
+      "message": "我不是开玩笑，今晚之前不退款就走法律途径",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.92,
+      "confidence": 0.95,
+      "latency_ms": 1407.43,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-09",
+      "message": "客服一再挂断，我现在正式要求平台介入",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "dissatisfied",
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.82,
+      "confidence": 0.92,
+      "latency_ms": 1604.79,
+      "ok": true,
+      "notes": ""
+    },
+    {
+      "id": "ang-10",
+      "message": "最后一次问，今天处理不了我就提交监管投诉",
+      "expected_label": "angry",
+      "acceptable_labels": [
+        "angry"
+      ],
+      "predicted_label": "angry",
+      "expected_priority": true,
+      "predicted_priority": true,
+      "score": 0.92,
+      "confidence": 0.95,
+      "latency_ms": 1543.47,
+      "ok": true,
+      "notes": "上下文连续升级"
+    }
+  ]
+}

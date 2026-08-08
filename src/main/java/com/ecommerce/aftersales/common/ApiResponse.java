@@ -1,6 +1,6 @@
 package com.ecommerce.aftersales.common;
 
-import lombok.AllArgsConstructor;
+import com.ecommerce.aftersales.common.enums.ErrorCode;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -21,14 +21,22 @@ public class ApiResponse<T> {
     }
 
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(true, 200, "操作成功", data);
+        return new ApiResponse<>(true, ErrorCode.SUCCESS.getCode(), ErrorCode.SUCCESS.getMessage(), data);
     }
 
     public static <T> ApiResponse<T> success(String message, T data) {
-        return new ApiResponse<>(true, 200, message, data);
+        return new ApiResponse<>(true, ErrorCode.SUCCESS.getCode(), message, data);
     }
 
     public static <T> ApiResponse<T> fail(Integer code, String message) {
         return new ApiResponse<>(false, code, message, null);
+    }
+
+    public static <T> ApiResponse<T> fail(ErrorCode errorCode) {
+        return new ApiResponse<>(false, errorCode.getCode(), errorCode.getMessage(), null);
+    }
+
+    public static <T> ApiResponse<T> fail(ErrorCode errorCode, String message) {
+        return new ApiResponse<>(false, errorCode.getCode(), message, null);
     }
 }

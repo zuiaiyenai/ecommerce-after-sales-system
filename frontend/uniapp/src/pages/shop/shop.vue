@@ -1,20 +1,23 @@
 ﻿<template>
   <view class="page">
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">演示购买</text>
-      <view class="nav-right"></view>
-    </view>
-
     <scroll-view class="product-list" scroll-y>
-      <view v-if="products.length === 0" class="empty">
+      <view v-if="viewState === 'loading'" class="status-panel">
+        <text class="status-title">正在加载商品</text>
+        <text class="status-text">请稍候...</text>
+      </view>
+
+      <view v-else-if="viewState === 'error'" class="status-panel">
+        <text class="status-title">商品加载失败</text>
+        <text class="status-text">{{ errorMessage }}</text>
+        <button class="retry-btn" @tap="loadProducts">重新加载</button>
+      </view>
+
+      <view v-else-if="viewState === 'empty'" class="empty">
         <text class="empty-icon">□</text>
         <text class="empty-text">暂无可购买商品</text>
       </view>
 
-      <view v-for="product in products" :key="product.id" class="product-card">
+      <view v-else v-for="product in products" :key="product.id" class="product-card">
         <image class="product-image" :src="normalizeImageUrl(product.mainImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ product.productName }}</text>
@@ -32,27 +35,38 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { computed, ref } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
+import { normalizeProductList, resolveShopViewState } from '../../utils/shopPageState.mjs'
 
 const products = ref([])
 const buyingId = ref(null)
+const loading = ref(true)
+const errorMessage = ref('')
+const viewState = computed(() => resolveShopViewState({
+  loading: loading.value,
+  errorMessage: errorMessage.value,
+  products: products.value
+}))
 
-onLoad(() => {
+onShow(() => {
   loadProducts()
 })
 
 async function loadProducts() {
+  loading.value = true
+  errorMessage.value = ''
   try {
-    products.value = await request({ url: '/products' }) || []
+    const data = await request({ url: '/products' })
+    products.value = normalizeProductList(data)
   } catch (e) {
-    uni.showToast({ title: '商品加载失败', icon: 'none' })
+    products.value = []
+    errorMessage.value = e.message || '请检查后端服务后重试'
+    console.error('商品加载失败', e)
+  } finally {
+    loading.value = false
   }
-}
-
-function goBack() {
-  uni.navigateBack()
 }
 
 async function buy(product) {
@@ -87,40 +101,8 @@ async function buy(product) {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 28rpx;
-  background: #ffffff;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #f5f3ef;
-}
-
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
 .product-list {
-  height: calc(100vh - 128rpx);
+  height: 100vh;
   padding: 24rpx 28rpx;
   box-sizing: border-box;
 }
@@ -180,14 +162,22 @@ async function buy(product) {
 }
 
 .buy-btn {
+  min-width: 128rpx;
   height: 56rpx;
   line-height: 56rpx;
+  margin: 0;
   padding: 0 24rpx;
+  box-sizing: border-box;
   border-radius: 28rpx;
   background: linear-gradient(135deg, #c97b5a, #b86a4a);
   color: #ffffff;
   font-size: 22rpx;
   font-weight: 700;
+  border: none;
+  white-space: nowrap;
+}
+
+.buy-btn::after {
   border: none;
 }
 
@@ -211,5 +201,43 @@ async function buy(product) {
   margin-top: 20rpx;
   font-size: 28rpx;
   color: #999;
+}
+
+.status-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 48rpx;
+  padding: 72rpx 32rpx;
+  border-radius: 24rpx;
+  background: #ffffff;
+}
+
+.status-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #333333;
+}
+
+.status-text {
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.retry-btn {
+  height: 64rpx;
+  line-height: 64rpx;
+  margin-top: 28rpx;
+  padding: 0 36rpx;
+  border: none;
+  border-radius: 32rpx;
+  background: #b86a4a;
+  color: #ffffff;
+  font-size: 24rpx;
+}
+
+.retry-btn::after {
+  border: none;
 }
 </style>

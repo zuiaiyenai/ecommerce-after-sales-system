@@ -25,8 +25,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final List<String> PUBLIC_PATHS = List.of(
             "/api/miniapp/auth/**",
+            "/api/miniapp/public/**",
             "/api/products/**",
             "/api/merchant-cs/auth/login",
+            "/api/merchant-cs/auth/code",
+            "/api/merchant-cs/auth/register",
+            "/api/merchant-cs/auth/password/reset",
+            "/api/admin/auth/login",
+            "/api/actuator/health",
+            "/api/ws/**",
             "/api/static/**",
             "/api/uploads/**",
             "/api/upload/**"
@@ -42,7 +49,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String requestURI = request.getRequestURI();
 
-        // Public paths: pass through without requiring authentication
+        if (SecurityContextHolder.getContext().getAuthentication() != null) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         if (isPublicPath(requestURI)) {
             filterChain.doFilter(request, response);
             return;
@@ -50,25 +61,23 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String token = extractToken(request);
         if (!StringUtils.hasText(token)) {
-            sendUnauthorized(response, "未提供认证token");
+            sendUnauthorized(response, "未提供认证 token");
             return;
         }
 
         Long userId;
         try {
             userId = jwtTokenUtil.parseUserId(token);
-        } catch (Exception e) {
-            sendUnauthorized(response, "token无效或已过期");
+        } catch (Exception exception) {
+            sendUnauthorized(response, "token 无效或已过期");
             return;
         }
 
-        // Set request attributes for @CurrentUserId / @CurrentStaffId
         request.setAttribute("currentUserId", userId);
         if (isStaffPath(requestURI)) {
             request.setAttribute("currentStaffId", userId);
         }
 
-        // Set Spring Security Authentication so SecurityContext is populated
         List<SimpleGrantedAuthority> authorities = List.of(new SimpleGrantedAuthority("ROLE_USER"));
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(userId, null, authorities);
@@ -95,6 +104,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private void sendUnauthorized(HttpServletResponse response, String message) throws IOException {
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
+        response.setCharacterEncoding("UTF-8");
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"success\":false,\"code\":401,\"message\":\"" + message + "\",\"data\":null}");
     }

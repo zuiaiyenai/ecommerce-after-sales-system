@@ -3,7 +3,8 @@
     <!-- 顶部用户信息 -->
     <view class="header">
       <view class="user-row" @tap="editProfile">
-        <view class="avatar">{{ initial }}</view>
+        <image v-if="avatarUrl" class="avatar avatar-image" :src="avatarUrl" mode="aspectFill" />
+        <view v-else class="avatar">{{ initial }}</view>
         <view class="user-info">
           <text class="user-name">{{ userInfo.nickname || '用户' }}</text>
           <text class="user-phone">{{ maskPhone(userInfo.phone) }}</text>
@@ -21,7 +22,9 @@
       <view class="divider"></view>
       <view class="order-grid">
         <view class="order-grid-item" v-for="item in orderTabs" :key="item.key" @tap="goOrders(item.key)">
-          <view class="grid-icon">{{ item.icon }}</view>
+          <view class="grid-icon">
+            <image class="grid-icon-img" :src="item.icon" mode="aspectFit" />
+          </view>
           <text class="grid-label">{{ item.label }}</text>
           <view v-if="item.badge > 0" class="badge">{{ item.badge }}</view>
         </view>
@@ -36,19 +39,25 @@
       <view class="divider"></view>
       <view class="menu-list">
         <view class="menu-item" @tap="goAfterSaleList">
-          <text class="menu-icon">◆</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/after-sale-list.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">我的售后</text>
           <text class="menu-desc">查看售后进度</text>
           <text class="arrow">›</text>
         </view>
         <view class="menu-item" @tap="applyAfterSale">
-          <text class="menu-icon">+</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/after-sale-apply.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">申请售后</text>
           <text class="menu-desc">退款、换货、维修</text>
           <text class="arrow">›</text>
         </view>
         <view class="menu-item" @tap="goChat">
-          <text class="menu-icon">◇</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/customer-service.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">联系客服</text>
           <text class="menu-desc">在线智能客服</text>
           <text class="arrow">›</text>
@@ -64,19 +73,25 @@
       <view class="divider"></view>
       <view class="menu-list">
         <view class="menu-item" @tap="goAddress">
-          <text class="menu-icon">◎</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/address.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">收货地址</text>
           <text class="menu-desc">管理收货地址</text>
           <text class="arrow">›</text>
         </view>
         <view class="menu-item" @tap="goSettings">
-          <text class="menu-icon">⚙</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/settings.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">账号设置</text>
           <text class="menu-desc">修改密码、个人信息</text>
           <text class="arrow">›</text>
         </view>
         <view class="menu-item" @tap="goAbout">
-          <text class="menu-icon">i</text>
+          <view class="menu-icon image-menu-icon">
+            <image class="menu-icon-img" src="/static/images/mine/about.png" mode="aspectFit" />
+          </view>
           <text class="menu-label">关于我们</text>
           <text class="menu-desc">版本信息</text>
           <text class="arrow">›</text>
@@ -90,7 +105,9 @@
     <!-- 底部导航 -->
     <view class="bottom-nav">
       <view v-for="item in navItems" :key="item.key" class="nav-item" :class="{ active: activeTab === item.key }" @tap="switchTab(item.key)">
-        <text class="nav-icon">{{ item.icon }}</text>
+        <view class="nav-icon">
+          <image class="nav-icon-img" :src="item.icon" mode="aspectFit" />
+        </view>
         <text class="nav-label">{{ item.label }}</text>
       </view>
     </view>
@@ -99,23 +116,24 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request } from '../../utils/request'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const userInfo = ref({})
 const activeTab = ref('mine')
 
 const navItems = [
-  { key: 'home', label: '首页', icon: '⌂' },
-  { key: 'chat', label: '咨询', icon: '◇' },
-  { key: 'mine', label: '我的', icon: '◒' }
+  { key: 'home', label: '首页', icon: '/static/images/mine/nav-home.png' },
+  { key: 'chat', label: '咨询', icon: '/static/images/mine/nav-chat.png' },
+  { key: 'mine', label: '我的', icon: '/static/images/mine/nav-mine.png' }
 ]
 
 const orderTabs = ref([
-  { key: 'paid', label: '未发货', icon: '□', badge: 0 },
-  { key: 'shipped', label: '配送中', icon: '◇', badge: 0 },
-  { key: 'received', label: '已收货', icon: '▷', badge: 0 },
-  { key: 'aftersale', label: '售后中', icon: '◆', badge: 0 }
+  { key: 'paid', label: '未发货', icon: '/static/images/order-status/pending-shipment.png', badge: 0 },
+  { key: 'shipped', label: '配送中', icon: '/static/images/order-status/delivering.png', badge: 0 },
+  { key: 'received', label: '已收货', icon: '/static/images/order-status/received.png', badge: 0 },
+  { key: 'aftersale', label: '售后中', icon: '/static/images/order-status/aftersale.png', badge: 0 }
 ])
 
 const initial = computed(() => {
@@ -123,16 +141,30 @@ const initial = computed(() => {
   return name.slice(0, 1)
 })
 
+const avatarUrl = computed(() => normalizeImageUrl(userInfo.value.avatarUrl))
+
+async function loadUserInfo() {
+  userInfo.value = uni.getStorageSync('userInfo') || {}
+  try {
+    const profile = await request({ url: '/miniapp/user/profile' })
+    userInfo.value = {
+      ...userInfo.value,
+      ...profile
+    }
+    uni.setStorageSync('userInfo', userInfo.value)
+  } catch (e) {
+    console.error('加载用户资料失败', e)
+  }
+}
+
 async function loadBadges() {
   try {
-    const [orders, afterSales] = await Promise.all([
-      request({ url: '/orders' }),
-      request({ url: '/aftersales' })
-    ])
-    const paid = (orders || []).filter(o => o.status === 'PAID').length
-    const shipped = (orders || []).filter(o => o.status === 'SHIPPED').length
-    const received = (orders || []).filter(o => o.status === 'RECEIVED').length
-    const aftersale = (afterSales || []).filter(a => a.status === 'PROCESSING').length
+    const orders = await request({ url: '/orders' })
+    const orderList = orders || []
+    const paid = orderList.filter(o => o.status === 'PAID').length
+    const shipped = orderList.filter(o => o.status === 'SHIPPED').length
+    const received = orderList.filter(o => o.status === 'RECEIVED' && !resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
+    const aftersale = orderList.filter(o => resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
 
     // 读取已读记录
     const seen = uni.getStorageSync('badgeSeen') || {}
@@ -158,12 +190,16 @@ function markSeen(key) {
 }
 
 onLoad(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
+  loadUserInfo()
   uni.setNavigationBarColor({
     frontColor: '#000000',
     backgroundColor: '#ffffff'
   })
   loadBadges()
+})
+
+onShow(() => {
+  loadUserInfo()
 })
 
 function maskPhone(phone) {
@@ -263,6 +299,12 @@ function logout() {
   font-size: 40rpx;
 }
 
+.avatar-image {
+  display: block;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.25);
+}
+
 .user-info {
   flex: 1;
   margin-left: 24rpx;
@@ -317,7 +359,7 @@ function logout() {
   border: 1rpx solid rgba(0, 0, 0, 0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #1a1a1a;
+  color: #888;
   font-size: 22rpx;
 }
 
@@ -343,15 +385,20 @@ function logout() {
 }
 
 .grid-icon {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
+  position: relative;
+  width: 72rpx;
+  height: 72rpx;
+  overflow: hidden;
   border-radius: 50%;
-  background: #f5f3ef;
-  color: #1a1a1a;
-  font-size: 28rpx;
-  font-weight: 800;
+  background: transparent;
+}
+
+.grid-icon-img {
+  position: absolute;
+  left: -40rpx;
+  top: -20rpx;
+  width: 152rpx;
+  height: 152rpx;
 }
 
 .grid-label {
@@ -409,6 +456,22 @@ function logout() {
   font-weight: 800;
 }
 
+.image-menu-icon {
+  position: relative;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: transparent;
+  line-height: 1;
+}
+
+.menu-icon-img {
+  position: absolute;
+  left: -15rpx;
+  top: -13rpx;
+  width: 78rpx;
+  height: 78rpx;
+}
+
 .menu-label {
   flex: 1;
   margin-left: 20rpx;
@@ -463,12 +526,23 @@ function logout() {
 }
 
 .nav-icon {
-  font-size: 36rpx;
-  color: #999;
+  position: relative;
+  width: 40rpx;
+  height: 40rpx;
+  overflow: hidden;
 }
 
-.nav-item.active .nav-icon {
-  color: #c97b5a;
+.nav-icon-img {
+  position: absolute;
+  left: -28rpx;
+  top: -28rpx;
+  width: 96rpx;
+  height: 96rpx;
+  filter: grayscale(1) saturate(0) opacity(0.62);
+}
+
+.nav-item.active .nav-icon-img {
+  filter: none;
 }
 
 .nav-label {

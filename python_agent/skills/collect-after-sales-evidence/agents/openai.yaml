@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后凭证收集"
+  short_description: "Guide minimal evidence collection for after-sales cases"
+  default_prompt: "Use $collect-after-sales-evidence to identify the minimum evidence needed for this after-sales case."

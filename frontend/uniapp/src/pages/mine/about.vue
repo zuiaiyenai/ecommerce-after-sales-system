@@ -1,265 +1,221 @@
 <template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
+    <view class="brand">
+      <view class="app-icon">
+        <view class="bag-handle"></view>
+        <view class="bag-body">
+          <view class="bag-check"></view>
+        </view>
       </view>
-      <text class="nav-title">关于我们</text>
-      <view class="nav-right"></view>
-    </view>
-
-    <!-- Logo 区域 -->
-    <view class="logo-area">
-      <view class="logo">🛒</view>
       <text class="app-name">电商售后客服</text>
-      <text class="app-version">v1.0.0</text>
+      <text class="app-version">Version 1.0.0</text>
     </view>
 
-    <!-- 介绍 -->
-    <view class="card">
-      <text class="card-title">应用介绍</text>
-      <view class="divider"></view>
-      <text class="intro-text">
-        本应用是一款电商售后客服系统，为用户提供便捷的售后服务体验。
-        通过智能客服与人工客服相结合的方式，快速解决您的售后问题。
-      </text>
-    </view>
-
-    <!-- 功能特性 -->
-    <view class="card">
-      <text class="card-title">核心功能</text>
-      <view class="divider"></view>
-      <view class="feature-list">
-        <view class="feature-item">
-          <text class="feature-icon">🤖</text>
-          <view class="feature-info">
-            <text class="feature-name">智能客服</text>
-            <text class="feature-desc">AI 驱动的智能问答，快速解答常见问题</text>
-          </view>
-        </view>
-        <view class="feature-item">
-          <text class="feature-icon">🔄</text>
-          <view class="feature-info">
-            <text class="feature-name">售后申请</text>
-            <text class="feature-desc">在线提交退款、换货、维修等售后申请</text>
-          </view>
-        </view>
-        <view class="feature-item">
-          <text class="feature-icon">📦</text>
-          <view class="feature-info">
-            <text class="feature-name">订单管理</text>
-            <text class="feature-desc">查看订单状态、物流信息、售后进度</text>
-          </view>
-        </view>
-        <view class="feature-item">
-          <text class="feature-icon">👤</text>
-          <view class="feature-info">
-            <text class="feature-name">人工客服</text>
-            <text class="feature-desc">一键转接人工客服，获得专业帮助</text>
-          </view>
-        </view>
+    <view class="menu">
+      <view class="menu-item" @tap="showComingSoon('去评分')">
+        <text class="menu-label">去评分</text>
+        <text class="menu-arrow">›</text>
+      </view>
+      <view class="menu-item" @tap="showComingSoon('功能介绍')">
+        <text class="menu-label">功能介绍</text>
+        <text class="menu-arrow">›</text>
+      </view>
+      <view class="menu-item" @tap="showComingSoon('投诉')">
+        <text class="menu-label">投诉</text>
+        <text class="menu-arrow">›</text>
+      </view>
+      <view class="menu-item" @tap="showComingSoon('版本更新')">
+        <text class="menu-label">版本更新</text>
+        <text class="menu-arrow">›</text>
       </view>
     </view>
 
-    <!-- 联系方式 -->
-    <view class="card">
-      <text class="card-title">联系我们</text>
-      <view class="divider"></view>
-      <view class="contact-item">
-        <text class="contact-label">客服电话</text>
-        <text class="contact-value">400-123-4567</text>
+    <view class="footer">
+      <view class="link-row">
+        <text class="footer-link" @tap="showComingSoon('软件许可及服务协议')">《软件许可及服务协议》</text>
       </view>
-      <view class="contact-item">
-        <text class="contact-label">工作时间</text>
-        <text class="contact-value">周一至周五 9:00-18:00</text>
+      <view class="link-row">
+        <text class="footer-link" @tap="showComingSoon('隐私保护指引摘要')">《隐私保护指引摘要》</text>
+        <text class="separator"> | </text>
+        <text class="footer-link" @tap="showComingSoon('隐私保护指引')">《隐私保护指引》</text>
       </view>
-      <view class="contact-item">
-        <text class="contact-label">客服邮箱</text>
-        <text class="contact-value">support@ecommerce.com</text>
+      <text class="footer-text">客服电话：400 123 4567</text>
+      <view class="record-row" @tap="showComingSoon('ICP备案信息')">
+        <text class="footer-text">ICP备案信息：粤 B2-20260706-1A</text>
+        <text class="record-arrow">›</text>
       </view>
+      <view class="record-row" @tap="showComingSoon('算法备案信息')">
+        <text class="footer-text">算法备案信息</text>
+        <text class="record-arrow">›</text>
+      </view>
+      <text class="footer-text">电商售后客服系统 版权所有</text>
+      <text class="copyright">Copyright © 2024-2026 Ecommerce. All Rights Reserved.</text>
     </view>
-
-    <!-- 版权 -->
-    <text class="copyright">© 2024 电商售后客服系统 版权所有</text>
   </view>
 </template>
 
 <script setup>
-function goBack() {
-  uni.navigateBack()
+function showComingSoon(title) {
+  uni.showToast({
+    title: `${title}暂未开放`,
+    icon: 'none'
+  })
 }
 </script>
 
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 24rpx 28rpx;
-  background: #f0eeea;
-}
-
-.nav-bar {
+  padding: 0 60rpx 64rpx;
+  box-sizing: border-box;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
+  flex-direction: column;
   background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
+  color: #1f1f1f;
 }
 
-.back-icon {
-  font-size: 32rpx;
-  color: #1a1a1a;
-}
-
-.nav-title {
-  font-size: 32rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.nav-right {
-  width: 64rpx;
-}
-
-/* Logo */
-.logo-area {
+.brand {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 48rpx 0 32rpx;
+  padding-top: 206rpx;
+  padding-bottom: 94rpx;
 }
 
-.logo {
-  width: 120rpx;
-  height: 120rpx;
-  line-height: 120rpx;
-  text-align: center;
+.app-icon {
+  position: relative;
+  width: 128rpx;
+  height: 128rpx;
   border-radius: 30rpx;
-  background: linear-gradient(135deg, #c97b5a, #b86a4a);
-  font-size: 56rpx;
+  background: linear-gradient(180deg, #d79a72 0%, #b86a4a 100%);
+  box-shadow: 0 12rpx 28rpx rgba(184, 106, 74, 0.24);
+}
+
+.bag-handle {
+  position: absolute;
+  left: 42rpx;
+  top: 30rpx;
+  width: 44rpx;
+  height: 32rpx;
+  border: 8rpx solid rgba(255, 255, 255, 0.92);
+  border-bottom: 0;
+  border-radius: 26rpx 26rpx 0 0;
+  box-sizing: border-box;
+}
+
+.bag-body {
+  position: absolute;
+  left: 30rpx;
+  top: 52rpx;
+  width: 68rpx;
+  height: 54rpx;
+  border-radius: 12rpx;
+  background: #ffffff;
+}
+
+.bag-check {
+  position: absolute;
+  left: 22rpx;
+  top: 18rpx;
+  width: 26rpx;
+  height: 14rpx;
+  border-left: 7rpx solid #b86a4a;
+  border-bottom: 7rpx solid #b86a4a;
+  transform: rotate(-45deg);
+  box-sizing: border-box;
 }
 
 .app-name {
-  margin-top: 20rpx;
-  font-size: 34rpx;
-  font-weight: 800;
-  color: #1a1a1a;
+  margin-top: 66rpx;
+  font-size: 42rpx;
+  font-weight: 500;
+  line-height: 1.2;
+  color: #222222;
 }
 
 .app-version {
-  margin-top: 8rpx;
-  font-size: 24rpx;
-  color: #999;
+  margin-top: 22rpx;
+  font-size: 34rpx;
+  line-height: 1.2;
+  color: #6d6d6d;
 }
 
-/* 卡片 */
-.card {
-  margin-top: 24rpx;
-  padding: 28rpx;
-  background: #ffffff;
-  border-radius: 24rpx;
-  border: 1rpx solid rgba(0,0,0,0.04);
-  box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+.menu {
+  border-top: 1rpx solid #eeeeee;
 }
 
-.card-title {
-  display: block;
-  font-size: 30rpx;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-.divider {
-  height: 1rpx;
-  margin: 20rpx 0;
-  background: linear-gradient(90deg, rgba(0,0,0,0.06), rgba(0,0,0,0.02), rgba(0,0,0,0.06));
-}
-
-.intro-text {
-  font-size: 26rpx;
-  color: #666;
-  line-height: 1.8;
-}
-
-/* 功能特性 */
-.feature-list {
-  margin-top: 4rpx;
-}
-
-.feature-item {
-  display: flex;
-  align-items: flex-start;
-  padding: 20rpx 0;
-  border-bottom: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.feature-item:last-child {
-  border-bottom: none;
-}
-
-.feature-icon {
-  font-size: 36rpx;
-  margin-right: 20rpx;
-}
-
-.feature-info {
-  flex: 1;
-}
-
-.feature-name {
-  display: block;
-  font-size: 28rpx;
-  font-weight: 700;
-  color: #1a1a1a;
-}
-
-.feature-desc {
-  display: block;
-  margin-top: 6rpx;
-  font-size: 24rpx;
-  color: #999;
-}
-
-/* 联系方式 */
-.contact-item {
+.menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20rpx 0;
-  border-bottom: 1rpx solid rgba(0,0,0,0.04);
+  height: 116rpx;
+  border-bottom: 1rpx solid #eeeeee;
 }
 
-.contact-item:last-child {
-  border-bottom: none;
+.menu-label {
+  font-size: 34rpx;
+  color: #222222;
 }
 
-.contact-label {
-  font-size: 26rpx;
-  color: #666;
+.menu-arrow {
+  font-size: 60rpx;
+  font-weight: 200;
+  color: #b8b8b8;
+  line-height: 1;
 }
 
-.contact-value {
-  font-size: 26rpx;
-  font-weight: 600;
-  color: #1a1a1a;
+.footer {
+  margin-top: auto;
+  padding-top: 160rpx;
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-/* 版权 */
+.link-row,
+.record-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.link-row {
+  margin-bottom: 18rpx;
+}
+
+.footer-link {
+  font-size: 25rpx;
+  line-height: 1.35;
+  color: #64728d;
+}
+
+.separator {
+  font-size: 25rpx;
+  color: #a8a8a8;
+}
+
+.footer-text,
 .copyright {
-  display: block;
+  font-size: 25rpx;
+  line-height: 1.45;
+  color: #9a9a9a;
   text-align: center;
-  margin-top: 48rpx;
-  padding-bottom: 48rpx;
-  font-size: 22rpx;
-  color: #bbb;
+}
+
+.record-row {
+  margin-top: 12rpx;
+}
+
+.record-arrow {
+  margin-left: 8rpx;
+  font-size: 32rpx;
+  color: #a8a8a8;
+  line-height: 1;
+}
+
+.copyright {
+  margin-top: 12rpx;
 }
 </style>

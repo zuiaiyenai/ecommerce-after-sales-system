@@ -1,0 +1,36 @@
+{
+  "dataset": {
+    "sample_count": 18,
+    "split_distribution": {
+      "smoke": 18
+    },
+    "category_distribution": {
+      "cross_merchant": 1,
+      "evidence": 2,
+      "evidence_colloquial": 1,
+      "expired_policy": 1,
+      "faq": 1,
+      "faq_colloquial": 1,
+      "no_answer": 3,
+      "policy": 1,
+      "policy_colloquial": 2,
+      "synonym": 3,
+      "typo": 2
+    },
+    "annotation_method_distribution": {
+      "legacy_scene_heuristic_unverified": 15,
+      "negative_intent_reviewed": 3
+    },
+    "expect_no_answer_count": 3,
+    "reliably_annotated_holdout_count": 0
+  },
+  "limitations": [
+    "smoke is not holdout",
+    "positive smoke cases do not yet have reliable chunk-level relevance labels",
+    "recall thresholds require dual annotation or adjudication",
+    "rerank cost is a configured estimate"
+  ],
+  "dry_run": true,
+  "provider_accessed": false,
+  "metrics": null
+}

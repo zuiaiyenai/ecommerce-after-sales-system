@@ -21,13 +21,29 @@ public class ChatMessage {
 
     private String messageType;
 
+    private String fileUrl;
+
     private String toolCallId;
 
+    /** AI回复置信度(0~1)，表示回复生成/选用把握度。 */
     private BigDecimal confidence;
 
     private String emotionLabel;
 
     private BigDecimal emotionScore;
+
+    /** 情绪判断置信度(0~1)。 */
+    private BigDecimal emotionConfidence;
+
+    private String knowledgeQuery;
+
+    private String knowledgeRetrievalMode;
+
+    private Integer knowledgeHitCount;
+
+    private String knowledgeHitsJson;
+
+    private String knowledgeTraceJson;
 
     private Integer tokenUsage;
 

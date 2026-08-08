@@ -1,14 +1,5 @@
 ﻿<template>
   <view class="page">
-    <!-- 顶部导航 -->
-    <view class="nav-bar">
-      <view class="back-btn" @tap="goBack">
-        <text class="back-icon">←</text>
-      </view>
-      <text class="nav-title">{{ pageTitle }}</text>
-      <view class="nav-right"></view>
-    </view>
-
     <!-- 商品信息 -->
     <view class="card">
       <text class="card-title">商品信息</text>
@@ -35,6 +26,10 @@
       <view class="info-row">
         <text class="info-label">下单时间</text>
         <text class="info-value">{{ orderInfo.orderTime }}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">所属商家</text>
+        <text class="info-value">{{ orderInfo.merchantDisplayName || orderInfo.merchantCode || '演示商家' }}</text>
       </view>
       <view class="info-row">
         <text class="info-label">实付款</text>
@@ -130,10 +125,26 @@
       </view>
     </view>
 
+    <!-- AI评估结果（状态为PROCESSING时显示） -->
+    <view class="card ai-eval-card" v-if="hasAfterSale && afterSaleInfo.status === 'PROCESSING' && afterSaleInfo.auditOpinion">
+      <view class="ai-eval-header">
+        <text class="ai-icon">🤖</text>
+        <text class="card-title">AI评估结果</text>
+      </view>
+      <view class="divider"></view>
+      <view class="ai-eval-content">
+        <text class="ai-eval-text">{{ afterSaleInfo.auditOpinion }}</text>
+        <view class="ai-eval-note">
+          <text class="note-icon">ℹ️</text>
+          <text class="note-text">AI评估仅供参考，最终处理结果以人工审核为准</text>
+        </view>
+      </view>
+    </view>
+
     <!-- 底部按钮 -->
     <view class="bottom-bar">
-      <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">联系售后客服</button>
-      <button v-else-if="orderInfo.status !== 'PAID'" class="btn-primary" @tap="applyAfterSale">申请售后</button>
+      <button v-if="hasAfterSale" class="btn-primary" @tap="contactService">进入客服咨询</button>
+      <button v-else-if="canApplyAfterSale" class="btn-primary" @tap="applyAfterSale">申请售后</button>
       <button v-else class="btn-primary disabled" disabled>未发货暂不可申请售后</button>
     </view>
   </view>
@@ -141,14 +152,16 @@
 
 <script setup>
 import { ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { onLoad, onShow } from '@dcloudio/uni-app'
+import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveAfterSalesTicketDisplay, resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
 const pageTitle = ref('订单详情')
 const hasAfterSale = ref(false)
+const canApplyAfterSale = ref(false)
 
 const orderInfo = ref({
-  id: '',
+  orderId: '',
   productImage: '',
   productName: '',
   spec: '',
@@ -157,6 +170,8 @@ const orderInfo = ref({
   orderNo: '',
   orderTime: '',
   totalPrice: '0.00',
+  merchantCode: '',
+  merchantDisplayName: '',
   status: '',
   statusText: '',
   trackingCompany: '',
@@ -168,7 +183,7 @@ const orderInfo = ref({
 })
 
 const afterSaleInfo = ref({
-  id: '',
+  ticketId: '',
   ticketNo: '',
   orderId: '',
   reasonText: '',
@@ -205,17 +220,28 @@ const reasonMap = {
   'OTHER': '其他原因'
 }
 
-onLoad(async (options) => {
+let lastLoadOptions = null
+let detailLoaded = false
+
+async function reloadDetail(options = {}) {
   if (options.ticketNo) {
     // 从售后列表进入
     await loadFromAfterSale(options.ticketNo)
   } else if (options.orderId) {
     // 从订单列表进入
     await loadFromOrder(options.orderId)
-  } else if (options.id) {
-    // 兼容旧入口：历史版本首页传的是 id，实际含义是订单ID
-    await loadFromOrder(options.id)
   }
+  detailLoaded = true
+}
+
+onLoad(async (options) => {
+  lastLoadOptions = options
+  await reloadDetail(options)
+})
+
+onShow(async () => {
+  if (!detailLoaded || !lastLoadOptions) return
+  await reloadDetail(lastLoadOptions)
 })
 
 // 从订单进入
@@ -235,11 +261,25 @@ async function loadFromOrder(orderId) {
       }
     } catch (e) {}
 
-    if (ticket) {
+    if (ticket || orderHasAfterSale(order)) {
       // 有售后
       hasAfterSale.value = true
       pageTitle.value = '售后详情'
-      fillAfterSaleInfo(ticket)
+      if (!ticket) {
+        const snapshot = resolveOrderAfterSalesSnapshot(order)
+        const latestTicketId = snapshot.latestTicketId || ''
+        const latestTicketNo = snapshot.latestTicketNo || ''
+        if (!latestTicketId && latestTicketNo) {
+          try {
+            ticket = await request({ url: '/aftersales/byTicketNo/' + latestTicketNo })
+          } catch (e) {}
+        }
+      }
+      if (ticket) {
+        fillAfterSaleInfo(ticket)
+      } else {
+        fillAfterSaleInfoFromOrder(order)
+      }
     } else {
       // 无售后，显示物流
       hasAfterSale.value = false
@@ -250,6 +290,10 @@ async function loadFromOrder(orderId) {
   } catch (e) {
     console.error('加载订单详情失败', e)
   }
+}
+
+function orderHasAfterSale(order) {
+  return resolveOrderAfterSalesSnapshot(order).hasAnyAfterSales
 }
 
 // 从售后列表进入
@@ -276,8 +320,10 @@ async function loadFromAfterSale(ticketNo) {
 
 function fillOrderInfo(order) {
   const item = order.items && order.items[0]
+  const snapshot = resolveOrderAfterSalesSnapshot(order)
+  canApplyAfterSale.value = !snapshot.hasAnyAfterSales && (order.status === 'SHIPPED' || order.status === 'RECEIVED')
   orderInfo.value = {
-    id: order.id || '',
+    orderId: order.orderId || '',
     productImage: (item && item.productImage) || '',
     productName: (item && item.productName) || '',
     spec: (item && item.productSpec) || '',
@@ -286,6 +332,8 @@ function fillOrderInfo(order) {
     orderNo: order.orderNo || '',
     orderTime: order.createTime || '',
     totalPrice: order.payAmount || '0.00',
+    merchantCode: order.merchantCode || '',
+    merchantDisplayName: order.merchantDisplayName || '',
     status: order.status || '',
     statusText: order.statusText || '',
     trackingCompany: order.trackingCompany || '',
@@ -298,14 +346,15 @@ function fillOrderInfo(order) {
 }
 
 function fillAfterSaleInfo(ticket) {
+  const display = resolveAfterSalesTicketDisplay(ticket)
   afterSaleInfo.value = {
-    id: ticket.id || '',
+    ticketId: ticket.ticketId || '',
     ticketNo: ticket.ticketNo || '',
     orderId: ticket.orderId || '',
     reasonText: reasonMap[ticket.reason] || ticket.reason || '',
     description: ticket.description || '',
     status: ticket.status || '',
-    statusText: ticket.statusText || '',
+    statusText: display.statusText,
     auditOpinion: ticket.auditOpinion || '',
     auditTime: ticket.auditTime || '',
     completeTime: ticket.completeTime || '',
@@ -314,6 +363,26 @@ function fillAfterSaleInfo(ticket) {
     images: ticket.attachmentUrls || []
   }
   buildAfterSaleSteps(ticket)
+}
+
+function fillAfterSaleInfoFromOrder(order) {
+  const snapshot = resolveOrderAfterSalesSnapshot(order)
+  afterSaleInfo.value = {
+    ticketId: snapshot.latestTicketId || '',
+    ticketNo: snapshot.latestTicketNo || '',
+    orderId: order.orderId || '',
+    reasonText: '已发起售后',
+    description: '该订单已有售后记录，可继续进入客服咨询跟进处理。',
+    status: snapshot.afterSalesStatus.toUpperCase(),
+    statusText: snapshot.afterSalesStatusText,
+    auditOpinion: '售后申请已受理，可进入客服咨询继续补充信息。',
+    auditTime: '',
+    completeTime: '',
+    createTime: order.updateTime || order.createTime || '',
+    refundAmount: null,
+    images: []
+  }
+  buildAfterSaleSteps(afterSaleInfo.value)
 }
 
 function buildLogisticsSteps(order) {
@@ -411,21 +480,21 @@ function buildAfterSaleSteps(ticket) {
   const completeTime = ticket.completeTime ? ticket.completeTime.slice(5, 16) : ''
 
   const statusSteps = {
-    PROCESSING: [
+    PENDING: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
       { title: '审核中', desc: ticket.auditOpinion || '预计1-3个工作日审核', time: '', done: false, active: true },
       { title: '处理中', desc: '等待处理结果', time: '', done: false, active: false },
       { title: '已完成', desc: '售后已完结', time: '', done: false, active: false }
     ],
-    APPROVED: [
+    PROCESSING: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
-      { title: '审核通过', desc: ticket.auditOpinion || '已通过审核', time: auditTime, done: true, active: false },
-      { title: '处理中', desc: '退款/换货处理中', time: '', done: false, active: true },
+      { title: 'AI初步评估', desc: ticket.auditOpinion || 'AI客服判断证据充分，建议通过', time: auditTime, done: true, active: false },
+      { title: '人工审核中', desc: '最终处理需人工审核确认', time: '', done: false, active: true },
       { title: '已完成', desc: '售后已完结', time: '', done: false, active: false }
     ],
     REJECTED: [
       { title: '已提交', desc: '售后申请已提交', time: createTime, done: true, active: false },
-      { title: '已拒绝', desc: ticket.auditOpinion || '审核未通过', time: auditTime, done: true, active: false },
+      { title: '已驳回', desc: ticket.auditOpinion || '审核未通过', time: auditTime, done: true, active: false },
       { title: '已关闭', desc: '售后已关闭', time: '', done: true, active: false }
     ],
     COMPLETED: [
@@ -435,11 +504,7 @@ function buildAfterSaleSteps(ticket) {
       { title: '已完成', desc: ticket.refundAmount ? '退款¥' + ticket.refundAmount + '已到账' : '售后已完结', time: completeTime, done: true, active: false }
     ]
   }
-  afterSaleSteps.value = statusSteps[ticket.status] || statusSteps.PROCESSING
-}
-
-function goBack() {
-  uni.navigateBack()
+  afterSaleSteps.value = statusSteps[ticket.status] || statusSteps.PENDING
 }
 
 function copyOrderNo() {
@@ -462,13 +527,19 @@ function previewImage(index) {
 
 function contactService() {
   const info = orderInfo.value
-  const afterSaleId = afterSaleInfo.value.id
-  const orderId = afterSaleInfo.value.orderId || info.id
+  const ticketId = afterSaleInfo.value.ticketId
+  const orderId = afterSaleInfo.value.orderId || info.orderId
   const params = [
-    afterSaleId ? 'afterSaleId=' + encodeURIComponent(afterSaleId) : '',
+    ticketId ? 'ticketId=' + encodeURIComponent(ticketId) : '',
     orderId ? 'orderId=' + encodeURIComponent(orderId) : '',
+    'orderNo=' + encodeURIComponent(info.orderNo || ''),
     'productName=' + encodeURIComponent(info.productName || ''),
     'productIcon=' + encodeURIComponent(info.productImage || ''),
+    'productSpec=' + encodeURIComponent(info.spec || ''),
+    'merchantCode=' + encodeURIComponent(info.merchantCode || ''),
+    'merchantDisplayName=' + encodeURIComponent(info.merchantDisplayName || ''),
+    'amount=' + encodeURIComponent(info.totalPrice || info.price || ''),
+    'status=' + encodeURIComponent(info.status || ''),
     'statusText=' + encodeURIComponent(afterSaleInfo.value.statusText || '售后处理中')
   ].filter(Boolean).join('&')
   uni.navigateTo({
@@ -477,7 +548,15 @@ function contactService() {
 }
 
 function applyAfterSale() {
-  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.id })
+  if (hasAfterSale.value || resolveOrderAfterSalesSnapshot(orderInfo.value).hasAnyAfterSales) {
+    contactService()
+    return
+  }
+  if (!canApplyAfterSale.value) {
+    uni.showToast({ title: '当前订单暂不可申请售后', icon: 'none' })
+    return
+  }
+  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.orderId })
 }
 </script>
 
@@ -488,27 +567,6 @@ function applyAfterSale() {
   background: #f0eeea;
 }
 
-.nav-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 32rpx 0;
-}
-
-.back-btn {
-  width: 64rpx;
-  height: 64rpx;
-  line-height: 64rpx;
-  text-align: center;
-  border-radius: 16rpx;
-  background: #ffffff;
-  border: 1rpx solid rgba(0,0,0,0.04);
-}
-
-.back-icon { font-size: 32rpx; color: #1a1a1a; }
-.nav-title { font-size: 32rpx; font-weight: 800; color: #1a1a1a; }
-.nav-right { width: 64rpx; }
-
 .card {
   margin-top: 24rpx;
   padding: 28rpx;
@@ -516,6 +574,55 @@ function applyAfterSale() {
   border-radius: 24rpx;
   border: 1rpx solid rgba(0,0,0,0.04);
   box-shadow: 0 2rpx 16rpx rgba(0,0,0,0.03);
+}
+
+.ai-eval-card {
+  background: linear-gradient(135deg, #fff9f0 0%, #fff4e8 100%);
+  border: 2rpx solid #f4d9b8;
+}
+
+.ai-eval-header {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.ai-icon {
+  font-size: 32rpx;
+}
+
+.ai-eval-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.ai-eval-text {
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: #1a1a1a;
+}
+
+.ai-eval-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8rpx;
+  padding: 16rpx;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 12rpx;
+  border: 1rpx solid rgba(201, 123, 90, 0.2);
+}
+
+.note-icon {
+  font-size: 24rpx;
+  flex-shrink: 0;
+}
+
+.note-text {
+  flex: 1;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #8a776c;
 }
 
 .card-title { display: block; font-size: 28rpx; font-weight: 700; color: #1a1a1a; }

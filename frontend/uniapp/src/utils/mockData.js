@@ -18,7 +18,7 @@ export const orders = [
 
 export const afterSales = [
   { id: 1, afterSaleNo: 'AS20240120001', order: orders[2], reason: '数量不符', desc: '收到的相纸数量少于订单数量', status: 'PROCESSING', statusText: '处理中', createTime: '2024-01-20 15:30:00' },
-  { id: 2, afterSaleNo: 'AS20240122001', order: orders[3], reason: '音质问题', desc: '耳机左声道有杂音', status: 'APPROVED', statusText: '已通过', createTime: '2024-01-22 10:20:00' },
+  { id: 2, afterSaleNo: 'AS20240122001', order: orders[3], reason: '音质问题', desc: '耳机左声道有杂音', status: 'PROCESSING', statusText: '处理中', createTime: '2024-01-22 10:20:00' },
   { id: 3, afterSaleNo: 'AS20240125001', order: orders[0], reason: '尺码不合适', desc: 'M码偏小，需要换大一号', status: 'COMPLETED', statusText: '已完成', createTime: '2024-01-25 08:45:00' }
 ]
 

@@ -3,9 +3,13 @@ package com.ecommerce.aftersales.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.CreateOrderRequest;
+import com.ecommerce.aftersales.entity.AfterSalesTicket;
+import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.OrderInfo;
 import com.ecommerce.aftersales.entity.OrderItem;
 import com.ecommerce.aftersales.entity.ProductInfo;
+import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
+import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.mapper.OrderItemMapper;
 import com.ecommerce.aftersales.mapper.ProductInfoMapper;
@@ -16,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -27,6 +32,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
 
+    private static final String DEFAULT_MERCHANT_CODE = "MERCHANT_DEMO";
+
+    private final AfterSalesTicketMapper afterSalesTicketMapper;
+    private final ChatSessionMapper chatSessionMapper;
     private final OrderInfoMapper orderInfoMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -92,7 +101,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public void updateStatus(Long id, Long userId, String status) {
-        if (!"RECEIVED".equals(status) && !"AFTERSALE".equals(status)) {
+        if (!"RECEIVED".equals(status)) {
             throw new BizException(403, "用户端不能执行该订单状态操作");
         }
         OrderInfo orderInfo = orderInfoMapper.selectOne(new LambdaQueryWrapper<OrderInfo>()
@@ -124,7 +133,10 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
+        vo.setOrderId(orderInfo.getId());
+        vo.setMerchantDisplayName(resolveMerchantDisplayName(orderInfo.getMerchantCode()));
         vo.setStatusText(getStatusText(orderInfo.getStatus()));
+        applyAfterSalesSnapshot(vo, orderInfo);
 
         // 查询订单项
         LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
@@ -162,6 +174,76 @@ public class OrderServiceImpl implements OrderService {
         return vo;
     }
 
+    private String resolveMerchantDisplayName(String merchantCode) {
+        String code = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
+        if (DEFAULT_MERCHANT_CODE.equalsIgnoreCase(code)) {
+            return "演示商家";
+        }
+        return "商家 " + code;
+    }
+
+    private void applyAfterSalesSnapshot(OrderVO vo, OrderInfo orderInfo) {
+        AfterSalesTicket ticket = afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderInfo.getId())
+                .orderByDesc(AfterSalesTicket::getCreateTime)
+                .last("limit 1"));
+        if (ticket == null) {
+            vo.setHasOpenAfterSales(false);
+            vo.setHasAnyAfterSales(false);
+            vo.setAfterSalesStatus(null);
+            vo.setAfterSalesStatusText(null);
+            vo.setLatestTicketId(null);
+            vo.setLatestTicketNo(null);
+            return;
+        }
+
+        boolean hasOpenAfterSales = !isClosedAfterSalesStatus(ticket.getStatus());
+        vo.setHasOpenAfterSales(hasOpenAfterSales);
+        vo.setHasAnyAfterSales(true);
+        vo.setAfterSalesStatus(ticket.getStatus());
+        vo.setAfterSalesStatusText(getAfterSalesStatusText(ticket.getStatus()));
+        vo.setLatestTicketId(String.valueOf(ticket.getId()));
+        vo.setLatestTicketNo(ticket.getTicketNo());
+        if (hasOpenAfterSales) {
+            vo.setStatus("AFTERSALE");
+            vo.setStatusText("售后中");
+            return;
+        }
+        if ("COMPLETED".equals(ticket.getStatus())) {
+            if (hasUserEvaluatedForOrder(orderInfo)) {
+                vo.setStatus("COMPLETED");
+                vo.setStatusText("已完成");
+            } else {
+                vo.setStatus("AWAITING_EVALUATION");
+                vo.setStatusText("待评价");
+            }
+        }
+    }
+
+    private boolean isClosedAfterSalesStatus(String status) {
+        return "REJECTED".equals(status) || "COMPLETED".equals(status) || "CLOSED".equals(status);
+    }
+
+    private boolean hasUserEvaluatedForOrder(OrderInfo orderInfo) {
+        Long count = chatSessionMapper.selectCount(new LambdaQueryWrapper<ChatSession>()
+                .eq(ChatSession::getOrderId, orderInfo.getId())
+                .eq(ChatSession::getUserId, orderInfo.getUserId())
+                .isNotNull(ChatSession::getSatisfaction));
+        return count != null && count > 0;
+    }
+
+    private String getAfterSalesStatusText(String status) {
+        if (status == null) return "";
+        if ("CLOSED".equals(status)) return "已关闭";
+        switch (status) {
+            case "PENDING": return "待审核";
+            case "PROCESSING": return "处理中";
+            case "REJECTED": return "已驳回";
+            case "COMPLETED": return "已完成";
+            default: return status;
+        }
+    }
+
     private String getStatusText(String status) {
         if (status == null) return "";
         switch (status) {
@@ -169,6 +251,8 @@ public class OrderServiceImpl implements OrderService {
             case "SHIPPED": return "配送中";
             case "RECEIVED": return "已收货";
             case "AFTERSALE": return "售后中";
+            case "AWAITING_EVALUATION": return "待评价";
+            case "COMPLETED": return "已完成";
             case "CLOSED": return "已关闭";
             default: return status;
         }

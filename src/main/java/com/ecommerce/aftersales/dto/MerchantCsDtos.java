@@ -1,9 +1,12 @@
 package com.ecommerce.aftersales.dto;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import lombok.Data;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 public final class MerchantCsDtos {
 
@@ -20,6 +23,31 @@ public final class MerchantCsDtos {
     }
 
     @Data
+    public static class RegisterRequest {
+        private String account;
+        private String password;
+        private String realName;
+        private String phone;
+        private String code;
+    }
+
+    @Data
+    public static class AuthCodeRequest {
+        private String account;
+        private String phone;
+        private String scene;
+    }
+
+    @Data
+    public static class ResetPasswordRequest {
+        private String account;
+        private String phone;
+        private String code;
+        private String newPassword;
+        private String confirmPassword;
+    }
+
+    @Data
     public static class LoginResponse {
         private String token;
         private StaffProfile staff;
@@ -27,6 +55,7 @@ public final class MerchantCsDtos {
 
     @Data
     public static class StaffProfile {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long staffId;
         private String staffNo;
         private String merchantCode;
@@ -71,6 +100,7 @@ public final class MerchantCsDtos {
 
     @Data
     public static class TodoItem {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long id;
         private String title;
         private String tag;
@@ -83,7 +113,18 @@ public final class MerchantCsDtos {
 
     @Data
     public static class DashboardPerformance {
+        private Integer serviceScore;
+        private String scoreStatus;
+        private String trendSummary;
+        private List<String> tags;
+        private List<PerformanceTrendPoint> trend;
         private List<PerformanceMetric> metrics;
+    }
+
+    @Data
+    public static class PerformanceTrendPoint {
+        private String day;
+        private Integer score;
     }
 
     @Data
@@ -93,22 +134,32 @@ public final class MerchantCsDtos {
         private String desc;
         private Integer currentPercent;
         private Integer targetPercent;
+        private Integer sampleSize;
+        private Boolean lowerIsBetter;
     }
 
     @Data
     public static class SessionView {
-        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long sessionId;
         private String sessionNo;
         private String merchantCode;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long userId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long orderId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long ticketId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long serviceId;
         private String user;
         private String topic;
         private String level;
         private String wait;
         private String emotion;
+        private String emotionLabel;
+        private BigDecimal emotionScore;
+        private BigDecimal emotionConfidence;
         private String sourceChannel;
         private Integer serviceUnreadCount;
         private String orderNo;
@@ -116,7 +167,12 @@ public final class MerchantCsDtos {
         private String productName;
         private String ticketNo;
         private String lastMessageContent;
+        private String lastMessageSender;
         private String lastMessageTime;
+        private String replyStatus;
+        private String emotionTrend;
+        private String riskLevel;
+        private Integer priorityScore;
         private String aiSummary;
         private String status;
         private String evaluationRequestedAt;
@@ -127,21 +183,89 @@ public final class MerchantCsDtos {
 
     @Data
     public static class MessageView {
-        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long messageId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long sessionId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long senderId;
+        private String sender;
         private String senderRole;
         private String messageType;
         private String content;
+        private String fileUrl;
         private String aiIntent;
+        private BigDecimal aiReplyConfidence;
         private String emotionLabel;
+        private BigDecimal emotionScore;
+        private BigDecimal emotionConfidence;
+        private String knowledgeQuery;
+        private String knowledgeRetrievalMode;
+        private Integer knowledgeHitCount;
+        private List<KnowledgeHitView> knowledgeHits;
+        private Map<String, Object> knowledgeTrace;
         private String createdAt;
+    }
+
+    @Data
+    public static class SessionAiAssistView {
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long sessionId;
+        private RecommendationView recommendation;
+        private QuickReplyView staffSuggestion;
+        private List<QuickReplyView> quickReplies;
+        private String quickReplySource;
+        private String latestUserMessage;
+        private String sceneCode;
+        private String intentCode;
+        private String knowledgeQuery;
+        private String knowledgeRetrievalMode;
+        private List<KnowledgeHitView> knowledgeHits;
+        private Map<String, Object> handoffSummary;
+        private String handoffSummaryText;
+        private Map<String, String> conversationDigest;
+        private Map<String, Object> trace;
+    }
+
+    @Data
+    public static class RecommendationView {
+        private String text;
+        private BigDecimal confidence;
+        private String source;
+        private String reason;
+        private String intentCode;
+        private String sceneCode;
+        private String tone;
+    }
+
+    @Data
+    public static class QuickReplyView {
+        private String code;
+        private String label;
+        private String text;
+        private String sceneCode;
+        private String intentCode;
+        private String tone;
+        private BigDecimal score;
+    }
+
+    @Data
+    public static class KnowledgeHitView {
+        private String sourceType;
+        private String sourceCode;
+        private String title;
+        private String summary;
+        private String snippet;
+        private BigDecimal score;
+        private List<String> tags;
+        private Map<String, Object> metadata;
     }
 
     @Data
     public static class SendMessageRequest {
         private String messageType;
         private String content;
+        private String fileUrl;
     }
 
     @Data
@@ -152,11 +276,14 @@ public final class MerchantCsDtos {
 
     @Data
     public static class TicketView {
-        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long ticketId;
         private String ticketNo;
         private String merchantCode;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long orderId;
         private String orderNo;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long userId;
         private String title;
         private String status;
@@ -165,8 +292,10 @@ public final class MerchantCsDtos {
         private String applyRefundAmount;
         private String approvedRefundAmount;
         private String refundStatus;
+        private BigDecimal aiReviewConfidence;
         private String priority;
         private String responsibility;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long assignedServiceId;
         private String auditOpinion;
         private String rejectReason;
@@ -177,8 +306,11 @@ public final class MerchantCsDtos {
 
     @Data
     public static class TicketLogView {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long ticketId;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long operatorId;
         private String operatorRole;
         private String oldStatus;
@@ -199,10 +331,17 @@ public final class MerchantCsDtos {
     }
 
     @Data
+    public static class TicketCompleteRequest {
+        private String completeNote;
+    }
+
+    @Data
     public static class OrderView {
-        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long orderId;
         private String orderNo;
         private String merchantCode;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long userId;
         private String user;
         private String phone;
@@ -210,13 +349,15 @@ public final class MerchantCsDtos {
         private String amount;
         private String status;
         private String logistics;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long relatedTicketId;
         private String createdAt;
     }
 
     @Data
     public static class OrderDetail {
-        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long orderId;
         private String orderNo;
         private String merchantCode;
         private String user;
@@ -227,11 +368,13 @@ public final class MerchantCsDtos {
         private String payTime;
         private List<OrderProductItem> productItems;
         private LogisticsInfo logistics;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long relatedTicketId;
     }
 
     @Data
     public static class OrderProductItem {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long productId;
         private String productName;
         private Integer quantity;
@@ -247,6 +390,7 @@ public final class MerchantCsDtos {
 
     @Data
     public static class NoticeView {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long id;
         private String level;
         private String title;
@@ -258,6 +402,7 @@ public final class MerchantCsDtos {
 
     @Data
     public static class ProductView {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long id;
         private String merchantCode;
         private String productName;
@@ -287,5 +432,25 @@ public final class MerchantCsDtos {
     @Data
     public static class ProductStatusRequest {
         private String status;
+    }
+
+    @Data
+    public static class ReviewView {
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long id;
+        @JsonSerialize(using = ToStringSerializer.class)
+        private Long orderId;
+        private Integer overallScore;
+        private String orderNo;
+        private String user;
+        private String productName;
+        private String ticketNo;
+        private String content;
+        private String productImage;
+        private String createdAt;
+        private Integer responseSpeedScore;
+        private Integer serviceAttitudeScore;
+        private Integer professionalScore;
+        private Integer efficiencyScore;
     }
 }

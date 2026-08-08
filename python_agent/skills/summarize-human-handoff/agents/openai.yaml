@@ -1,0 +1,4 @@
+interface:
+  display_name: "人工转接摘要"
+  short_description: "Create concise verified summaries for human service handoff"
+  default_prompt: "Use $summarize-human-handoff to produce a concise verified handoff summary for human service."

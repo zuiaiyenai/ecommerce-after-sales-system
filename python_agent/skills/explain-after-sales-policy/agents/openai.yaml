@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后政策解释"
+  short_description: "Explain trusted after-sales policy evidence and uncertainty"
+  default_prompt: "Use $explain-after-sales-policy to explain the retrieved after-sales policy evidence and uncertainty."

@@ -7,7 +7,7 @@ import lombok.Data;
 @Builder
 public class UserProfileResponse {
 
-    private Long userId;
+    private String userId;
 
     private String userAccount;
 

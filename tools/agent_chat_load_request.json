@@ -1,0 +1,8 @@
+{
+  "message": "商品出现功能异常，但目前没有图片凭证，我应该怎么申请售后？",
+  "description": "容量压测请求：覆盖网关限流、Agent 编排、RAG 检索和模型回复链路。",
+  "item_opened": true,
+  "human_request_count": 0,
+  "skip_image_review": true,
+  "attachments": []
+}

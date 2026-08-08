@@ -25,9 +25,25 @@
       }
     },
     {
+      "path": "pages/chat/list",
+      "style": {
+        "navigationBarTitleText": "咨询会话",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
       "path": "pages/chat/consult",
       "style": {
         "navigationBarTitleText": "智能客服",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/chat/evaluate",
+      "style": {
+        "navigationBarTitleText": "售后评价",
         "navigationBarBackgroundColor": "#ffffff",
         "navigationBarTextStyle": "black"
       }
@@ -53,8 +69,7 @@
       "style": {
         "navigationBarTitleText": "我的订单",
         "navigationBarBackgroundColor": "#ffffff",
-        "navigationBarTextStyle": "black",
-        "navigationStyle": "custom"
+        "navigationBarTextStyle": "black"
       }
     },
     {

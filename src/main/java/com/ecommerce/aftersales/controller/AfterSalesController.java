@@ -1,11 +1,24 @@
 package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
+import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.annotation.CurrentUserId;
+import com.ecommerce.aftersales.request.CreateAfterSalesRequest;
+import com.ecommerce.aftersales.request.SupplementAfterSalesRequest;
+import com.ecommerce.aftersales.response.AfterSalesResponse;
+import com.ecommerce.aftersales.response.SupplementAfterSalesResponse;
 import com.ecommerce.aftersales.service.AfterSalesService;
-import com.ecommerce.aftersales.vo.AfterSalesVO;
+import com.ecommerce.aftersales.service.AfterSalesSupplementService;
+import com.ecommerce.aftersales.service.RedisRateLimiterService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
@@ -15,32 +28,61 @@ import java.util.List;
 public class AfterSalesController {
 
     private final AfterSalesService afterSalesService;
+    private final AfterSalesSupplementService afterSalesSupplementService;
+    private final RedisRateLimiterService redisRateLimiterService;
+
+    @Value("${app.rate-limit.after-sales-submit.enabled:true}")
+    private boolean afterSalesSubmitRateLimitEnabled;
+
+    @Value("${app.rate-limit.after-sales-submit.limit:5}")
+    private int afterSalesSubmitRateLimit;
+
+    @Value("${app.rate-limit.after-sales-submit.window-seconds:60}")
+    private long afterSalesSubmitRateLimitWindowSeconds;
 
     @GetMapping
-    public ApiResponse<List<AfterSalesVO>> listByUserId(@CurrentUserId Long userId) {
+    public ApiResponse<List<AfterSalesResponse>> listByUserId(@CurrentUserId Long userId) {
         return ApiResponse.success("获取成功", afterSalesService.listByUserId(userId));
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<AfterSalesVO> getById(@PathVariable Long id, @CurrentUserId Long userId) {
-        AfterSalesVO afterSales = afterSalesService.getById(id, userId);
+    public ApiResponse<AfterSalesResponse> getById(@PathVariable Long id, @CurrentUserId Long userId) {
+        AfterSalesResponse afterSales = afterSalesService.getById(id, userId);
         if (afterSales == null) {
-            return ApiResponse.fail(404, "售后工单不存在");
+            throw new BizException(404, "售后申请不存在");
         }
         return ApiResponse.success("获取成功", afterSales);
     }
 
     @GetMapping("/byTicketNo/{ticketNo}")
-    public ApiResponse<AfterSalesVO> getByTicketNo(@PathVariable String ticketNo) {
-        AfterSalesVO afterSales = afterSalesService.getByTicketNo(ticketNo);
+    public ApiResponse<AfterSalesResponse> getByTicketNo(@PathVariable String ticketNo) {
+        AfterSalesResponse afterSales = afterSalesService.getByTicketNo(ticketNo);
         if (afterSales == null) {
-            return ApiResponse.fail(404, "售后工单不存在");
+            throw new BizException(404, "售后申请不存在");
         }
         return ApiResponse.success("获取成功", afterSales);
     }
 
     @PostMapping
-    public ApiResponse<AfterSalesVO> create(@CurrentUserId Long userId, @RequestBody AfterSalesVO afterSalesVO) {
-        return ApiResponse.success("创建成功", afterSalesService.create(userId, afterSalesVO));
+    public ApiResponse<AfterSalesResponse> create(@CurrentUserId Long userId,
+                                                  @Valid @RequestBody CreateAfterSalesRequest request) {
+        if (afterSalesSubmitRateLimitEnabled
+                && !redisRateLimiterService.tryAcquire("rate:user:" + userId + ":after_sales",
+                afterSalesSubmitRateLimit, afterSalesSubmitRateLimitWindowSeconds)) {
+            throw new BizException(429, "提交过于频繁，请稍后再试");
+        }
+        return ApiResponse.success("创建成功", afterSalesService.create(userId, request));
+    }
+
+    @PostMapping("/{id}/supplements")
+    public ApiResponse<SupplementAfterSalesResponse> supplement(
+            @PathVariable Long id,
+            @CurrentUserId Long userId,
+            @Valid @RequestBody SupplementAfterSalesRequest request
+    ) {
+        return ApiResponse.success(
+                "补充材料已提交",
+                afterSalesSupplementService.supplement(userId, id, request)
+        );
     }
 }

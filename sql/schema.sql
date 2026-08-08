@@ -1,4 +1,4 @@
--- ============================================================
+﻿-- ============================================================
 -- 电商售后客服与用户评价分析系统 - 完整数据库脚本
 -- 严格对齐概要设计文档 E-R 实体设计，MySQL 18 张表 + pgvector 1 张表
 -- ============================================================
@@ -176,16 +176,23 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     user_id                BIGINT        NOT NULL COMMENT '用户ID',
     merchant_id            BIGINT        NULL     COMMENT '所属商家/客服主体ID(sys_user)',
     merchant_code          VARCHAR(50)   NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
+    policy_code            VARCHAR(64)   NULL     COMMENT '命中的商家策略编码',
+    policy_version         VARCHAR(32)   NULL     COMMENT '命中的商家策略版本',
     product_name           VARCHAR(200)  NULL     COMMENT '商品名称(快照)',
     after_sale_type        VARCHAR(30)   NULL     COMMENT '售后类型：REFUND_ONLY仅退款/REFUND_RETURN退货退款/EXCHANGE换货/REPAIR维修(由AI推荐或客服确认)',
     reason                 VARCHAR(50)   NOT NULL COMMENT '售后原因：QUALITY质量问题/WRONG_ITEM发错货/SIZE_ISSUE尺码不合适/DAMAGE物流损坏/NOT_MATCH与描述不符/OTHER其他',
     reason_detail          VARCHAR(500)  NULL     COMMENT '原因补充说明',
     description            TEXT          NULL     COMMENT '用户问题描述',
     refund_amount          DECIMAL(10,2) NULL     COMMENT '退款金额',
-    ai_classify_result     VARCHAR(200)  NULL     COMMENT 'AI分类结果(JSON)',
-    ai_confidence          DECIMAL(3,2)  NULL     COMMENT 'AI分类置信度(0~1)',
-    ai_recommend_type      VARCHAR(30)   NULL     COMMENT 'AI推荐售后类型',
-    status                 VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING待审核/PROCESSING处理中/APPROVED审核通过/REJECTED审核拒绝/COMPLETED已完成/CLOSED已关闭',
+    ai_review_audit_json   TEXT          NULL     COMMENT 'AI初审审计JSON，包含视觉证据、RAG命中、风险原因与策略引用',
+    ai_review_confidence   DECIMAL(3,2)  NULL     COMMENT 'AI初审置信度(0~1，表示本次审核结论把握度)',
+    ai_suggested_after_sale_type VARCHAR(30) NULL COMMENT 'AI建议售后类型：REFUND_ONLY/REFUND_RETURN/EXCHANGE/REPAIR',
+    ai_review_request_id   VARCHAR(64)   NULL     COMMENT 'AI初审幂等请求ID',
+    ai_review_result       VARCHAR(30)   NULL     COMMENT 'AI初审结论：APPROVE/MANUAL_REVIEW_REQUIRED',
+    ai_review_reason       VARCHAR(500)  NULL     COMMENT 'AI初审原因',
+    ai_review_time         DATETIME      NULL     COMMENT 'AI初审时间',
+    manual_review_required TINYINT       NOT NULL DEFAULT 0 COMMENT 'AI初审是否要求人工复核：0否，1是',
+    status                 VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING/PENDING_REVIEW待审核，PROCESSING处理中，MANUAL_REVIEW_REQUIRED待人工复核，APPROVED/REJECTED/COMPLETED/CLOSED终态',
     priority               TINYINT       NOT NULL DEFAULT 0 COMMENT '优先级：0普通，1紧急，2非常紧急',
     assignee_id            BIGINT        NULL     COMMENT '处理人ID(sys_user)',
     audit_opinion          VARCHAR(500)  NULL     COMMENT '审核意见',
@@ -193,15 +200,26 @@ CREATE TABLE IF NOT EXISTS after_sales_ticket
     expected_complete_time DATETIME      NULL     COMMENT '预计完成时间',
     complete_time          DATETIME      NULL     COMMENT '完成时间',
     deleted                TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
+    active_scope_key       VARCHAR(128)
+        GENERATED ALWAYS AS (
+            CASE
+                WHEN deleted = 0 AND status IN ('PENDING', 'PENDING_REVIEW', 'PROCESSING')
+                    THEN CONCAT(user_id, ':', order_id)
+                ELSE NULL
+            END
+        ) STORED COMMENT '活动工单幂等作用域键：同一用户同一订单仅允许一张打开中的售后单',
     create_time            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_after_sales_ticket_no (ticket_no),
+    UNIQUE KEY uk_after_sales_ai_review_request (ai_review_request_id),
+    UNIQUE KEY uk_after_sales_ticket_active_scope (active_scope_key),
     INDEX idx_after_sales_ticket_order (order_id),
     INDEX idx_after_sales_ticket_user (user_id),
     INDEX idx_after_sales_ticket_merchant (merchant_code),
     INDEX idx_after_sales_ticket_status (status),
-    INDEX idx_after_sales_ticket_assignee (assignee_id)
+    INDEX idx_after_sales_ticket_assignee (assignee_id),
+    INDEX idx_after_sales_ticket_reuse_lookup (user_id, order_id, status, update_time)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COMMENT = '售后工单表';
@@ -241,6 +259,31 @@ CREATE TABLE IF NOT EXISTS ticket_attachment
   DEFAULT CHARSET = utf8mb4
   COMMENT = '售后凭证表';
 
+-- 10. 售后事件 Outbox 表
+CREATE TABLE IF NOT EXISTS after_sales_event_outbox
+(
+    id               BIGINT       NOT NULL COMMENT 'Outbox事件ID',
+    event_id         VARCHAR(64)  NOT NULL COMMENT '业务事件唯一ID',
+    event_type       VARCHAR(64)  NOT NULL COMMENT '事件类型',
+    topic            VARCHAR(128) NOT NULL COMMENT 'Kafka Topic',
+    aggregate_type   VARCHAR(64)  NOT NULL COMMENT '聚合类型',
+    aggregate_id     BIGINT       NOT NULL COMMENT '聚合ID',
+    payload          TEXT         NOT NULL COMMENT '事件载荷JSON',
+    status           VARCHAR(20)  NOT NULL DEFAULT 'NEW' COMMENT 'NEW/PUBLISHED/FAILED/DEAD',
+    retry_count      INT          NOT NULL DEFAULT 0 COMMENT '发布重试次数',
+    last_error       VARCHAR(500) NULL COMMENT '最后一次发布错误',
+    next_retry_time  DATETIME     NULL COMMENT '下次重试时间',
+    published_time   DATETIME     NULL COMMENT '发布时间',
+    create_time      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_after_sales_outbox_event_id (event_id),
+    INDEX idx_after_sales_outbox_publish (status, next_retry_time, create_time),
+    INDEX idx_after_sales_outbox_aggregate (aggregate_type, aggregate_id)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COMMENT = '售后领域事件Outbox表';
+
 -- ============================================================
 -- 第四组：在线客服与会话
 -- ============================================================
@@ -253,12 +296,15 @@ CREATE TABLE IF NOT EXISTS chat_session
     user_id         BIGINT       NOT NULL COMMENT '用户ID',
     merchant_id     BIGINT       NULL     COMMENT '所属商家/客服主体ID(sys_user)',
     merchant_code   VARCHAR(50)  NOT NULL DEFAULT 'MERCHANT_DEMO' COMMENT '所属商家编码',
+    policy_code     VARCHAR(64)  NULL     COMMENT '命中的商家策略编码',
+    policy_version  VARCHAR(32)  NULL     COMMENT '命中的商家策略版本',
     order_id        BIGINT       NULL     COMMENT '关联订单ID',
     ticket_id       BIGINT       NULL     COMMENT '关联工单ID',
     human_agent_id  BIGINT       NULL     COMMENT '人工客服ID(sys_user)',
     mode            VARCHAR(10)  NOT NULL DEFAULT 'AI' COMMENT '当前模式：AI智能客服/HUMAN人工客服',
     status          VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE进行中/WAITING等待人工/CLOSED已关闭',
-    emotion_score   DECIMAL(3,2) NULL     COMMENT '用户情绪分值(0~1，越低越负面)',
+    emotion_score   DECIMAL(3,2) NULL     COMMENT '用户情绪负面强度分值(0~1，越高越负面)',
+    emotion_confidence DECIMAL(3,2) NULL  COMMENT '用户情绪判断置信度(0~1)',
     emotion_label   VARCHAR(20)  NULL     COMMENT '情绪标签：NORMAL正常/ANXIETY焦虑/ANGRY愤怒',
     user_query      VARCHAR(500) NULL     COMMENT '用户初始问题摘要',
     resolved        TINYINT      NOT NULL DEFAULT 0 COMMENT '是否已解决：0未解决，1已解决',
@@ -267,12 +313,23 @@ CREATE TABLE IF NOT EXISTS chat_session
     deleted         TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
     create_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    user_hidden     TINYINT      NOT NULL DEFAULT 0 COMMENT 'user-side hidden from recent list',
+    active_scope_key VARCHAR(255) GENERATED ALWAYS AS (
+        CASE
+            WHEN deleted = 0 AND status <> 'CLOSED' THEN CONCAT(
+                user_id, ':', merchant_code, ':', COALESCE(order_id, 0), ':', COALESCE(ticket_id, 0)
+            )
+            ELSE NULL
+        END
+    ) STORED COMMENT 'active-session idempotency scope',
     PRIMARY KEY (id),
     UNIQUE KEY uk_chat_session_no (session_no),
+    UNIQUE KEY uk_chat_session_active_scope (active_scope_key),
     INDEX idx_chat_session_user (user_id),
     INDEX idx_chat_session_merchant (merchant_code),
     INDEX idx_chat_session_agent (human_agent_id),
-    INDEX idx_chat_session_status (status)
+    INDEX idx_chat_session_status (status),
+    INDEX idx_chat_session_reuse_lookup (user_id, merchant_code, order_id, ticket_id, status, update_time)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COMMENT = '客服会话表';
@@ -285,14 +342,23 @@ CREATE TABLE IF NOT EXISTS chat_message
     role          VARCHAR(20)  NOT NULL COMMENT '角色：USER用户/ASSISTANT客服(AI或人工)/SYSTEM系统/TOOL工具',
     content       TEXT         NOT NULL COMMENT '消息内容',
     message_type  VARCHAR(20)  NOT NULL DEFAULT 'TEXT' COMMENT '消息类型：TEXT文本/IMAGE图片/TOOL_CALL工具调用/TOOL_RESULT工具结果',
+    file_url      VARCHAR(500) NULL     COMMENT '图片/文件消息访问地址',
     tool_call_id  VARCHAR(100) NULL     COMMENT '工具调用ID(关联agent_tool_call)',
-    confidence    DECIMAL(3,2) NULL     COMMENT 'AI回复置信度(0~1)',
+    confidence    DECIMAL(3,2) NULL     COMMENT 'AI回复置信度(0~1，表示回复生成/选用把握度)',
     emotion_label VARCHAR(20)  NULL     COMMENT '该条消息情绪标签',
-    emotion_score DECIMAL(3,2) NULL     COMMENT '该条消息情绪分值',
+    emotion_score DECIMAL(3,2) NULL     COMMENT '该条消息情绪负面强度分值(0~1，越高越负面)',
+    emotion_confidence DECIMAL(3,2) NULL COMMENT '该条消息情绪判断置信度(0~1)',
+    knowledge_query VARCHAR(255) NULL COMMENT '本条AI回复触发的知识检索查询词',
+    knowledge_retrieval_mode VARCHAR(64) NULL COMMENT '知识检索模式，例如 lexical_hybrid_v1',
+    knowledge_hit_count INT NULL COMMENT '本条AI回复命中的知识条数',
+    knowledge_hits_json JSON NULL COMMENT '命中的知识列表(JSON)',
+    knowledge_trace_json JSON NULL COMMENT '知识检索trace(JSON)',
     token_usage   INT          NULL     COMMENT '本次回复Token消耗量',
     create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     INDEX idx_chat_message_session (session_id),
+    INDEX idx_chat_message_session_time (session_id, create_time),
+    INDEX idx_chat_message_session_id (session_id, id),
     INDEX idx_chat_message_time (create_time)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
@@ -332,120 +398,13 @@ CREATE TABLE IF NOT EXISTS review_info
   COMMENT = '用户评价表';
 
 -- ============================================================
--- 第六组：知识库与RAG（3张知识表 + 1张向量表在pgvector）
--- ============================================================
-
--- 13. 商品知识表（RAG 检索：商品参数、使用说明、保修范围等）
-CREATE TABLE IF NOT EXISTS product_knowledge
-(
-    id            BIGINT       NOT NULL COMMENT '知识ID',
-    product_id    BIGINT       NULL     COMMENT '关联商品ID(NULL表示通用知识)',
-    product_name  VARCHAR(200) NULL     COMMENT '商品名称(冗余，便于展示)',
-    title         VARCHAR(200) NOT NULL COMMENT '知识标题',
-    content       TEXT         NOT NULL COMMENT '知识内容',
-    chunk_count   INT          NOT NULL DEFAULT 0 COMMENT '已分块数量(向量化后更新)',
-    vector_status TINYINT      NOT NULL DEFAULT 0 COMMENT '向量化状态：0未处理，1已向量化，2向量化失败',
-    status        TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：1生效，0失效',
-    version       INT          NOT NULL DEFAULT 1 COMMENT '版本号',
-    operator_id   BIGINT       NULL     COMMENT '最近操作人ID',
-    deleted       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
-    create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    update_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    PRIMARY KEY (id),
-    INDEX idx_pk_product (product_id),
-    INDEX idx_pk_status (status),
-    INDEX idx_pk_vector_status (vector_status)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COMMENT = '商品知识表';
-
--- 14. 常见问题FAQ表（RAG 检索：退款多久到账、退货运费谁承担等）
-CREATE TABLE IF NOT EXISTS faq
-(
-    id            BIGINT       NOT NULL COMMENT 'FAQ ID',
-    question      VARCHAR(500) NOT NULL COMMENT '问题',
-    answer        TEXT         NOT NULL COMMENT '标准回答',
-    tags          VARCHAR(500) NULL     COMMENT '标签(JSON数组，如:["退款","运费","物流"])',
-    hit_count     INT          NOT NULL DEFAULT 0 COMMENT '命中次数(统计热度)',
-    chunk_count   INT          NOT NULL DEFAULT 0 COMMENT '已分块数量(向量化后更新)',
-    vector_status TINYINT      NOT NULL DEFAULT 0 COMMENT '向量化状态：0未处理，1已向量化，2向量化失败',
-    status        TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：1生效，0失效',
-    version       INT          NOT NULL DEFAULT 1 COMMENT '版本号',
-    operator_id   BIGINT       NULL     COMMENT '最近操作人ID',
-    deleted       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
-    create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    update_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    PRIMARY KEY (id),
-    INDEX idx_faq_status (status),
-    INDEX idx_faq_vector_status (vector_status)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COMMENT = '常见问题FAQ表';
-
--- 15. 售后政策表（RAG 检索：7天无理由、15天换货、保修条款等）
-CREATE TABLE IF NOT EXISTS after_sales_policy
-(
-    id            BIGINT       NOT NULL COMMENT '政策ID',
-    policy_name   VARCHAR(200) NOT NULL COMMENT '政策名称(如: "7天无理由退货政策")',
-    policy_code   VARCHAR(50)  NOT NULL COMMENT '政策编码',
-    product_category VARCHAR(100) NULL  COMMENT '适用商品分类(NULL表示全部)',
-    content       TEXT         NOT NULL COMMENT '政策全文',
-    summary       VARCHAR(500) NULL     COMMENT '摘要(展示给用户看)',
-    chunk_count   INT          NOT NULL DEFAULT 0 COMMENT '已分块数量(向量化后更新)',
-    vector_status TINYINT      NOT NULL DEFAULT 0 COMMENT '向量化状态：0未处理，1已向量化，2向量化失败',
-    effective_date DATE        NULL     COMMENT '生效日期',
-    expire_date    DATE        NULL     COMMENT '失效日期(NULL表示长期有效)',
-    status        TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：1生效，0失效',
-    version       INT          NOT NULL DEFAULT 1 COMMENT '版本号',
-    operator_id   BIGINT       NULL     COMMENT '最近操作人ID',
-    deleted       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
-    create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    update_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_asp_code (policy_code),
-    INDEX idx_asp_status (status),
-    INDEX idx_asp_vector_status (vector_status)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COMMENT = '售后政策表';
-
--- 16. 知识向量分块表 —— 存储在 pgvector（PostgreSQL），不在此 MySQL 中建表
+-- 第六组：AI 知识库已迁移至 PostgreSQL/pgvector。
 -- pgvector 建表语句见: sql/pgvector_schema.sql
 -- document_type 区分来源表: PRODUCT_KNOWLEDGE / FAQ / AFTER_SALES_POLICY
 
 -- ============================================================
 -- 第七组：规则与配置
 -- ============================================================
-
--- 17. 售后规则表
-CREATE TABLE IF NOT EXISTS after_sales_rule
-(
-    id                   BIGINT        NOT NULL COMMENT '规则ID',
-    rule_name            VARCHAR(100)  NOT NULL COMMENT '规则名称',
-    rule_code            VARCHAR(50)   NOT NULL COMMENT '规则编码',
-    product_category     VARCHAR(100)  NULL     COMMENT '适用商品分类(NULL表示全部)',
-    order_status         VARCHAR(20)   NULL     COMMENT '适用订单状态',
-    after_sale_type      VARCHAR(30)   NULL     COMMENT '适用售后类型',
-    reason               VARCHAR(50)   NULL     COMMENT '适用售后原因',
-    min_amount           DECIMAL(10,2) NULL     COMMENT '最小金额(含)',
-    max_amount           DECIMAL(10,2) NULL     COMMENT '最大金额(含)',
-    time_limit_days      INT           NULL     COMMENT '售后时限(天，从收货算起)',
-    freight_payer        VARCHAR(20)   NULL     COMMENT '运费承担方：BUYER买家/SELLER卖家/PLATFORM平台',
-    audit_mode           VARCHAR(20)   NOT NULL DEFAULT 'MANUAL' COMMENT '审核方式：MANUAL人工审核/AUTO自动审核',
-    auto_audit_condition VARCHAR(200)  NULL     COMMENT '自动审核条件(JSON，如{"maxAmount":100,"reason":"QUALITY"})',
-    dispatch_rule        VARCHAR(200)  NULL     COMMENT '工单分发规则(JSON，如{"assignTo":"QUALITY_TEAM","priority":"HIGH"})',
-    priority             INT           NOT NULL DEFAULT 0 COMMENT '规则优先级(数值越大越优先)',
-    status               TINYINT       NOT NULL DEFAULT 1 COMMENT '状态：1启用，0禁用',
-    operator_id          BIGINT        NULL     COMMENT '最近操作人ID',
-    deleted              TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删除，1已删除',
-    create_time          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    update_time          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_after_sales_rule_code (rule_code),
-    INDEX idx_after_sales_rule_status (status)
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COMMENT = '售后规则表';
 
 -- ============================================================
 -- 第八组：消息与系统

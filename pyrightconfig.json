@@ -1,0 +1,7 @@
+{
+  "include": ["python_agent", "tools"],
+  "exclude": ["**/__pycache__", "python_agent/.runtime"],
+  "extraPaths": ["./python_agent"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true
+}

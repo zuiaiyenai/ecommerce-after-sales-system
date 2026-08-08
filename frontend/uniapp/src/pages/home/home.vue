@@ -3,7 +3,8 @@
     <!-- 顶部：头像和用户名 -->
     <view class="header" @tap="editProfile">
       <view class="user-row">
-        <view class="avatar">{{ initial }}</view>
+        <image v-if="avatarUrl" class="avatar avatar-image" :src="avatarUrl" mode="aspectFill" />
+        <view v-else class="avatar">{{ initial }}</view>
         <view class="user-info">
           <text class="user-name">{{ userInfo.nickname || '用户' }}</text>
           <text class="user-phone">{{ maskPhone(userInfo.phone) }}</text>
@@ -32,11 +33,11 @@
     <view class="card orders-card">
       <view class="card-header">
         <text class="card-title">最近订单</text>
-        <button v-if="hasMoreOrders" class="link-btn" @tap="goOrders">查看全部</button>
+        <button class="link-btn" @tap="goOrders">查看全部</button>
       </view>
       <view class="divider"></view>
       <view class="order-list">
-        <view v-for="item in orders" :key="item.id" class="order-item" @tap="viewOrderDetail(item.id)">
+        <view v-for="item in orders" :key="item.orderId" class="order-item" @tap="viewOrderDetail(item.orderId)">
           <image class="order-icon" :src="normalizeImageUrl(item.icon)" mode="aspectFill" />
           <view class="order-content">
             <text class="order-title">{{ item.title }}</text>
@@ -55,7 +56,9 @@
     <!-- 底部导航 -->
     <view class="bottom-nav">
       <view v-for="item in navItems" :key="item.key" class="nav-item" :class="{ active: activeTab === item.key }" @tap="switchTab(item.key)">
-        <text class="nav-icon">{{ item.icon }}</text>
+        <view class="nav-icon">
+          <image class="nav-icon-img" :src="item.icon" mode="aspectFit" />
+        </view>
         <text class="nav-label">{{ item.label }}</text>
       </view>
     </view>
@@ -65,35 +68,26 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
-import { request, normalizeImageUrl } from '../../utils/request'
+import { normalizeImageUrl, request } from '../../utils/request'
+import { resolveOrderAfterSalesSnapshot, resolveOrderDisplay } from '../../utils/orderStatus'
 
 const userInfo = ref({})
 const activeTab = ref('home')
 const allOrders = ref([])
-const allAfterSales = ref([])
 const RECENT_ORDER_LIMIT = 5
 
 const navItems = [
-  { key: 'home', label: '首页', icon: '⌂' },
-  { key: 'chat', label: '咨询', icon: '◇' },
-  { key: 'mine', label: '我的', icon: '◒' }
+  { key: 'home', label: '首页', icon: '/static/images/mine/nav-home.png' },
+  { key: 'chat', label: '咨询', icon: '/static/images/mine/nav-chat.png' },
+  { key: 'mine', label: '我的', icon: '/static/images/mine/nav-mine.png' }
 ]
-
-function getStatusClass(status) {
-  const map = { PAID: 'paid', SHIPPED: 'pending', RECEIVED: 'done', AFTERSALE: 'waiting', PROCESSING: 'processing', APPROVED: 'approved', REJECTED: 'rejected', COMPLETED: 'completed' }
-  return map[status] || ''
-}
 
 // 从API数据计算概览
 const overview = computed(() => {
   const orders = allOrders.value
-  const aftersales = allAfterSales.value
-  const received = orders.filter(o => o.status === 'RECEIVED').length
+  const received = orders.filter(o => o.status === 'RECEIVED' && !resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
   const shipped = orders.filter(o => o.status === 'SHIPPED').length
-  const aftersale = Math.max(
-    orders.filter(o => o.status === 'AFTERSALE').length,
-    aftersales.filter(a => a.status === 'PROCESSING').length
-  )
+  const aftersale = orders.filter(o => resolveOrderAfterSalesSnapshot(o).hasOpenAfterSales).length
   const total = orders.length
   return [
     { label: '已收货订单', value: received, percent: total ? Math.round(received / total * 100) : 0 },
@@ -102,66 +96,58 @@ const overview = computed(() => {
   ]
 })
 
-function normalizeList(data) {
-  if (Array.isArray(data)) return data
-  if (Array.isArray(data?.records)) return data.records
-  if (Array.isArray(data?.list)) return data.list
-  return []
-}
-
-function formatDate(value) {
-  return value ? String(value).slice(0, 10) : ''
-}
-
-function formatAmount(value) {
-  return value || value === 0 ? value : '0.00'
-}
-
 // 从API数据渲染最近订单
 const orders = computed(() => {
   return allOrders.value.slice(0, RECENT_ORDER_LIMIT).map(o => {
     const item = o.items && o.items[0]
+    const display = resolveOrderDisplay(o)
     return {
-      id: o.id,
+      orderId: o.orderId,
       icon: item ? item.productImage : '',
       title: item ? item.productName : o.orderNo,
-      desc: `${formatDate(o.createTime)} | ¥${formatAmount(o.payAmount)}`,
-      status: o.statusText || o.status,
-      statusClass: getStatusClass(o.status)
+      desc: `${o.createTime.slice(0, 10)} | ¥${o.payAmount}`,
+      status: display.statusText,
+      statusClass: display.statusClass
     }
   })
 })
-
-const hasMoreOrders = computed(() => allOrders.value.length > RECENT_ORDER_LIMIT)
 
 const initial = computed(() => {
   const name = userInfo.value.nickname || '用户'
   return name.slice(0, 1)
 })
 
+const avatarUrl = computed(() => normalizeImageUrl(userInfo.value.avatarUrl))
+
+async function loadUserInfo() {
+  userInfo.value = uni.getStorageSync('userInfo') || {}
+  try {
+    const profile = await request({ url: '/miniapp/user/profile' })
+    userInfo.value = {
+      ...userInfo.value,
+      ...profile
+    }
+    uni.setStorageSync('userInfo', userInfo.value)
+  } catch (e) {
+    console.error('加载用户资料失败', e)
+  }
+}
+
 async function loadData() {
   try {
     const ordersData = await request({ url: '/orders' })
-    allOrders.value = normalizeList(ordersData)
+    allOrders.value = ordersData || []
   } catch (e) {
-    console.error('加载订单失败', e)
-  }
-
-  try {
-    const afterSalesData = await request({ url: '/aftersales' })
-    allAfterSales.value = normalizeList(afterSalesData)
-  } catch (e) {
-    console.error('加载售后失败', e)
-    allAfterSales.value = []
+    console.error('加载数据失败', e)
   }
 }
 
 onLoad(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
+  loadUserInfo()
 })
 
 onShow(() => {
-  userInfo.value = uni.getStorageSync('userInfo') || {}
+  loadUserInfo()
   loadData()
 })
 
@@ -198,7 +184,7 @@ function applyAfterSale() {
 function switchTab(key) {
   if (key === 'chat') {
     uni.navigateTo({
-      url: '/pages/chat/consult'
+      url: '/pages/chat/list'
     })
     return
   }
@@ -245,6 +231,12 @@ function logout() {
   color: #ffffff;
   font-weight: 900;
   font-size: 32rpx;
+}
+
+.avatar-image {
+  display: block;
+  line-height: 1;
+  background: #f5f3ef;
 }
 
 .user-info {
@@ -295,7 +287,7 @@ function logout() {
   border: 1rpx solid rgba(0,0,0,0.08);
   border-radius: 12rpx;
   background: transparent;
-  color: #1a1a1a;
+  color: #888;
   font-size: 22rpx;
 }
 
@@ -403,6 +395,10 @@ function logout() {
   color: #c97b5a;
 }
 
+.order-status.paid {
+  color: #c97b5a;
+}
+
 .order-status.waiting {
   color: #999;
 }
@@ -449,12 +445,23 @@ function logout() {
 }
 
 .nav-icon {
-  font-size: 36rpx;
-  color: #999;
+  position: relative;
+  width: 40rpx;
+  height: 40rpx;
+  overflow: hidden;
 }
 
-.nav-item.active .nav-icon {
-  color: #c97b5a;
+.nav-icon-img {
+  position: absolute;
+  left: -28rpx;
+  top: -28rpx;
+  width: 96rpx;
+  height: 96rpx;
+  filter: grayscale(1) saturate(0) opacity(0.62);
+}
+
+.nav-item.active .nav-icon-img {
+  filter: none;
 }
 
 .nav-label {

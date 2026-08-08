@@ -25,6 +25,10 @@ public class AfterSalesTicket {
 
     private String merchantCode;
 
+    private String policyCode;
+
+    private String policyVersion;
+
     private String productName;
 
     private String afterSaleType;
@@ -37,11 +41,22 @@ public class AfterSalesTicket {
 
     private BigDecimal refundAmount;
 
-    private String aiClassifyResult;
+    private String aiReviewAuditJson;
 
-    private BigDecimal aiConfidence;
+    /** AI review confidence for the current audit decision. */
+    private BigDecimal aiReviewConfidence;
 
-    private String aiRecommendType;
+    private String aiSuggestedAfterSaleType;
+
+    private String aiReviewRequestId;
+
+    private String aiReviewResult;
+
+    private String aiReviewReason;
+
+    private LocalDateTime aiReviewTime;
+
+    private Integer manualReviewRequired;
 
     private String status;
 
@@ -65,4 +80,22 @@ public class AfterSalesTicket {
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
+
+    /** Compatibility alias for callers that have not migrated to aiSuggestedAfterSaleType yet. */
+    public String getAiRecommendType() {
+        return aiSuggestedAfterSaleType;
+    }
+
+    public void setAiRecommendType(String aiRecommendType) {
+        this.aiSuggestedAfterSaleType = aiRecommendType;
+    }
+
+    /** Compatibility alias for callers that have not migrated to aiReviewConfidence yet. */
+    public BigDecimal getAiConfidence() {
+        return aiReviewConfidence;
+    }
+
+    public void setAiConfidence(BigDecimal aiConfidence) {
+        this.aiReviewConfidence = aiConfidence;
+    }
 }

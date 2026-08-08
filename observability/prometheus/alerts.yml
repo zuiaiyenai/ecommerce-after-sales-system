@@ -1,0 +1,45 @@
+groups:
+  - name: ecommerce-agent-observability
+    rules:
+      - alert: AgentObservabilityTargetDown
+        expr: up{job=~"ecommerce-java|ecommerce-python-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent observability target is unavailable"
+          description: "Prometheus cannot scrape {{ $labels.job }} for more than one minute."
+
+      - alert: AgentGatewayFailureRateHigh
+        expr: |
+          sum(rate(agent_gateway_requests_total{outcome="failure"}[5m]))
+          /
+          clamp_min(sum(rate(agent_gateway_requests_total[5m])), 0.001)
+          > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Java Agent gateway failure rate is high"
+          description: "The five-minute gateway failure ratio is above 10%."
+
+      - alert: AgentToolFailureRateHigh
+        expr: |
+          sum(rate(agent_tool_calls_total{outcome="failure"}[5m]))
+          /
+          clamp_min(sum(rate(agent_tool_calls_total[5m])), 0.001)
+          > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Python Agent tool failure rate is high"
+          description: "The five-minute tool failure ratio is above 20%."
+
+      - alert: AgentDlqEventsDetected
+        expr: sum(increase(agent_kafka_dlq_events_total[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "After-sales review events entered the DLQ path"
+          description: "At least one DLQ event was recorded in the last ten minutes."
