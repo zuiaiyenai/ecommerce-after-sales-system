@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后凭证收集"
+  short_description: "识别售后案件继续处理所需的最小凭证集合"
+  default_prompt: "使用 $evidence-request 识别当前售后案件需要补充的最小凭证集合。"

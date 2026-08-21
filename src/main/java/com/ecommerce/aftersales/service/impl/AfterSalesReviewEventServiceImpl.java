@@ -13,6 +13,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -35,7 +36,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventService {
 
-    private static final String EVENT_TYPE = "after_sales.review.request";
+    private static final String START_EVENT_TYPE = "after_sales.review.start";
+    private static final String RESUME_EVENT_TYPE = "after_sales.review.resume";
     private static final String DEFAULT_TOPIC = "after_sales.review.request";
 
     private final AfterSalesEventOutboxMapper outboxMapper;
@@ -55,23 +57,61 @@ public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventSe
     private int batchSize;
 
     @Override
-    public void enqueueReviewRequested(AfterSalesTicket ticket, Long sessionId) {
+    public void enqueueReviewStarted(AfterSalesTicket ticket, Long sessionId) {
+        if (ticket == null || !StringUtils.hasText(ticket.getAiReviewRequestId())) {
+            throw new IllegalArgumentException("reviewRequestId is required before enqueueing review start");
+        }
+        enqueue(ticket, sessionId, null, ticket.getAiReviewRequestId(), START_EVENT_TYPE,
+                ticket.getEvidenceRevision() == null ? 0 : ticket.getEvidenceRevision());
+    }
+
+    @Override
+    public void enqueueReviewResumed(
+            AfterSalesTicket ticket,
+            Long sessionId,
+            String message,
+            String eventId,
+            Integer evidenceRevision
+    ) {
+        enqueue(ticket, sessionId, message, eventId, RESUME_EVENT_TYPE, evidenceRevision);
+    }
+
+    private void enqueue(
+            AfterSalesTicket ticket,
+            Long sessionId,
+            String message,
+            String eventId,
+            String eventType,
+            Integer evidenceRevision
+    ) {
         if (ticket == null || ticket.getId() == null) {
             return;
         }
-        String eventId = UUID.randomUUID().toString();
+        if (!StringUtils.hasText(ticket.getAiReviewRequestId())) {
+            throw new IllegalArgumentException("reviewRequestId is required before enqueueing review event");
+        }
+        String normalizedEventId = StringUtils.hasText(eventId)
+                ? eventId.trim()
+                : UUID.randomUUID().toString();
         AfterSalesEventOutbox outbox = new AfterSalesEventOutbox();
         outbox.setId(IdWorker.getId());
-        outbox.setEventId(eventId);
-        outbox.setEventType(EVENT_TYPE);
+        outbox.setEventId(normalizedEventId);
+        outbox.setEventType(eventType);
         outbox.setTopic(reviewRequestTopic);
         outbox.setAggregateType("after_sales_ticket");
         outbox.setAggregateId(ticket.getId());
-        outbox.setPayload(writePayload(ticket, sessionId, eventId));
+        String traceId = TraceContext.currentOrCreate();
+        outbox.setPayload(writePayload(ticket, sessionId, message, normalizedEventId, eventType,
+                evidenceRevision == null ? 0 : evidenceRevision, traceId));
         outbox.setStatus("NEW");
         outbox.setRetryCount(0);
         outbox.setNextRetryTime(LocalDateTime.now());
         outboxMapper.insert(outbox);
+        log.info(
+                "after_sales_outbox event_id={} ticket_id={} transition=enqueued failure_class=none",
+                normalizedEventId,
+                ticket.getId()
+        );
     }
 
     @Override
@@ -104,8 +144,10 @@ public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventSe
 
     @Transactional(rollbackFor = Exception.class)
     protected void publishOne(AfterSalesEventOutbox event) {
+        String previousTraceId = MDC.get(TraceContext.MDC_KEY);
+        MDC.put(TraceContext.MDC_KEY, traceIdFromPayload(event.getPayload()));
         try {
-            kafkaTemplate.send(event.getTopic(), event.getEventId(), event.getPayload()).get();
+            kafkaTemplate.send(event.getTopic(), reviewRequestIdFromPayload(event), event.getPayload()).get();
             event.setStatus("PUBLISHED");
             event.setPublishedTime(LocalDateTime.now());
             event.setLastError(null);
@@ -125,7 +167,7 @@ public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventSe
             if (exhausted) {
                 AiReviewManualHandoffService.ManualHandoffResult handoff = aiReviewManualHandoffService.markManualRequired(
                         event.getAggregateId(),
-                        event.getEventId(),
+                        reviewRequestIdFromPayload(event),
                         "AI初审事件投递失败，已转人工审核：" + failureReason,
                         "OUTBOX_DEAD",
                         null,
@@ -143,14 +185,30 @@ public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventSe
             log.warn("after_sales_outbox event_id={} ticket_id={} transition={} retry_count={} failure_class={}",
                     event.getEventId(), event.getAggregateId(), event.getStatus().toLowerCase(),
                     event.getRetryCount(), exception.getClass().getSimpleName());
+        } finally {
+            if (previousTraceId == null) {
+                MDC.remove(TraceContext.MDC_KEY);
+            } else {
+                MDC.put(TraceContext.MDC_KEY, previousTraceId);
+            }
         }
     }
 
-    private String writePayload(AfterSalesTicket ticket, Long sessionId, String eventId) {
+    private String writePayload(
+            AfterSalesTicket ticket,
+            Long sessionId,
+            String message,
+            String eventId,
+            String eventType,
+            Integer evidenceRevision,
+            String traceId
+    ) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("event_id", eventId);
-        payload.put("trace_id", TraceContext.currentOrCreate());
-        payload.put("event_type", EVENT_TYPE);
+        payload.put("trace_id", traceId);
+        payload.put("event_type", eventType);
+        payload.put("review_request_id", ticket.getAiReviewRequestId());
+        payload.put("evidence_revision", evidenceRevision);
         payload.put("ticket_id", String.valueOf(ticket.getId()));
         payload.put("ticket_no", ticket.getTicketNo());
         payload.put("user_id", String.valueOf(ticket.getUserId()));
@@ -159,11 +217,37 @@ public class AfterSalesReviewEventServiceImpl implements AfterSalesReviewEventSe
         if (sessionId != null) {
             payload.put("session_id", String.valueOf(sessionId));
         }
+        if (StringUtils.hasText(message)) {
+            payload.put("message", message.trim());
+        }
         payload.put("created_at", OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Failed to serialize after-sales review event", exception);
+        }
+    }
+
+    private String reviewRequestIdFromPayload(AfterSalesEventOutbox event) {
+        try {
+            String reviewRequestId = objectMapper.readTree(event.getPayload())
+                    .path("review_request_id").asText("").trim();
+            return StringUtils.hasText(reviewRequestId) ? reviewRequestId : event.getEventId();
+        } catch (Exception exception) {
+            return event.getEventId();
+        }
+    }
+
+    private String traceIdFromPayload(String payload) {
+        try {
+            String traceId = objectMapper.readTree(payload).path("trace_id").asText("");
+            return TraceContext.normalizeOrCreate(traceId);
+        } catch (Exception exception) {
+            log.warn(
+                    "after_sales_outbox transition=trace_recovery_failed failure_class={}",
+                    exception.getClass().getSimpleName()
+            );
+            return TraceContext.newTraceId();
         }
     }
 

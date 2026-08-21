@@ -72,20 +72,26 @@ public final class InternalAgentToolDtos {
         private String merchantCode;
         private String status;
         private String afterSalesType;
+        private String reason;
+        private String reasonDetail;
+        private String description;
         private BigDecimal refundAmount;
         private Boolean existing;
         private String productName;
         private String category;
         private String policyVersion;
+        private String contextVersion;
         @JsonSerialize(using = OffsetLocalDateTimeSerializer.class)
         private LocalDateTime afterSalesAppliedAt;
         private String verdict;
         private String aiReviewResult;
         private String aiReviewStatus;
         private String reviewRequestId;
+        private Integer evidenceRevision;
         private Boolean reviewApplied;
         private Boolean idempotentReplay;
         private String reviewRejectReason;
+        private Integer currentEvidenceRevision;
         private List<String> evidenceUrls;
     }
 
@@ -94,12 +100,18 @@ public final class InternalAgentToolDtos {
         private Long userId;
         private Long sessionId;
         private String reviewRequestId;
+        private Integer evidenceRevision;
         private Long ticketId;
         private String orderId;
+        private String agentArchitecture;
+        private String contextVersion;
         private String verdict;
         private String aiReviewStatus;
         @JsonAlias("aiConfidence")
         private BigDecimal aiReviewConfidence;
+        private BigDecimal modelConfidence;
+        private String confidenceModelVersion;
+        private Map<String, Object> confidenceBreakdown;
         private String reason;
         private List<String> evidenceNeeded;
         private Boolean visualUncertain;
@@ -116,6 +128,7 @@ public final class InternalAgentToolDtos {
         private List<Map<String, Object>> policyCitations;
         private Map<String, String> skillVersions;
         private Map<String, Object> imageReview;
+        private Map<String, Object> specialistAssessments;
     }
 
     @Data
@@ -168,6 +181,9 @@ public final class InternalAgentToolDtos {
         private Long messageId;
         @JsonSerialize(using = ToStringSerializer.class)
         private Long sessionId;
+        private Boolean idempotentReplay;
+        private String reviewRejectReason;
+        private Integer currentEvidenceRevision;
     }
 
     @Data
@@ -176,6 +192,8 @@ public final class InternalAgentToolDtos {
         private Long sessionId;
         private String orderId;
         private Long ticketId;
+        private String reviewRequestId;
+        private Integer evidenceRevision;
         private List<String> evidenceNeeded;
         private String assistantReply;
     }

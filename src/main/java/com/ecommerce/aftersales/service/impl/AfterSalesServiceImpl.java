@@ -31,7 +31,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.UUID;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -55,8 +60,65 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         LambdaQueryWrapper<AfterSalesTicket> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(AfterSalesTicket::getUserId, userId)
                 .orderByDesc(AfterSalesTicket::getCreateTime);
-        return afterSalesTicketMapper.selectList(wrapper).stream()
-                .map(this::convertToResponse)
+        List<AfterSalesTicket> tickets = afterSalesTicketMapper.selectList(wrapper);
+        if (tickets.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> ticketIds = tickets.stream()
+                .map(AfterSalesTicket::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Set<Long> orderIds = tickets.stream()
+                .map(AfterSalesTicket::getOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, OrderInfo> ordersById = orderIds.isEmpty()
+                ? Map.of()
+                : orderInfoMapper.selectBatchIds(orderIds).stream()
+                .collect(Collectors.toMap(OrderInfo::getId, order -> order));
+        List<OrderItem> items = orderIds.isEmpty()
+                ? List.of()
+                : orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
+                        .in(OrderItem::getOrderId, orderIds));
+        Set<Long> productIds = items.stream()
+                .map(OrderItem::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductInfo> productsById = productIds.isEmpty()
+                ? Map.of()
+                : productInfoMapper.selectBatchIds(productIds).stream()
+                .collect(Collectors.toMap(ProductInfo::getId, product -> product));
+        Map<Long, List<OrderItem>> itemsByOrderId = items.stream()
+                .collect(Collectors.groupingBy(OrderItem::getOrderId, LinkedHashMap::new, Collectors.toList()));
+        Map<Long, List<String>> attachmentsByTicketId = ticketIds.isEmpty()
+                ? Map.of()
+                : ticketAttachmentMapper.selectList(new LambdaQueryWrapper<TicketAttachment>()
+                        .in(TicketAttachment::getTicketId, ticketIds)
+                        .orderByAsc(TicketAttachment::getSortOrder))
+                .stream()
+                .collect(Collectors.groupingBy(
+                        TicketAttachment::getTicketId,
+                        LinkedHashMap::new,
+                        Collectors.mapping(TicketAttachment::getFileUrl, Collectors.toList())));
+        Map<Long, List<AfterSalesLogResponse>> logsByTicketId = ticketIds.isEmpty()
+                ? Map.of()
+                : ticketLogMapper.selectList(new LambdaQueryWrapper<TicketLog>()
+                        .in(TicketLog::getTicketId, ticketIds)
+                        .orderByAsc(TicketLog::getCreateTime))
+                .stream()
+                .collect(Collectors.groupingBy(
+                        TicketLog::getTicketId,
+                        LinkedHashMap::new,
+                        Collectors.mapping(this::toLogResponse, Collectors.toList())));
+
+        return tickets.stream()
+                .map(ticket -> convertToResponse(
+                        ticket,
+                        ordersById.get(ticket.getOrderId()),
+                        itemsByOrderId.getOrDefault(ticket.getOrderId(), List.of()),
+                        productsById,
+                        attachmentsByTicketId.getOrDefault(ticket.getId(), List.of()),
+                        logsByTicketId.getOrDefault(ticket.getId(), List.of())))
                 .collect(Collectors.toList());
     }
 
@@ -91,7 +153,9 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         }
 
         AfterSalesTicket ticket = new AfterSalesTicket();
-        ticket.setTicketNo("AS" + System.currentTimeMillis());
+        // Millisecond timestamps collide under concurrent submissions. Keep the
+        // human-readable prefix while adding a UUID suffix for uniqueness.
+        ticket.setTicketNo("AS" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
         ticket.setOrderId(order.getId());
         ticket.setOrderNo(order.getOrderNo());
         ticket.setUserId(userId);
@@ -108,6 +172,9 @@ public class AfterSalesServiceImpl implements AfterSalesService {
         ticket.setDescription(request.getDescription());
         ticket.setRefundAmount(resolveRefundAmount(request, order));
         ticket.setStatus("PENDING_REVIEW");
+        ticket.setAiReviewRequestId(UUID.randomUUID().toString());
+        ticket.setAiReviewStatus("RUNNING");
+        ticket.setEvidenceRevision(0);
         ticket.setPriority(0);
         ticket.setAuditOpinion("售后申请已提交，AI正在进行初步审核。");
 
@@ -145,7 +212,7 @@ public class AfterSalesServiceImpl implements AfterSalesService {
             }
         }
 
-        afterSalesReviewEventService.enqueueReviewRequested(ticket, null);
+        afterSalesReviewEventService.enqueueReviewStarted(ticket, null);
         runAfterCommit(() -> aiReviewStatusCacheService.cacheStatus(ticket.getId(), "AI_REVIEWING"));
         return convertToResponse(ticket);
     }
@@ -249,6 +316,43 @@ public class AfterSalesServiceImpl implements AfterSalesService {
                 .collect(Collectors.toList());
         response.setLogs(logResponses);
 
+        return response;
+    }
+
+    private AfterSalesResponse convertToResponse(
+            AfterSalesTicket ticket,
+            OrderInfo orderInfo,
+            List<OrderItem> items,
+            Map<Long, ProductInfo> productsById,
+            List<String> attachmentUrls,
+            List<AfterSalesLogResponse> logs) {
+        AfterSalesResponse response = new AfterSalesResponse();
+        BeanUtils.copyProperties(ticket, response);
+        response.setTicketId(ticket.getId());
+        response.setMerchantDisplayName(resolveMerchantDisplayName(ticket.getMerchantCode()));
+        response.setStatusText(getStatusText(ticket.getStatus()));
+        response.setAiReviewResult(ticket.getAiReviewResult());
+        response.setAiReviewStatus(aiReviewStatusCacheService.resolveStatus(ticket));
+        response.setManualReviewRequired(ticket.getManualReviewRequired() != null && ticket.getManualReviewRequired() == 1);
+
+        if (orderInfo != null) {
+            response.setOrderNo(orderInfo.getOrderNo());
+            if (!items.isEmpty()) {
+                ProductInfo product = productsById.get(items.get(0).getProductId());
+                if (product != null) {
+                    response.setProductName(product.getProductName());
+                    response.setProductImage(product.getMainImage());
+                }
+            }
+        }
+        response.setAttachmentUrls(attachmentUrls);
+        response.setLogs(logs);
+        return response;
+    }
+
+    private AfterSalesLogResponse toLogResponse(TicketLog log) {
+        AfterSalesLogResponse response = new AfterSalesLogResponse();
+        BeanUtils.copyProperties(log, response);
         return response;
     }
 

@@ -50,6 +50,10 @@ public class AfterSalesTicket {
 
     private String aiReviewRequestId;
 
+    private String aiReviewStatus;
+
+    private Integer evidenceRevision;
+
     private String aiReviewResult;
 
     private String aiReviewReason;

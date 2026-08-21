@@ -23,6 +23,8 @@ public class ChatMessage {
 
     private String fileUrl;
 
+    private String businessKey;
+
     private String toolCallId;
 
     /** AI回复置信度(0~1)，表示回复生成/选用把握度。 */

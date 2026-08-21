@@ -39,6 +39,15 @@ public class PgVectorDataSourceConfig {
     @Value("${spring.datasource.password}")
     private String mysqlPassword;
 
+    @Value("${spring.datasource.hikari.maximum-pool-size:10}")
+    private int mysqlMaxPoolSize;
+
+    @Value("${spring.datasource.hikari.minimum-idle:10}")
+    private int mysqlMinIdle;
+
+    @Value("${spring.datasource.hikari.connection-timeout:30000}")
+    private long mysqlConnectionTimeout;
+
     @Primary
     @Bean(name = "mysqlDataSource")
     public DataSource mysqlDataSource() {
@@ -47,8 +56,18 @@ public class PgVectorDataSourceConfig {
         ds.setUsername(mysqlUsername);
         ds.setPassword(mysqlPassword);
         ds.setDriverClassName(mysqlDriverClassName);
+        ds.setMaximumPoolSize(Math.max(1, mysqlMaxPoolSize));
+        ds.setMinimumIdle(Math.max(0, Math.min(mysqlMinIdle, mysqlMaxPoolSize)));
+        ds.setConnectionTimeout(Math.max(250, mysqlConnectionTimeout));
         ds.setPoolName("MySQL-HikariPool");
         return ds;
+    }
+
+    @Primary
+    @Bean(name = "transactionManager")
+    public PlatformTransactionManager mysqlTransactionManager(
+            @Qualifier("mysqlDataSource") DataSource mysqlDataSource) {
+        return new DataSourceTransactionManager(mysqlDataSource);
     }
 
     // ==================== PgVector 向量数据源 ====================

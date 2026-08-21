@@ -56,7 +56,7 @@ public class FileUploadController {
 
             String fileUrl = "/uploads/" + dateDir + "/" + storedFilename;
             log.info("File uploaded: {} -> {}", originalFilename, fileUrl);
-            return ApiResponse.success("上传成功", Map.of("url", fileUrl));
+            return ApiResponse.success("上传成功", Map.of("fileUrl", fileUrl));
         } catch (IOException e) {
             log.error("File upload failed", e);
             return ApiResponse.fail(500, "文件上传失败");

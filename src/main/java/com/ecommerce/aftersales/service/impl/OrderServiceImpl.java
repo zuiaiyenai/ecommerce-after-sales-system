@@ -24,8 +24,11 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -46,8 +49,53 @@ public class OrderServiceImpl implements OrderService {
         wrapper.eq(OrderInfo::getUserId, userId)
                .orderByDesc(OrderInfo::getCreateTime);
         List<OrderInfo> orders = orderInfoMapper.selectList(wrapper);
+        if (orders.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> orderIds = orders.stream()
+                .map(OrderInfo::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>()
+                .in(OrderItem::getOrderId, orderIds));
+        Set<Long> productIds = items.stream()
+                .map(OrderItem::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ProductInfo> productsById = productIds.isEmpty()
+                ? Map.of()
+                : productInfoMapper.selectBatchIds(productIds).stream()
+                .collect(Collectors.toMap(ProductInfo::getId, product -> product));
+        Map<Long, List<OrderItem>> itemsByOrderId = items.stream()
+                .collect(Collectors.groupingBy(OrderItem::getOrderId, LinkedHashMap::new, Collectors.toList()));
+
+        Map<Long, AfterSalesTicket> latestTicketsByOrderId = afterSalesTicketMapper.selectList(
+                        new LambdaQueryWrapper<AfterSalesTicket>()
+                                .in(AfterSalesTicket::getOrderId, orderIds)
+                                .orderByDesc(AfterSalesTicket::getCreateTime))
+                .stream()
+                .filter(ticket -> ticket.getOrderId() != null)
+                .collect(Collectors.toMap(
+                        AfterSalesTicket::getOrderId,
+                        ticket -> ticket,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        Set<Long> evaluatedOrderIds = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+                        .eq(ChatSession::getUserId, userId)
+                        .in(ChatSession::getOrderId, orderIds)
+                        .isNotNull(ChatSession::getSatisfaction))
+                .stream()
+                .map(ChatSession::getOrderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
         return orders.stream()
-                .map(this::convertToVO)
+                .map(order -> convertToVO(
+                        order,
+                        latestTicketsByOrderId.get(order.getId()),
+                        evaluatedOrderIds.contains(order.getId()),
+                        itemsByOrderId.getOrDefault(order.getId(), List.of()),
+                        productsById))
                 .collect(Collectors.toList());
     }
 
@@ -133,6 +181,7 @@ public class OrderServiceImpl implements OrderService {
     private OrderVO convertToVO(OrderInfo orderInfo) {
         OrderVO vo = new OrderVO();
         BeanUtils.copyProperties(orderInfo, vo);
+        vo.setOrderId(orderInfo.getId());
         vo.setMerchantDisplayName(resolveMerchantDisplayName(orderInfo.getMerchantCode()));
         vo.setStatusText(getStatusText(orderInfo.getStatus()));
         applyAfterSalesSnapshot(vo, orderInfo);
@@ -173,6 +222,34 @@ public class OrderServiceImpl implements OrderService {
         return vo;
     }
 
+    private OrderVO convertToVO(
+            OrderInfo orderInfo,
+            AfterSalesTicket ticket,
+            boolean userEvaluated,
+            List<OrderItem> items,
+            Map<Long, ProductInfo> productsById) {
+        OrderVO vo = new OrderVO();
+        BeanUtils.copyProperties(orderInfo, vo);
+        vo.setOrderId(orderInfo.getId());
+        vo.setMerchantDisplayName(resolveMerchantDisplayName(orderInfo.getMerchantCode()));
+        vo.setStatusText(getStatusText(orderInfo.getStatus()));
+        applyAfterSalesSnapshot(vo, orderInfo, ticket, userEvaluated);
+        vo.setItems(items.stream()
+                .map(item -> {
+                    OrderItemVO itemVO = new OrderItemVO();
+                    BeanUtils.copyProperties(item, itemVO);
+                    ProductInfo product = productsById.get(item.getProductId());
+                    if (product != null) {
+                        itemVO.setProductName(product.getProductName());
+                        itemVO.setProductImage(product.getMainImage());
+                        itemVO.setProductSpec(product.getDescription());
+                    }
+                    return itemVO;
+                })
+                .collect(Collectors.toList()));
+        return vo;
+    }
+
     private String resolveMerchantDisplayName(String merchantCode) {
         String code = StringUtils.hasText(merchantCode) ? merchantCode.trim() : DEFAULT_MERCHANT_CODE;
         if (DEFAULT_MERCHANT_CODE.equalsIgnoreCase(code)) {
@@ -186,12 +263,21 @@ public class OrderServiceImpl implements OrderService {
                 .eq(AfterSalesTicket::getOrderId, orderInfo.getId())
                 .orderByDesc(AfterSalesTicket::getCreateTime)
                 .last("limit 1"));
+        applyAfterSalesSnapshot(vo, orderInfo, ticket, ticket != null && hasUserEvaluatedForOrder(orderInfo));
+    }
+
+    private void applyAfterSalesSnapshot(
+            OrderVO vo,
+            OrderInfo orderInfo,
+            AfterSalesTicket ticket,
+            boolean userEvaluated) {
         if (ticket == null) {
             vo.setHasOpenAfterSales(false);
             vo.setHasAnyAfterSales(false);
             vo.setAfterSalesStatus(null);
             vo.setAfterSalesStatusText(null);
-            vo.setLatestAfterSalesTicketNo(null);
+            vo.setLatestTicketId(null);
+            vo.setLatestTicketNo(null);
             return;
         }
 
@@ -200,14 +286,15 @@ public class OrderServiceImpl implements OrderService {
         vo.setHasAnyAfterSales(true);
         vo.setAfterSalesStatus(ticket.getStatus());
         vo.setAfterSalesStatusText(getAfterSalesStatusText(ticket.getStatus()));
-        vo.setLatestAfterSalesTicketNo(ticket.getTicketNo());
+        vo.setLatestTicketId(String.valueOf(ticket.getId()));
+        vo.setLatestTicketNo(ticket.getTicketNo());
         if (hasOpenAfterSales) {
             vo.setStatus("AFTERSALE");
             vo.setStatusText("售后中");
             return;
         }
         if ("COMPLETED".equals(ticket.getStatus())) {
-            if (hasUserEvaluatedForOrder(orderInfo)) {
+            if (userEvaluated) {
                 vo.setStatus("COMPLETED");
                 vo.setStatusText("已完成");
             } else {

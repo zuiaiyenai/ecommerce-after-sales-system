@@ -1,0 +1,102 @@
+{
+  "dense": {
+    "case_count": 60,
+    "positive_case_count": 52,
+    "recall_at_5": 0.923077,
+    "recall_at_10": 0.923077,
+    "mrr_at_10": 0.967949,
+    "ndcg_at_5": 0.92683,
+    "hit_rate_at_5": 0.980769,
+    "filter_violation_rate": 0.0,
+    "filter_violation_count": 0,
+    "filter_checked_hit_count": 127,
+    "filter_safety_case_count": 60,
+    "filter_metadata_missing_count": 4,
+    "no_answer_false_positive_rate": 0.625,
+    "no_answer_case_count": 8,
+    "latency_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "average_rerank_cost": null,
+    "rerank_uplift": null,
+    "mode": "dense",
+    "total_time_seconds": 19.11,
+    "avg_latency_ms": 318.51
+  },
+  "keyword": {
+    "case_count": 60,
+    "positive_case_count": 52,
+    "recall_at_5": 0.839744,
+    "recall_at_10": 0.839744,
+    "mrr_at_10": 0.903846,
+    "ndcg_at_5": 0.850806,
+    "hit_rate_at_5": 0.903846,
+    "filter_violation_rate": 0.0,
+    "filter_violation_count": 0,
+    "filter_checked_hit_count": 98,
+    "filter_safety_case_count": 60,
+    "filter_metadata_missing_count": 4,
+    "no_answer_false_positive_rate": 0.125,
+    "no_answer_case_count": 8,
+    "latency_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "average_rerank_cost": null,
+    "rerank_uplift": null,
+    "mode": "keyword",
+    "total_time_seconds": 2.96,
+    "avg_latency_ms": 49.31
+  },
+  "rrf": {
+    "case_count": 60,
+    "positive_case_count": 52,
+    "recall_at_5": 0.929487,
+    "recall_at_10": 0.929487,
+    "mrr_at_10": 0.971154,
+    "ndcg_at_5": 0.932678,
+    "hit_rate_at_5": 0.980769,
+    "filter_violation_rate": 0.0,
+    "filter_violation_count": 0,
+    "filter_checked_hit_count": 129,
+    "filter_safety_case_count": 60,
+    "filter_metadata_missing_count": 6,
+    "no_answer_false_positive_rate": 0.75,
+    "no_answer_case_count": 8,
+    "latency_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "average_rerank_cost": null,
+    "rerank_uplift": null,
+    "mode": "rrf",
+    "total_time_seconds": 4.34,
+    "avg_latency_ms": 72.27
+  },
+  "rerank": {
+    "case_count": 60,
+    "positive_case_count": 52,
+    "recall_at_5": 0.929487,
+    "recall_at_10": 0.929487,
+    "mrr_at_10": 0.980769,
+    "ndcg_at_5": 0.944045,
+    "hit_rate_at_5": 0.980769,
+    "filter_violation_rate": 0.0,
+    "filter_violation_count": 0,
+    "filter_checked_hit_count": 117,
+    "filter_safety_case_count": 60,
+    "filter_metadata_missing_count": 6,
+    "no_answer_false_positive_rate": 0.5,
+    "no_answer_case_count": 8,
+    "latency_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "average_rerank_cost": null,
+    "rerank_uplift": null,
+    "mode": "rerank",
+    "total_time_seconds": 23.63,
+    "avg_latency_ms": 393.89
+  }
+}

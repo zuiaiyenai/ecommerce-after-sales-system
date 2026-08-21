@@ -95,7 +95,7 @@ public class KnowledgeService {
     }
 
     @Transactional(transactionManager = "pgTransactionManager")
-    Map<String, Object> createTextImport(KnowledgeUploadDto.TextImportRequest request) {
+    public Map<String, Object> createTextImport(KnowledgeUploadDto.TextImportRequest request) {
         String knowledgeType = normalizeKnowledgeType(request.getKnowledgeType());
         String merchantCode = normalizeMerchantCode(request.getScope(), request.getMerchantCode());
         Map<String, Object> metadata = copyCustomMetadata(request.getMetadata());

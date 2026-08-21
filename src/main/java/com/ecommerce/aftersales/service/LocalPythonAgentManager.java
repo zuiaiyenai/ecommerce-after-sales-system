@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.ServerSocket;
+import java.util.ArrayList;
+import java.util.List;
 import java.nio.file.Path;
 
 @Slf4j
@@ -78,23 +80,32 @@ public class LocalPythonAgentManager implements ApplicationRunner {
 
     private void startLocalAgent() {
         Path workingDir = Path.of(properties.getWorkingDirectory()).toAbsolutePath().normalize();
-        Path scriptPath = workingDir.resolve(properties.getScriptPath()).normalize();
-        if (!scriptPath.toFile().exists()) {
-            log.warn("Python agent script not found, skip auto-start: {}", scriptPath);
-            return;
+        List<String> command = new ArrayList<>();
+        command.add(properties.getPythonCommand());
+
+        String scriptPathValue = properties.getScriptPath() == null ? "" : properties.getScriptPath().trim();
+        if (!scriptPathValue.isEmpty()) {
+            Path scriptPath = workingDir.resolve(scriptPathValue).normalize();
+            if (!scriptPath.toFile().exists()) {
+                log.warn("Python agent script not found, skip auto-start: {}", scriptPath);
+                return;
+            }
+            command.add(scriptPath.toString());
+        } else {
+            command.addAll(properties.getLaunchArgs());
         }
 
-        ProcessBuilder builder = new ProcessBuilder(
-                properties.getPythonCommand(),
-                scriptPath.toString()
-        );
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(workingDir.toFile());
         builder.redirectErrorStream(true);
         builder.inheritIO();
         builder.environment().put("AFTERSALES_POLICY_BASE_URL", buildPolicyBaseUrl());
+        if (properties.getInternalToken() != null && !properties.getInternalToken().isBlank()) {
+            builder.environment().put("AGENT_INTERNAL_TOKEN", properties.getInternalToken());
+        }
         try {
             localAgentProcess = builder.start();
-            log.info("Local Python agent process started: {}", scriptPath);
+            log.info("Local Python agent process started: {}", String.join(" ", command));
         } catch (IOException exception) {
             log.error("Failed to start local Python agent.", exception);
         }

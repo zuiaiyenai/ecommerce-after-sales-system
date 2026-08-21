@@ -1,0 +1,3 @@
+# Local-only shared Java/Python Agent configuration. Copy this file to
+# agent.local.properties, then replace the token with a long random value.
+app.agent.internal-token=replace-with-a-long-random-local-secret

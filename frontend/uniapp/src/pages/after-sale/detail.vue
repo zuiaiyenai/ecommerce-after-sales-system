@@ -152,7 +152,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
 import { resolveAfterSalesTicketDisplay, resolveOrderAfterSalesSnapshot } from '../../utils/orderStatus'
 
@@ -161,7 +161,7 @@ const hasAfterSale = ref(false)
 const canApplyAfterSale = ref(false)
 
 const orderInfo = ref({
-  id: '',
+  orderId: '',
   productImage: '',
   productName: '',
   spec: '',
@@ -183,7 +183,7 @@ const orderInfo = ref({
 })
 
 const afterSaleInfo = ref({
-  id: '',
+  ticketId: '',
   ticketNo: '',
   orderId: '',
   reasonText: '',
@@ -220,17 +220,28 @@ const reasonMap = {
   'OTHER': '其他原因'
 }
 
-onLoad(async (options) => {
+let lastLoadOptions = null
+let detailLoaded = false
+
+async function reloadDetail(options = {}) {
   if (options.ticketNo) {
     // 从售后列表进入
     await loadFromAfterSale(options.ticketNo)
   } else if (options.orderId) {
     // 从订单列表进入
     await loadFromOrder(options.orderId)
-  } else if (options.id) {
-    // 兼容旧入口：历史版本首页传的是 id，实际含义是订单ID
-    await loadFromOrder(options.id)
   }
+  detailLoaded = true
+}
+
+onLoad(async (options) => {
+  lastLoadOptions = options
+  await reloadDetail(options)
+})
+
+onShow(async () => {
+  if (!detailLoaded || !lastLoadOptions) return
+  await reloadDetail(lastLoadOptions)
 })
 
 // 从订单进入
@@ -254,6 +265,16 @@ async function loadFromOrder(orderId) {
       // 有售后
       hasAfterSale.value = true
       pageTitle.value = '售后详情'
+      if (!ticket) {
+        const snapshot = resolveOrderAfterSalesSnapshot(order)
+        const latestTicketId = snapshot.latestTicketId || ''
+        const latestTicketNo = snapshot.latestTicketNo || ''
+        if (!latestTicketId && latestTicketNo) {
+          try {
+            ticket = await request({ url: '/aftersales/byTicketNo/' + latestTicketNo })
+          } catch (e) {}
+        }
+      }
       if (ticket) {
         fillAfterSaleInfo(ticket)
       } else {
@@ -302,7 +323,7 @@ function fillOrderInfo(order) {
   const snapshot = resolveOrderAfterSalesSnapshot(order)
   canApplyAfterSale.value = !snapshot.hasAnyAfterSales && (order.status === 'SHIPPED' || order.status === 'RECEIVED')
   orderInfo.value = {
-    id: order.id || '',
+    orderId: order.orderId || '',
     productImage: (item && item.productImage) || '',
     productName: (item && item.productName) || '',
     spec: (item && item.productSpec) || '',
@@ -327,7 +348,7 @@ function fillOrderInfo(order) {
 function fillAfterSaleInfo(ticket) {
   const display = resolveAfterSalesTicketDisplay(ticket)
   afterSaleInfo.value = {
-    id: ticket.id || '',
+    ticketId: ticket.ticketId || '',
     ticketNo: ticket.ticketNo || '',
     orderId: ticket.orderId || '',
     reasonText: reasonMap[ticket.reason] || ticket.reason || '',
@@ -347,9 +368,9 @@ function fillAfterSaleInfo(ticket) {
 function fillAfterSaleInfoFromOrder(order) {
   const snapshot = resolveOrderAfterSalesSnapshot(order)
   afterSaleInfo.value = {
-    id: '',
-    ticketNo: '',
-    orderId: order.id || '',
+    ticketId: snapshot.latestTicketId || '',
+    ticketNo: snapshot.latestTicketNo || '',
+    orderId: order.orderId || '',
     reasonText: '已发起售后',
     description: '该订单已有售后记录，可继续进入客服咨询跟进处理。',
     status: snapshot.afterSalesStatus.toUpperCase(),
@@ -506,10 +527,10 @@ function previewImage(index) {
 
 function contactService() {
   const info = orderInfo.value
-  const afterSaleId = afterSaleInfo.value.id
-  const orderId = afterSaleInfo.value.orderId || info.id
+  const ticketId = afterSaleInfo.value.ticketId
+  const orderId = afterSaleInfo.value.orderId || info.orderId
   const params = [
-    afterSaleId ? 'afterSaleId=' + encodeURIComponent(afterSaleId) : '',
+    ticketId ? 'ticketId=' + encodeURIComponent(ticketId) : '',
     orderId ? 'orderId=' + encodeURIComponent(orderId) : '',
     'orderNo=' + encodeURIComponent(info.orderNo || ''),
     'productName=' + encodeURIComponent(info.productName || ''),
@@ -535,7 +556,7 @@ function applyAfterSale() {
     uni.showToast({ title: '当前订单暂不可申请售后', icon: 'none' })
     return
   }
-  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.id })
+  uni.navigateTo({ url: '/pages/after-sale/apply?orderId=' + orderInfo.value.orderId })
 }
 </script>
 

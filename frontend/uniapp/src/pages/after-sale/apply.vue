@@ -165,10 +165,13 @@ async function submit() {
       method: 'POST',
       data: afterSalesData
     })
+    const ticketId = result?.ticketId || result?.ticket_id || ''
+    const ticketNo = result?.ticketNo || result?.ticket_no || ''
 
     // 创建成功后，跳转到对话页面，带上图片信息
     const pendingPayload = {
       orderId: orderId.value,
+      ticketId,
       orderNo: orderData.value.orderNo || '',
       reasonValue: selectedReason.value,
       reasonLabel,
@@ -176,12 +179,18 @@ async function submit() {
       initialMessage: `我的售后申请已提交，原因是${reasonLabel}。${description.value.trim()}`,
       imagePaths: [...images.value],
       createdAt: Date.now(),
-      ticketNo: result?.ticketNo || ''
+      ticketNo
     }
 
     uni.setStorageSync(getPendingApplyKey(orderId.value), pendingPayload)
+    const params = [
+      `orderId=${encodeURIComponent(orderId.value)}`,
+      'fromApply=1',
+      ticketId ? `ticketId=${encodeURIComponent(ticketId)}` : '',
+      ticketNo ? `ticketNo=${encodeURIComponent(ticketNo)}` : ''
+    ].filter(Boolean).join('&')
     uni.redirectTo({
-      url: `/pages/chat/consult?orderId=${orderId.value}&fromApply=1`
+      url: `/pages/chat/consult?${params}`
     })
   } catch (error) {
     const errorMsg = error.message || error.msg || '创建售后申请失败'

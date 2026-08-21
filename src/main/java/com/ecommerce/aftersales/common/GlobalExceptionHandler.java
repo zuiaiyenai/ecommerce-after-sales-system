@@ -25,7 +25,8 @@ public class GlobalExceptionHandler {
                 "currentRevision", String.valueOf(exception.getCurrentRevision()),
                 "reviewStatus", exception.getReviewStatus());
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ApiResponse<>(false, HttpStatus.CONFLICT.value(), exception.getMessage(), data));
+                .body(new ApiResponse<>(false, HttpStatus.CONFLICT.value(),
+                        "当前数据已被更新，请刷新后重试", data));
     }
 
     @ExceptionHandler(BizException.class)
@@ -36,7 +37,7 @@ public class GlobalExceptionHandler {
         if (status == HttpStatus.TOO_MANY_REQUESTS) {
             response.header("Retry-After", "1");
         }
-        return response.body(ApiResponse.fail(exception.getCode(), exception.getMessage()));
+        return response.body(ApiResponse.fail(exception.getCode(), publicMessage(status)));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -46,13 +47,15 @@ public class GlobalExceptionHandler {
                 .map(error -> error.getField() + ": " + error.getDefaultMessage())
                 .orElse(ErrorCode.BAD_REQUEST.getMessage());
         log.warn("request validation failed: {}", message);
-        return ResponseEntity.badRequest().body(ApiResponse.fail(ErrorCode.BAD_REQUEST, message));
+        return ResponseEntity.badRequest().body(ApiResponse.fail(
+                ErrorCode.BAD_REQUEST, "请求参数不正确，请检查后重试"));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleConstraintViolationException(ConstraintViolationException exception) {
         log.warn("constraint violation: {}", exception.getMessage());
-        return ResponseEntity.badRequest().body(ApiResponse.fail(ErrorCode.BAD_REQUEST, exception.getMessage()));
+        return ResponseEntity.badRequest().body(ApiResponse.fail(
+                ErrorCode.BAD_REQUEST, "请求参数不正确，请检查后重试"));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -98,5 +101,17 @@ public class GlobalExceptionHandler {
             return fallback;
         }
         return status;
+    }
+
+    private String publicMessage(HttpStatus status) {
+        return switch (status) {
+            case BAD_REQUEST -> "请求参数不正确，请检查后重试";
+            case UNAUTHORIZED -> "登录状态已失效，请重新登录";
+            case FORBIDDEN -> "当前账号无权执行此操作";
+            case NOT_FOUND -> "请求的业务记录不存在或已失效";
+            case CONFLICT -> "当前状态已变化，请刷新后重试";
+            case TOO_MANY_REQUESTS -> "请求较多，请稍后重试";
+            default -> "服务暂时不可用，请稍后重试";
+        };
     }
 }

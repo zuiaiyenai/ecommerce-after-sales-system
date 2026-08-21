@@ -14,9 +14,9 @@
         <text class="empty-text">暂无售后记录</text>
       </view>
 
-      <view v-for="item in filteredList" :key="item.id" class="card" @tap="goDetail(item.afterSaleNo)">
+      <view v-for="item in filteredList" :key="item.ticketId" class="card" @tap="goDetail(item.ticketNo)">
         <view class="card-header">
-          <text class="card-no">售后单号：{{ item.afterSaleNo }}</text>
+          <text class="card-no">售后单号：{{ item.ticketNo }}</text>
           <text class="card-status" :class="item.statusClass">{{ item.statusText }}</text>
         </view>
         <view class="divider"></view>
@@ -32,8 +32,8 @@
         <view class="card-footer">
           <text class="card-time">{{ item.createTime }}</text>
           <view class="card-actions">
-            <button v-if="item.status === 'pending' || item.status === 'processing'" class="action-btn primary" @tap.stop="goChat(item.id)">联系客服</button>
-            <button class="action-btn" @tap.stop="goDetail(item.afterSaleNo)">查看详情</button>
+            <button v-if="item.status === 'pending' || item.status === 'processing'" class="action-btn primary" @tap.stop="goChat(item.ticketId)">联系客服</button>
+            <button class="action-btn" @tap.stop="goDetail(item.ticketNo)">查看详情</button>
           </view>
         </view>
       </view>
@@ -51,7 +51,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
 import { resolveAfterSalesTicketDisplay } from '../../utils/orderStatus'
 
@@ -71,8 +71,8 @@ const afterSaleList = computed(() => {
   return allAfterSales.value.map(a => {
     const display = resolveAfterSalesTicketDisplay(a)
     return {
-      id: a.id,
-      afterSaleNo: a.ticketNo,
+      ticketId: a.ticketId,
+      ticketNo: a.ticketNo,
       productName: a.productName,
       productIcon: a.productImage || '',
       reason: a.reason,
@@ -104,12 +104,16 @@ onLoad(() => {
   loadAfterSales()
 })
 
+onShow(() => {
+  loadAfterSales()
+})
+
 function goDetail(ticketNo) {
   uni.navigateTo({ url: '/pages/after-sale/detail?ticketNo=' + ticketNo })
 }
 
 function goChat(id) {
-  uni.navigateTo({ url: '/pages/chat/consult?afterSaleId=' + id })
+  uni.navigateTo({ url: '/pages/chat/consult?ticketId=' + id })
 }
 
 function applyAfterSale() {

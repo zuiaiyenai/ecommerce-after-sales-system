@@ -25,6 +25,10 @@ export function getAgentBaseUrl() {
   return `${getApiBaseUrl()}/agent`
 }
 
+export function getChatWebSocketUrl() {
+  return `${getApiBaseUrl().replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:')}/ws/chat`
+}
+
 export function getRequestTimeout() {
   const stored = Number(readStoredValue('requestTimeout'))
   return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_TIMEOUT

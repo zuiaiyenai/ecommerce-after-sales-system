@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from typing import Any, Callable
 
-from ..domain_models import Attachment
+from ..domain.models import Attachment
 from ..integrations.java_tool_client import JavaToolClient, JavaToolError
 from ..retrieval.pgvector_retriever import PgVectorKnowledgeRetriever
 from ..providers.vision_review_service import VisionReviewService

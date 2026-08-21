@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.service;
 
 import com.ecommerce.aftersales.common.PageResult;
+import com.ecommerce.aftersales.dto.AdminAgentOperationsDtos.AgentOperationsView;
 import com.ecommerce.aftersales.dto.AdminConsoleDtos.*;
 
 public interface AdminConsoleService {
@@ -12,6 +13,8 @@ public interface AdminConsoleService {
     AdminProfile getCurrentAdmin();
 
     AdminOverview getOverview();
+
+    AgentOperationsView getAgentOperations(String range);
 
     PageResult<ServiceAccountView> listServiceAccounts(long page, long size);
 

@@ -1,4 +1,5 @@
 import { getAgentBaseUrl, getAgentRequestTimeout } from './apiConfig'
+import { uploadFile } from './request'
 import { normalizeOrderStatus, resolveOrderAfterSalesSnapshot } from './orderStatus'
 
 const STORAGE_PREFIX = 'after_sales_agent'
@@ -6,6 +7,7 @@ const STORAGE_PREFIX = 'after_sales_agent'
 function agentRequest(options) {
   const requestOptions = options || {}
   const agentBaseUrl = getAgentBaseUrl()
+  const token = uni.getStorageSync('token') || ''
 
   return new Promise((resolve, reject) => {
     uni.request({
@@ -15,21 +17,21 @@ function agentRequest(options) {
       timeout: getAgentRequestTimeout(),
       header: {
         'content-type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(requestOptions.header || {})
       },
       success: (res) => {
         const body = res.data || {}
         if (body.code !== undefined && body.code !== 200) {
-          const error = new Error(body.message || '操作失败')
+          const error = new Error('智能售后服务暂时不可用，请稍后重试')
           error.code = body.code
-          error.data = body.data
           reject(error)
           return
         }
         resolve(body.data !== undefined ? body.data : body)
       },
-      fail: (error) => {
-        reject(new Error(error?.errMsg || '当前售后服务暂时无法连接'))
+      fail: () => {
+        reject(new Error('当前售后服务暂时无法连接，请稍后重试'))
       }
     })
   })
@@ -79,11 +81,46 @@ export function filePathToDataUrl(filePath) {
 export async function buildAttachments(imagePaths = []) {
   const attachments = []
   for (const filePath of imagePaths) {
-    const source = await filePathToDataUrl(filePath)
+    const [source, uploadResult] = await Promise.all([
+      filePathToDataUrl(filePath),
+      uploadFile({ url: '/upload/image', filePath, name: 'file' })
+    ])
+    const fileUrl = resolveUploadedFileUrl(uploadResult)
+    if (!fileUrl) {
+      throw new Error('图片暂未上传完成，请稍后重试')
+    }
     attachments.push({
       kind: 'image',
       name: filePath.split(/[\\/]/).pop() || 'image.jpg',
+      file_url: fileUrl,
       source
+    })
+  }
+  return attachments
+}
+
+function resolveUploadedFileUrl(uploadResult) {
+  return String(
+    uploadResult?.fileUrl
+      || uploadResult?.file_url
+      || uploadResult?.data?.fileUrl
+      || uploadResult?.data?.file_url
+      || ''
+  ).trim()
+}
+
+export async function uploadEvidenceAttachments(imagePaths = []) {
+  const attachments = []
+  for (const filePath of imagePaths) {
+    const uploadResult = await uploadFile({ url: '/upload/image', filePath, name: 'file' })
+    const fileUrl = resolveUploadedFileUrl(uploadResult)
+    if (!fileUrl) {
+      throw new Error('图片暂未上传完成，请稍后重试')
+    }
+    attachments.push({
+      kind: 'image',
+      name: filePath.split(/[\\/]/).pop() || 'image.jpg',
+      file_url: fileUrl
     })
   }
   return attachments
@@ -97,7 +134,7 @@ export function buildOrderHint(selectedOrder = {}) {
 
 function getCurrentUserId() {
   const userInfo = uni.getStorageSync('userInfo') || {}
-  return String(userInfo.id || userInfo.userId || 'u1001')
+  return String(userInfo.userId || 'u1001')
 }
 
 function hasLocalAfterSalesTicket(orderNo) {
@@ -108,6 +145,15 @@ function hasLocalAfterSalesTicket(orderNo) {
   } catch (error) {
     return false
   }
+}
+
+function resolveTicketId(order = {}, extra = {}) {
+  const value = extra.ticketId
+    || extra.ticket_id
+    || order.ticketId
+    || order.ticket_id
+    || order.latestTicketId
+  return value === undefined || value === null ? '' : String(value)
 }
 
 export function buildSelectedOrder(order = {}, extra = {}) {
@@ -123,7 +169,8 @@ export function buildSelectedOrder(order = {}, extra = {}) {
     CLOSED: 'closed',
     REFUNDED: 'refunded'
   }
-  const orderNo = String(order.orderNo || order.id || extra.orderId || '')
+  const orderId = String(order.orderId || extra.orderId || '')
+  const orderNo = String(order.orderNo || extra.orderNo || '')
   const hasTicket = hasLocalAfterSalesTicket(orderNo)
   const orderStatus = normalizeOrderStatus(order.status)
   const afterSalesSnapshot = resolveOrderAfterSalesSnapshot({
@@ -131,16 +178,17 @@ export function buildSelectedOrder(order = {}, extra = {}) {
     hasOpenAfterSales: extra.hasOpenAfterSales ?? order.hasOpenAfterSales,
     afterSalesStatus: extra.afterSalesStatus || order.afterSalesStatus,
     afterSalesStatusText: extra.afterSalesStatusText || order.afterSalesStatusText,
-    latestAfterSalesTicketNo: order.latestAfterSalesTicketNo || (hasTicket ? orderNo : '')
+    latestTicketNo: order.latestTicketNo || (hasTicket ? orderNo : '')
   })
   const hasOpenAfterSales = Boolean(extra.hasOpenAfterSales ?? afterSalesSnapshot.hasOpenAfterSales)
   const afterSalesStatus = String(extra.afterSalesStatus || afterSalesSnapshot.afterSalesStatus || 'not_applied')
   const uploadedEvidence = Array.isArray(extra.uploadedEvidence)
     ? extra.uploadedEvidence
     : (extra.uploadedEvidence ? [extra.uploadedEvidence] : [])
+  const ticketId = resolveTicketId(order, extra)
 
   return {
-    order_id: orderNo,
+    order_id: orderId,
     user_id: String(extra.userId || getCurrentUserId()),
     merchant_code: String(order.merchantCode || extra.merchantCode || 'MERCHANT_DEMO'),
     merchant_display_name: String(order.merchantDisplayName || extra.merchantDisplayName || ''),
@@ -153,7 +201,8 @@ export function buildSelectedOrder(order = {}, extra = {}) {
     logistics_status: String(extra.logisticsStatus || order.statusText || '待更新'),
     has_open_after_sales: hasOpenAfterSales,
     uploaded_evidence: uploadedEvidence,
-    existing_ticket_no: String(extra.existingTicketNo || order.latestAfterSalesTicketNo || '')
+    existing_ticket_no: String(extra.existingTicketNo || order.latestTicketNo || ''),
+    ticket_id: ticketId
   }
 }
 
@@ -176,9 +225,13 @@ export function buildChatPayload({
   recentHistory = []
 }) {
   const selectedOrder = order ? buildSelectedOrder(order, selectedOrderExtra) : null
+  const ticketId = selectedOrder
+    ? selectedOrder.ticket_id
+    : resolveTicketId({}, selectedOrderExtra)
   const payload = {
     user_id: selectedOrder ? selectedOrder.user_id : String(selectedOrderExtra.userId || getCurrentUserId()),
     order_id: selectedOrder ? selectedOrder.order_id : (selectedOrderExtra.orderId || ''),
+    ticket_id: ticketId || undefined,
     session_id: normalizeSessionId(sessionId),
     message,
     description,
@@ -208,6 +261,48 @@ export function chat(payload) {
     method: 'POST',
     data: payload
   })
+}
+
+// POST SSE for WeChat/uni-app. Returns RequestTask so callers can abort on page unload.
+export function streamChat(payload, handlers = {}) {
+  const token = uni.getStorageSync('token') || ''
+  let buffer = ''
+  let currentEvent = 'message'
+  const decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null
+  const task = uni.request({
+    url: `${getAgentBaseUrl()}/chat/stream`,
+    method: 'POST',
+    data: payload,
+    timeout: getAgentRequestTimeout(),
+    enableChunked: true,
+    header: {
+      'content-type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    success: () => handlers.onComplete?.(),
+    fail: (error) => {
+      if (!String(error?.errMsg || '').includes('abort')) handlers.onError?.(error)
+    }
+  })
+  task.onChunkReceived?.(({ data }) => {
+    const text = decoder
+      ? decoder.decode(data, { stream: true })
+      : decodeURIComponent(escape(String.fromCharCode(...new Uint8Array(data))))
+    buffer += text
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (line.startsWith('event:')) currentEvent = line.slice(6).trim()
+      if (!line.startsWith('data:')) continue
+      try {
+        handlers.onEvent?.(currentEvent, JSON.parse(line.slice(5).trim()))
+      } catch (error) {
+        handlers.onError?.(error)
+      }
+    }
+  })
+  return task
 }
 
 export function reviewImages(payload) {

@@ -155,13 +155,13 @@ onMounted(loadOrders);
         <div
           v-for="order in filteredOrders"
           v-else
-          :key="order.id"
+          :key="order.orderId"
           class="order-card"
           role="button"
           tabindex="0"
-          @click="openOrder(order.id)"
-          @keydown.enter="openOrder(order.id)"
-          @keydown.space.prevent="openOrder(order.id)"
+          @click="openOrder(order.orderId)"
+          @keydown.enter="openOrder(order.orderId)"
+          @keydown.space.prevent="openOrder(order.orderId)"
         >
           <span class="ticket-mark order">OR</span>
           <span class="order-main-copy">
@@ -175,7 +175,7 @@ onMounted(loadOrders);
             <em>{{ order.logistics }}</em>
           </span>
           <span class="order-actions">
-            <button v-if="order.status === 'PAID'" type="button" class="ghost-mini" :disabled="loading" @click.stop="handleShip(order.id)">发货</button>
+            <button v-if="order.status === 'PAID'" type="button" class="ghost-mini" :disabled="loading" @click.stop="handleShip(order.orderId)">发货</button>
             <button
               v-if="order.relatedTicketId"
               type="button"

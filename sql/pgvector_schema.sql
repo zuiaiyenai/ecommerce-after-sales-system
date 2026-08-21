@@ -34,21 +34,23 @@ CREATE TABLE IF NOT EXISTS knowledge_document
 
 CREATE TABLE IF NOT EXISTS knowledge_chunk
 (
-    id            BIGSERIAL PRIMARY KEY,
-    document_id   BIGINT NOT NULL REFERENCES knowledge_document(id) ON DELETE CASCADE,
-    document_type VARCHAR(30) NOT NULL,
-    chunk_index   INTEGER NOT NULL,
-    chunk_text    TEXT NOT NULL,
-    embedding     vector(1024) NOT NULL,
-    metadata      JSONB NULL,
-    revision      BIGINT NOT NULL DEFAULT 1,
+    id               BIGSERIAL PRIMARY KEY,
+    document_id      BIGINT NOT NULL REFERENCES knowledge_document(id) ON DELETE CASCADE,
+    document_type    VARCHAR(30) NOT NULL,
+    chunk_index      INTEGER NOT NULL,
+    chunk_text       TEXT NOT NULL,
+    embedding        vector(1024) NOT NULL,
+    metadata         JSONB NULL,
+    revision         BIGINT NOT NULL DEFAULT 1,
     product_categories TEXT[] NULL,
-    scenes        TEXT[] NULL,
-    intents       TEXT[] NULL,
-    heading_path  TEXT[] NOT NULL DEFAULT '{}',
-    page_number   INTEGER NULL,
-    search_text   TEXT NOT NULL DEFAULT '',
-    create_time   TIMESTAMP NOT NULL DEFAULT NOW()
+    scenes           TEXT[] NULL,
+    intents          TEXT[] NULL,
+    heading_path     TEXT[] NOT NULL DEFAULT '{}',
+    page_number      INTEGER NULL,
+    search_text      TEXT NOT NULL DEFAULT '',
+    lexical_text     TEXT NOT NULL DEFAULT '',
+    search_vector    tsvector NOT NULL DEFAULT ''::tsvector,
+    create_time      TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_chunk_draft
@@ -98,6 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_kc_product_categories ON knowledge_chunk USING GI
 CREATE INDEX IF NOT EXISTS idx_kc_scenes ON knowledge_chunk USING GIN (scenes);
 CREATE INDEX IF NOT EXISTS idx_kc_intents ON knowledge_chunk USING GIN (intents);
 CREATE INDEX IF NOT EXISTS idx_kc_search_text_trgm ON knowledge_chunk USING GIN (search_text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_kc_search_vector_fts
+    ON knowledge_chunk USING GIN (search_vector gin_tsvector_ops);
 
 CREATE INDEX IF NOT EXISTS idx_kc_embedding ON knowledge_chunk
     USING ivfflat (embedding vector_cosine_ops)

@@ -166,7 +166,7 @@ async function handleMainImageChange(event) {
   formError.value = '';
   try {
     const result = await uploadProductImage(file);
-    form.mainImage = result.url || '';
+    form.mainImage = result.fileUrl || '';
     form.images = form.mainImage ? [form.mainImage] : [];
     imageErrors.value = new Set();
     shell?.setAction('商品图片已上传');

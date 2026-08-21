@@ -1,0 +1,39 @@
+[
+  {
+    "message": "商品出现功能异常，但目前没有图片凭证，我应该怎么申请售后？",
+    "description": "功能类质量问题，缺少可核验证据。",
+    "skip_image_review": true,
+    "attachments": []
+  },
+  {
+    "message": "包裹送到时外包装破损，商品也有磕碰，售后需要准备什么材料？",
+    "description": "物流破损场景，尚未上传图片。",
+    "skip_image_review": true,
+    "attachments": []
+  },
+  {
+    "message": "收到的商品型号和下单不一致，我想换货，流程是什么？",
+    "description": "错发商品换货咨询。",
+    "skip_image_review": true,
+    "attachments": []
+  },
+  {
+    "message": "退款已经提交几天了还没到账，能帮我说明处理进度吗？",
+    "description": "退款进度咨询。",
+    "skip_image_review": true,
+    "attachments": []
+  },
+  {
+    "message": "商家之前拒绝过我的售后申请，我应该补充哪些证据重新提交？",
+    "description": "售后被拒后的补充证据咨询。",
+    "skip_image_review": true,
+    "attachments": []
+  },
+  {
+    "message": "这个问题已经拖了很久，我很着急，希望尽快转人工处理。",
+    "description": "高负向情绪与人工转接诉求。",
+    "human_request_count": 1,
+    "skip_image_review": true,
+    "attachments": []
+  }
+]

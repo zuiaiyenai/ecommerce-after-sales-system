@@ -245,7 +245,7 @@ class KnowledgeIngestionService:
 
         from after_sales_agent.providers.llm_client import get_llm_client
 
-        return get_llm_client().chat_json(
+        return get_llm_client().generate_structured(
             system_prompt=(
                 "Classify one knowledge draft using only the allowed metadata values. "
                 "Return JSON with product_categories, scenes, intents, confidence, and reason."
@@ -259,6 +259,17 @@ class KnowledgeIngestionService:
                 },
                 ensure_ascii=False,
             ),
+            schema={
+                "type": "object",
+                "required": ["product_categories", "scenes", "intents", "confidence", "reason"],
+                "properties": {
+                    "product_categories": {"type": "array", "items": {"type": "string"}},
+                    "scenes": {"type": "array", "items": {"type": "string"}},
+                    "intents": {"type": "array", "items": {"type": "string"}},
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+            },
         )
 
     @staticmethod

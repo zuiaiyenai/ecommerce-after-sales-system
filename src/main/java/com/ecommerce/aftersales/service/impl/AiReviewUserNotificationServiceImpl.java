@@ -39,30 +39,49 @@ public class AiReviewUserNotificationServiceImpl implements AiReviewUserNotifica
 
     @Override
     public void notifyReviewApproved(AfterSalesTicket ticket) {
-        appendSystemNotification(ticket, MESSAGE_APPROVED);
+        appendSystemNotification(ticket, MESSAGE_APPROVED, false);
     }
 
     @Override
     public void notifyManualReviewRequired(AfterSalesTicket ticket) {
-        appendSystemNotification(ticket, MESSAGE_MANUAL_REQUIRED);
+        appendSystemNotification(ticket, MESSAGE_MANUAL_REQUIRED, true);
     }
 
-    private void appendSystemNotification(AfterSalesTicket ticket, String content) {
+    private void appendSystemNotification(
+            AfterSalesTicket ticket,
+            String content,
+            boolean moveToHumanQueue
+    ) {
         if (ticket == null || ticket.getUserId() == null) {
             return;
         }
         ChatSession session = resolveSession(ticket);
+
+        String businessKey = "review:result:" + ticket.getAiReviewRequestId() + ":"
+                + (moveToHumanQueue ? "MANUAL_REQUIRED" : "APPROVE");
+        ChatMessage existingMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getBusinessKey, businessKey)
+                .last("limit 1"));
+        if (existingMessage != null) {
+            return;
+        }
 
         ChatMessage message = new ChatMessage();
         message.setSessionId(session.getId());
         message.setRole("SYSTEM");
         message.setContent(content);
         message.setMessageType("TEXT");
+        message.setBusinessKey(businessKey);
         chatMessageMapper.insert(message);
 
         LocalDateTime messageTime = message.getCreateTime() == null ? LocalDateTime.now() : message.getCreateTime();
         session.setUserHidden(0);
         session.setUpdateTime(messageTime);
+        if (moveToHumanQueue) {
+            session.setMode("HUMAN");
+            session.setStatus("WAITING");
+            session.setResolved(0);
+        }
         if (!StringUtils.hasText(session.getUserQuery())) {
             session.setUserQuery(shortText(firstNonBlank(ticket.getProductName(), "售后进度通知"), 500));
         }

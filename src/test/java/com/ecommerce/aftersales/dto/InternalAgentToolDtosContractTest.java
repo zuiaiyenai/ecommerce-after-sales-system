@@ -64,6 +64,9 @@ class InternalAgentToolDtosContractTest {
         AfterSalesTicket ticket = new AfterSalesTicket();
         ticket.setId(9_007_199_254_740_995L);
         ticket.setPolicyVersion("v2");
+        ticket.setReason("商品质量问题");
+        ticket.setReasonDetail("外壳破裂");
+        ticket.setDescription("刚拆封使用就发现耳机外壳破裂，希望退款。");
         ticket.setCreateTime(LocalDateTime.of(2026, 7, 20, 9, 0));
 
         InternalAgentToolDtos.OrderSummary orderResult = ReflectionTestUtils.invokeMethod(
@@ -75,6 +78,10 @@ class InternalAgentToolDtosContractTest {
 
         assertThat(OffsetDateTime.parse(orderJson.path("createTime").asText())).isNotNull();
         assertThat(ticketJson.path("policyVersion").asText()).isEqualTo("v2");
+        assertThat(ticketJson.path("reason").asText()).isEqualTo("商品质量问题");
+        assertThat(ticketJson.path("reasonDetail").asText()).isEqualTo("外壳破裂");
+        assertThat(ticketJson.path("description").asText())
+                .isEqualTo("刚拆封使用就发现耳机外壳破裂，希望退款。");
         assertThat(OffsetDateTime.parse(ticketJson.path("afterSalesAppliedAt").asText())).isNotNull();
     }
 

@@ -3,11 +3,13 @@ package com.ecommerce.aftersales.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.PageResult;
+import com.ecommerce.aftersales.dto.AdminAgentOperationsDtos.AgentOperationsView;
 import com.ecommerce.aftersales.dto.AdminConsoleDtos.*;
 import com.ecommerce.aftersales.entity.ChatSession;
 import com.ecommerce.aftersales.entity.SysUser;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
 import com.ecommerce.aftersales.mapper.SysUserMapper;
+import com.ecommerce.aftersales.service.AgentOperationsMonitoringService;
 import com.ecommerce.aftersales.service.AdminConsoleService;
 import com.ecommerce.aftersales.util.JwtTokenUtil;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +39,7 @@ public class AdminConsoleServiceImpl implements AdminConsoleService {
     private final ChatSessionMapper chatSessionMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
+    private final AgentOperationsMonitoringService agentOperationsMonitoringService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -105,6 +108,12 @@ public class AdminConsoleServiceImpl implements AdminConsoleService {
                 "当前管理员端先承接身份治理，后续再扩展知识库治理模块。"
         ));
         return overview;
+    }
+
+    @Override
+    public AgentOperationsView getAgentOperations(String range) {
+        ensureAdmin();
+        return agentOperationsMonitoringService.load(range);
     }
 
     @Override

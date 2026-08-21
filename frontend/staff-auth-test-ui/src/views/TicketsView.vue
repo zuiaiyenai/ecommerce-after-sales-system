@@ -87,13 +87,13 @@ async function loadPage() {
 }
 
 async function handleApprove(ticketId) {
-  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.id === ticketId))) {
+  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.ticketId === ticketId))) {
     return;
   }
   actionLoading.value = `approve:${ticketId}`;
   try {
     const updated = await approveTicket(ticketId);
-    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    tickets.value = tickets.value.map((item) => (item.ticketId === updated.ticketId ? updated : item));
     shell?.setAction('售后申请审核已通过，进入处理中');
     shell?.refreshShell();
   } catch (error) {
@@ -104,13 +104,13 @@ async function handleApprove(ticketId) {
 }
 
 async function handleReject(ticketId) {
-  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.id === ticketId))) {
+  if (actionLoading.value || !isReviewable(tickets.value.find((item) => item.ticketId === ticketId))) {
     return;
   }
   actionLoading.value = `reject:${ticketId}`;
   try {
     const updated = await rejectTicket(ticketId);
-    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    tickets.value = tickets.value.map((item) => (item.ticketId === updated.ticketId ? updated : item));
     shell?.setAction('售后申请已驳回');
     shell?.refreshShell();
   } catch (error) {
@@ -121,14 +121,14 @@ async function handleReject(ticketId) {
 }
 
 async function handleComplete(ticketId) {
-  const ticket = tickets.value.find((item) => item.id === ticketId);
+  const ticket = tickets.value.find((item) => item.ticketId === ticketId);
   if (actionLoading.value || ticket?.status !== 'PROCESSING') {
     return;
   }
   actionLoading.value = `complete:${ticketId}`;
   try {
     const updated = await completeTicket(ticketId);
-    tickets.value = tickets.value.map((item) => (item.id === updated.id ? updated : item));
+    tickets.value = tickets.value.map((item) => (item.ticketId === updated.ticketId ? updated : item));
     shell?.setAction('售后处理已完成');
     shell?.refreshShell();
   } catch (error) {
@@ -231,13 +231,13 @@ onMounted(loadPage);
       <div class="ticket-card-list">
         <div
           v-for="ticket in visibleTickets"
-          :key="ticket.id"
+          :key="ticket.ticketId"
           class="ticket-card"
           role="button"
           tabindex="0"
-          @click="router.push(`/tickets/${ticket.id}`)"
-          @keydown.enter="router.push(`/tickets/${ticket.id}`)"
-          @keydown.space.prevent="router.push(`/tickets/${ticket.id}`)"
+          @click="router.push(`/tickets/${ticket.ticketId}`)"
+          @keydown.enter="router.push(`/tickets/${ticket.ticketId}`)"
+          @keydown.space.prevent="router.push(`/tickets/${ticket.ticketId}`)"
         >
           <span class="ticket-mark">TK</span>
           <span class="ticket-main-copy">
@@ -250,16 +250,16 @@ onMounted(loadPage);
             <span>{{ priorityLabel(ticket.priority) }}</span>
           </span>
           <span v-if="isReviewable(ticket)" class="ticket-actions">
-            <button type="button" class="ghost-mini" :disabled="Boolean(actionLoading)" @click.stop="handleApprove(ticket.id)">
-              {{ actionLoading === `approve:${ticket.id}` ? '处理中' : '通过' }}
+            <button type="button" class="ghost-mini" :disabled="Boolean(actionLoading)" @click.stop="handleApprove(ticket.ticketId)">
+              {{ actionLoading === `approve:${ticket.ticketId}` ? '处理中' : '通过' }}
             </button>
-            <button type="button" class="ghost-mini danger" :disabled="Boolean(actionLoading)" @click.stop="handleReject(ticket.id)">
-              {{ actionLoading === `reject:${ticket.id}` ? '处理中' : '驳回' }}
+            <button type="button" class="ghost-mini danger" :disabled="Boolean(actionLoading)" @click.stop="handleReject(ticket.ticketId)">
+              {{ actionLoading === `reject:${ticket.ticketId}` ? '处理中' : '驳回' }}
             </button>
           </span>
           <span v-if="isCompletable(ticket)" class="ticket-actions">
-            <button type="button" class="ghost-mini complete" :disabled="Boolean(actionLoading)" @click.stop="handleComplete(ticket.id)">
-              {{ actionLoading === `complete:${ticket.id}` ? '处理中' : '处理完成' }}
+            <button type="button" class="ghost-mini complete" :disabled="Boolean(actionLoading)" @click.stop="handleComplete(ticket.ticketId)">
+              {{ actionLoading === `complete:${ticket.ticketId}` ? '处理中' : '处理完成' }}
             </button>
           </span>
         </div>

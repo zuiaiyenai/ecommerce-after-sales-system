@@ -1,5 +1,7 @@
 package com.ecommerce.aftersales.dto;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
@@ -20,6 +22,7 @@ public final class EmotionPolicyDtos {
 
     @Data
     public static class EmotionPolicyDetail {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long policyId;
         private String policyName;
         private String scopeType;

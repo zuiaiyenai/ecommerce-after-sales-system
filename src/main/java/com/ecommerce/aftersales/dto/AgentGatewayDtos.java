@@ -1,6 +1,8 @@
 package com.ecommerce.aftersales.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
@@ -86,6 +88,9 @@ public class AgentGatewayDtos {
     public static class ChatRequest {
         private String user_id;
         private String order_id;
+        private String ticket_id;
+        private String review_request_id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long session_id;
 
         @NotBlank(message = "message不能为空")
@@ -165,6 +170,7 @@ public class AgentGatewayDtos {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class EmotionAnalyzeRequest {
         private String user_id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long session_id;
         private String message;
 
@@ -192,11 +198,16 @@ public class AgentGatewayDtos {
 
     @Data
     public static class PersistenceDto {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long session_id;
         private String session_no;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long user_message_id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long assistant_message_id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long ticket_log_id;
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long notice_id;
     }
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "正式售后审核"
+  short_description: "执行政策与凭证双工作流并通过确定性 Gate 形成审核建议"
+  default_prompt: "使用 $formal-review 对当前售后申请执行正式审核。"

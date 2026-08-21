@@ -2,6 +2,7 @@ package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.PageResult;
+import com.ecommerce.aftersales.dto.AdminAgentOperationsDtos.AgentOperationsView;
 import com.ecommerce.aftersales.dto.AdminConsoleDtos.*;
 import com.ecommerce.aftersales.service.AdminConsoleService;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +34,11 @@ public class AdminConsoleController {
     @GetMapping("/overview")
     public ApiResponse<AdminOverview> overview() {
         return ApiResponse.success("获取成功", adminConsoleService.getOverview());
+    }
+
+    @GetMapping("/agent-operations")
+    public ApiResponse<AgentOperationsView> agentOperations(@RequestParam(defaultValue = "1h") String range) {
+        return ApiResponse.success("获取成功", adminConsoleService.getAgentOperations(range));
     }
 
     @GetMapping("/service-accounts")

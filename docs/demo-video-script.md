@@ -9,7 +9,7 @@
    - 默认接口地址：`http://127.0.0.1:8080/api`。
 
 2. AI Agent 服务
-   - 如需真实演示智能回复，启动 `python_agent/api_server.py`。
+   - 如需真实演示智能回复，在 `python_agent` 目录启动 `python -m after_sales_agent.interface.http_server`。
    - 确认运行终端已配置 `DASHSCOPE_API_KEY` 和 `PGVECTOR_DSN`。
    - 如果 AI 响应较慢，可以提前准备一条已有会话，录制时重点展示历史回复、推荐回复和情绪分析结果。
 

@@ -127,10 +127,11 @@ export function getAfterSalesTabKey(status) {
 }
 
 export function resolveOrderAfterSalesSnapshot(order = {}) {
-  const explicitStatus = order.afterSalesStatus ?? order.after_sales_status ?? ''
-  const explicitStatusText = order.afterSalesStatusText ?? order.after_sales_status_text ?? ''
-  const explicitHasOpen = order.hasOpenAfterSales ?? order.has_open_after_sales
-  const latestTicketNo = order.latestAfterSalesTicketNo ?? order.latest_after_sales_ticket_no ?? ''
+  const explicitStatus = order.afterSalesStatus ?? ''
+  const explicitStatusText = order.afterSalesStatusText ?? ''
+  const explicitHasOpen = order.hasOpenAfterSales
+  const latestTicketId = order.latestTicketId ?? ''
+  const latestTicketNo = order.latestTicketNo ?? ''
 
   const hasOpenAfterSales = typeof explicitHasOpen === 'boolean'
     ? explicitHasOpen
@@ -145,7 +146,8 @@ export function resolveOrderAfterSalesSnapshot(order = {}) {
     afterSalesStatusText: hasAnyAfterSales
       ? getAfterSalesStatusText(explicitStatus, explicitStatusText || (hasOpenAfterSales ? '售后处理中' : '已有售后记录'))
       : '未发起售后',
-    latestAfterSalesTicketNo: String(latestTicketNo || '')
+    latestTicketId: String(latestTicketId || ''),
+    latestTicketNo: String(latestTicketNo || '')
   }
 }
 

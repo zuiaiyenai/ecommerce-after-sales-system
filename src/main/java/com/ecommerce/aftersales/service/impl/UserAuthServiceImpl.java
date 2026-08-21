@@ -110,7 +110,7 @@ public class UserAuthServiceImpl implements UserAuthService {
 
     private UserProfileResponse toProfile(User user) {
         return UserProfileResponse.builder()
-                .userId(user.getId())
+                .userId(String.valueOf(user.getId()))
                 .userAccount(user.getUserAccount())
                 .phone(user.getPhone())
                 .nickname(user.getNickname())

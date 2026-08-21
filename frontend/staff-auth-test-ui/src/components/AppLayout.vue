@@ -36,6 +36,7 @@ let themeAnimationTimer = 0;
 let logoutFinished = false;
 let logoutEnterTimer = 0;
 let routeTransitionTimer = 0;
+let shellRefreshTimer = 0;
 
 const isOnline = computed(() => staff.value?.onlineStatus === 'ONLINE');
 const isDarkTheme = computed(() => themeMode.value === 'dark');
@@ -81,6 +82,26 @@ async function loadShellData() {
     errorMessage.value = error.message || '基础数据加载失败';
   } finally {
     loading.value = false;
+  }
+}
+
+async function refreshShellDataSilently() {
+  try {
+    const [profile, todoData, sessionPage, ticketPage, pendingShipmentPage] = await Promise.all([
+      getCurrentStaff(),
+      getDashboardTodos(),
+      getSessions({ size: 100 }),
+      getTickets({ size: 100 }),
+      getOrders({ status: 'PAID', size: 1 })
+    ]);
+    staff.value = profile;
+    todos.value = todoData;
+    sessions.value = sessionPage.records || [];
+    tickets.value = ticketPage.records || [];
+    ticketTotal.value = toFiniteNumber(ticketPage.total, tickets.value.length);
+    pendingShipmentCount.value = toFiniteNumber(pendingShipmentPage.total, pendingShipmentPage.records?.length || 0);
+  } catch (error) {
+    // Keep the last successful shell snapshot during background refresh failures.
   }
 }
 
@@ -184,12 +205,25 @@ provide('merchantCsShell', {
   refreshShell: loadShellData
 });
 
-onMounted(loadShellData);
+function startShellRefreshPolling() {
+  window.clearInterval(shellRefreshTimer);
+  shellRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshShellDataSilently();
+    }
+  }, 5000);
+}
+
+onMounted(() => {
+  loadShellData();
+  startShellRefreshPolling();
+});
 
 onBeforeUnmount(() => {
   window.clearTimeout(themeAnimationTimer);
   window.clearTimeout(logoutEnterTimer);
   window.clearTimeout(routeTransitionTimer);
+  window.clearInterval(shellRefreshTimer);
 });
 </script>
 

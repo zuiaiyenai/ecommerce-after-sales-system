@@ -208,7 +208,7 @@ PGVECTOR_DSN=postgresql://ecommerce:ecommerce_pgvector@127.0.0.1:5432/ecommerce_
 PGVECTOR_DIMENSIONS=1024
 EMBEDDING_MODEL=text-embedding-v3
 EMBEDDING_PROVIDER=dashscope
-DASHSCOPE_API_KEY=sk-your-api-key-here
+DASHSCOPE_API_KEY=<your-api-key>
 ```
 
 ## 注意事项

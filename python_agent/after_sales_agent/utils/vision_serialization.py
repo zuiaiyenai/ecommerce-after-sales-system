@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain_models import Attachment, ImageReviewItem, ImageReviewResult
+from ..domain.models import Attachment, ImageReviewItem, ImageReviewResult
 
 
 def image_review_to_visual_evidence(image_review: ImageReviewResult | None) -> tuple[str, ...]:
@@ -13,6 +13,8 @@ def image_review_to_visual_evidence(image_review: ImageReviewResult | None) -> t
     evidence: list[str] = []
     if image_review.has_damage_area:
         evidence.append("破损照片")
+    elif image_review.has_visible_issue and image_review.evidence_relevant:
+        evidence.append("商品问题图片")
     if image_review.has_outer_package:
         evidence.append("外包装照片")
     if image_review.has_logistics_label:
@@ -31,7 +33,12 @@ def is_visual_review_failed(
         return True
     if not image_review.success:
         return True
-    if not image_review.has_damage_area and not image_review.has_outer_package and not image_review.has_logistics_label:
+    if (
+        not image_review.has_damage_area
+        and not image_review.has_visible_issue
+        and not image_review.has_outer_package
+        and not image_review.has_logistics_label
+    ):
         return True
     failure_markers = {"图片校验未完成", "视觉模型不可用", "图片分析结果待补充"}
     return any(item in failure_markers for item in image_review.missing_visual_evidence)
@@ -55,6 +62,13 @@ def serialize_image_review(image_review: ImageReviewResult | None, *, include_it
         "receiver_name": image_review.receiver_name,
         "missing_visual_evidence": list(image_review.missing_visual_evidence),
         "summary": image_review.summary,
+        "has_visible_issue": image_review.has_visible_issue,
+        "evidence_relevant": image_review.evidence_relevant,
+        "evidence_consistent": image_review.evidence_consistent,
+        "tampering_suspected": image_review.tampering_suspected,
+        "evidence_categories": list(image_review.evidence_categories),
+        "observed_issue_types": list(image_review.observed_issue_types),
+        "verification_limitations": list(image_review.verification_limitations),
     }
     if include_items:
         payload["items"] = [
@@ -71,7 +85,19 @@ def serialize_image_review(image_review: ImageReviewResult | None, *, include_it
                 "sender_name": item.sender_name,
                 "receiver_name": item.receiver_name,
                 "confidence": item.confidence,
+                "damage_confidence": item.damage_confidence,
                 "notes": item.notes,
+                "evidence_category": item.evidence_category,
+                "observed_issue_type": item.observed_issue_type,
+                "issue_visible": item.issue_visible,
+                "issue_description": item.issue_description,
+                "product_identity_visible": item.product_identity_visible,
+                "evidence_relevance": item.evidence_relevance,
+                "evidence_consistency": item.evidence_consistency,
+                "tampering_suspected": item.tampering_suspected,
+                "verification_limitations": list(
+                    item.verification_limitations
+                ),
             }
             for item in image_review.items
         ]
@@ -98,7 +124,23 @@ def parse_image_review_payload(data: dict[str, Any] | None) -> ImageReviewResult
             sender_name=str(item.get("sender_name") or ""),
             receiver_name=str(item.get("receiver_name") or ""),
             confidence=float(item.get("confidence") or 0.0),
+            damage_confidence=float(item.get("damage_confidence") or 0.0),
             notes=str(item.get("notes") or ""),
+            evidence_category=str(item.get("evidence_category") or ""),
+            observed_issue_type=str(item.get("observed_issue_type") or ""),
+            issue_visible=bool(item.get("issue_visible")),
+            issue_description=str(item.get("issue_description") or ""),
+            product_identity_visible=bool(
+                item.get("product_identity_visible")
+            ),
+            evidence_relevance=float(item.get("evidence_relevance") or 0.0),
+            evidence_consistency=str(
+                item.get("evidence_consistency") or "uncertain"
+            ),
+            tampering_suspected=bool(item.get("tampering_suspected")),
+            verification_limitations=tuple(
+                item.get("verification_limitations") or ()
+            ),
         )
         for item in data.get("items") or []
         if isinstance(item, dict)
@@ -118,4 +160,19 @@ def parse_image_review_payload(data: dict[str, Any] | None) -> ImageReviewResult
         missing_visual_evidence=tuple(data.get("missing_visual_evidence") or ()),
         summary=str(data.get("summary") or ""),
         raw=data.get("raw") or {},
+        has_visible_issue=bool(data.get("has_visible_issue")),
+        evidence_relevant=bool(data.get("evidence_relevant")),
+        evidence_consistent=(
+            data.get("evidence_consistent")
+            if isinstance(data.get("evidence_consistent"), bool)
+            else None
+        ),
+        tampering_suspected=bool(data.get("tampering_suspected")),
+        evidence_categories=tuple(data.get("evidence_categories") or ()),
+        observed_issue_types=tuple(
+            data.get("observed_issue_types") or ()
+        ),
+        verification_limitations=tuple(
+            data.get("verification_limitations") or ()
+        ),
     )

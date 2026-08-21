@@ -7,6 +7,7 @@ import AdminLoginView from '../views/AdminLoginView.vue';
 import AdminDashboardView from '../views/AdminDashboardView.vue';
 import AdminAccountsView from '../views/AdminAccountsView.vue';
 import AdminKnowledgeView from '../views/AdminKnowledgeView.vue';
+import AdminAgentOperationsView from '../views/AdminAgentOperationsView.vue';
 import SessionsView from '../views/SessionsView.vue';
 import SessionDetailView from '../views/SessionDetailView.vue';
 import TicketsView from '../views/TicketsView.vue';
@@ -39,7 +40,16 @@ const routes = [
           subtitle: '统一管理客服账号、商家归属、接待能力与知识权限'
         }
       },
-      { path: 'knowledge', name: 'adminKnowledge', component: AdminKnowledgeView, meta: { title: '知识库管理' } }
+      { path: 'knowledge', name: 'adminKnowledge', component: AdminKnowledgeView, meta: { title: '知识库管理' } },
+      {
+        path: 'agent-operations',
+        name: 'adminAgentOperations',
+        component: AdminAgentOperationsView,
+        meta: {
+          title: 'Agent 运行中心',
+          subtitle: '统一查看 Agent 链路健康、RAG 质量、工具调用与异步消息可靠性'
+        }
+      }
     ]
   },
   {

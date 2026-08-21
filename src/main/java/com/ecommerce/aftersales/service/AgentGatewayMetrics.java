@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -53,6 +54,10 @@ public class AgentGatewayMetrics {
     private final Counter knowledgeHitMeter;
     private final Counter knowledgeHitChatMeter;
     private final Timer gatewayDurationMeter;
+    private final AtomicLong gatewayCapacity = new AtomicLong();
+    private final AtomicInteger gatewayInFlight = new AtomicInteger();
+    private final AtomicInteger sseInFlight = new AtomicInteger();
+    private final Counter sseRejectedMeter;
 
     /** Keeps focused unit tests and manually constructed services dependency-free. */
     public AgentGatewayMetrics() {
@@ -86,10 +91,47 @@ public class AgentGatewayMetrics {
                         Duration.ofSeconds(3), Duration.ofSeconds(10), Duration.ofSeconds(30),
                         Duration.ofSeconds(90))
                 .register(registry);
+        sseRejectedMeter = meterCounter(registry, "agent.gateway.sse.rejections",
+                "Agent SSE requests rejected before execution");
         if (registry != null) {
             Gauge.builder("agent.merchant.queue.unreplied", merchantQueueUnrepliedCount, AtomicLong::get)
                     .description("Current unreplied merchant customer-service sessions")
                     .register(registry);
+            Gauge.builder("agent.gateway.capacity", gatewayCapacity, AtomicLong::get)
+                    .description("Configured Java-to-Agent concurrency capacity")
+                    .register(registry);
+            Gauge.builder("agent.gateway.inflight", gatewayInFlight, AtomicInteger::get)
+                    .description("Current Java-to-Agent requests holding a concurrency permit")
+                    .register(registry);
+            Gauge.builder("agent.gateway.sse.inflight", sseInFlight, AtomicInteger::get)
+                    .description("Current Agent SSE requests holding a concurrency permit")
+                    .register(registry);
+        }
+    }
+
+    public void setGatewayCapacity(long capacity) {
+        gatewayCapacity.set(Math.max(0, capacity));
+    }
+
+    public void permitAcquired() {
+        gatewayInFlight.incrementAndGet();
+    }
+
+    public void permitReleased() {
+        gatewayInFlight.updateAndGet(value -> Math.max(0, value - 1));
+    }
+
+    public void sseStarted() {
+        sseInFlight.incrementAndGet();
+    }
+
+    public void sseFinished() {
+        sseInFlight.updateAndGet(value -> Math.max(0, value - 1));
+    }
+
+    public void recordSseRejected() {
+        if (sseRejectedMeter != null) {
+            sseRejectedMeter.increment();
         }
     }
 

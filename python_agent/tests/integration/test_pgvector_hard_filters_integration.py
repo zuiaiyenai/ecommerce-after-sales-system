@@ -36,7 +36,7 @@ def pg_connection():
                     id BIGINT PRIMARY KEY, document_id BIGINT NOT NULL, document_type TEXT,
                     chunk_text TEXT, metadata JSONB, product_categories TEXT[], scenes TEXT[],
                     intents TEXT[], heading_path TEXT[], page_number INTEGER, revision BIGINT,
-                    embedding vector(1), search_text TEXT
+                    embedding vector(1), search_text TEXT, lexical_text TEXT NOT NULL DEFAULT '', search_vector tsvector NOT NULL DEFAULT ''::tsvector
                 ) ON COMMIT PRESERVE ROWS
             """)
             cursor.execute("""
@@ -48,10 +48,11 @@ def pg_connection():
             cursor.execute("""
                 INSERT INTO knowledge_chunk
                     (id,document_id,document_type,chunk_text,metadata,product_categories,scenes,
-                     intents,heading_path,page_number,revision,embedding,search_text)
+                     intents,heading_path,page_number,revision,embedding,search_text,lexical_text,search_vector)
                 VALUES (
                     9101,9001,'faq','refund policy','{}',ARRAY['headphone'],ARRAY['quality_issue'],
-                    ARRAY['refund'],ARRAY['Refund'],1,1,'[0]','refund policy'
+                    ARRAY['refund'],ARRAY['Refund'],1,1,'[0]','refund policy',
+                    'refund policy', to_tsvector('simple', 'refund policy')
                 )
             """)
         connection.commit()
@@ -76,7 +77,14 @@ def test_dense_and_keyword_execute_with_nullable_filters_on_real_postgres(
 ) -> None:
     connection, psycopg = pg_connection
     borrowed_module = SimpleNamespace(connect=lambda _dsn: nullcontext(connection))
-    retriever = PgVectorKnowledgeRetriever(PgVectorConfig(dsn="borrowed", dimensions=1, embedding_api_key="unused"))
+    retriever = PgVectorKnowledgeRetriever(
+        PgVectorConfig(
+            dsn="borrowed",
+            dimensions=1,
+            embedding_api_key="unused",
+            layered_retrieval_enabled=True,
+        )
+    )
     common = {
         "merchant_code": "M1",
         "product_category": product_category,

@@ -7,7 +7,7 @@ from typing import Any
 from urllib import error, parse, request
 
 from ..config.runtime_settings import resolve_agent_internal_token
-from ..infra.request_tracing import current_trace_id
+from ..infrastructure.request_tracing import current_trace_id
 
 
 class JavaToolError(RuntimeError):

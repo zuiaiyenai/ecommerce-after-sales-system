@@ -32,8 +32,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             "/api/merchant-cs/auth/register",
             "/api/merchant-cs/auth/password/reset",
             "/api/admin/auth/login",
-            "/api/agent/**",
-            "/api/internal/agent-tools/**",
+            "/api/actuator/health",
+            "/api/ws/**",
             "/api/static/**",
             "/api/uploads/**",
             "/api/upload/**"
@@ -48,6 +48,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         String requestURI = request.getRequestURI();
+
+        if (SecurityContextHolder.getContext().getAuthentication() != null) {
+            filterChain.doFilter(request, response);
+            return;
+        }
 
         if (isPublicPath(requestURI)) {
             filterChain.doFilter(request, response);

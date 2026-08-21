@@ -36,6 +36,7 @@ public class AiReviewManualHandoffServiceImpl implements AiReviewManualHandoffSe
     public ManualHandoffResult markManualRequired(
             Long ticketId,
             String reviewRequestId,
+            Integer evidenceRevision,
             String reason,
             String source,
             String auditPayload,
@@ -47,10 +48,16 @@ public class AiReviewManualHandoffServiceImpl implements AiReviewManualHandoffSe
                     ticketId, reviewRequestId);
             return new ManualHandoffResult(ticket, false, false, "TICKET_NOT_FOUND");
         }
-        if (reviewRequestId.equals(ticket.getAiReviewRequestId())) {
+        if (reviewRequestId.equals(ticket.getAiReviewRequestId()) && ticket.getAiReviewResult() != null) {
             log.info("ai_review_manual_handoff ticket_id={} review_request_id={} transition=idempotent source={}",
                     ticketId, reviewRequestId, normalizeSource(source));
             return new ManualHandoffResult(ticket, false, true, null);
+        }
+        if (!reviewRequestId.equals(ticket.getAiReviewRequestId())) {
+            return new ManualHandoffResult(ticket, false, false, "INSTANCE_MISMATCH");
+        }
+        if (evidenceRevision != null && !evidenceRevision.equals(ticket.getEvidenceRevision())) {
+            return new ManualHandoffResult(ticket, false, false, "STALE_EVIDENCE");
         }
         if (!List.of("PENDING", "PENDING_REVIEW").contains(ticket.getStatus())) {
             log.info("ai_review_manual_handoff ticket_id={} review_request_id={} transition=stale source={} failure_class=STATUS_CHANGED",
@@ -62,7 +69,7 @@ public class AiReviewManualHandoffServiceImpl implements AiReviewManualHandoffSe
         LocalDateTime now = LocalDateTime.now();
         String normalizedReason = shortText(reason, 500);
         int changed = afterSalesTicketMapper.applyManualReviewIfPending(
-                ticket.getId(), reviewRequestId, normalizedReason, auditPayload, confidence, now
+                ticket.getId(), reviewRequestId, evidenceRevision, normalizedReason, auditPayload, confidence, now
         );
         if (changed == 0) {
             AfterSalesTicket current = afterSalesTicketMapper.selectById(ticket.getId());

@@ -4,11 +4,15 @@ import base64
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
+import logging
 import os
+from pathlib import Path
 import threading
 from typing import Any, Iterator
 
-from ..infra.request_tracing import TraceRecorder
+from jsonschema import validate, ValidationError
+
+from ..infrastructure.request_tracing import TraceRecorder
 from .resilient_llm_runtime import (
     FallbackLLMClient,
     LLMClient,
@@ -18,6 +22,30 @@ from .resilient_llm_runtime import (
     OpenAICompatibleHTTPClient,
     ProviderConfig,
 )
+
+logger = logging.getLogger("after_sales_agent.llm_client")
+
+
+def _read_local_env() -> dict[str, str]:
+    """Read local .env file for configuration values."""
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        Path.cwd() / "python_agent" / ".env",
+        Path.cwd() / ".env",
+        repo_root / "python_agent" / ".env",
+    ]
+    values: dict[str, str] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+        break
+    return values
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -42,23 +70,43 @@ class OpenAICompatibleConfig:
 
     @classmethod
     def from_env(cls) -> "OpenAICompatibleConfig":
-        provider = os.getenv("LLM_PROVIDER", "remote").strip().lower()
+        file_values = _read_local_env()
+        provider = (os.getenv("LLM_PROVIDER") or file_values.get("LLM_PROVIDER", "remote")).strip().lower()
         if provider == "ollama":
             return cls(
                 provider="ollama",
-                base_url=os.getenv("OLLAMA_BASE_URL", os.getenv("QWEN_BASE_URL", "http://127.0.0.1:11434")),
+                base_url=(os.getenv("OLLAMA_BASE_URL") or os.getenv("QWEN_BASE_URL") or file_values.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")),
                 api_key="",
-                model=os.getenv("OLLAMA_MODEL", os.getenv("QWEN_MODEL", "qwen2.5:7b")),
-                timeout_seconds=int(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", os.getenv("QWEN_TIMEOUT_SECONDS", "90"))),
-                ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+                model=(os.getenv("OLLAMA_MODEL") or os.getenv("QWEN_MODEL") or file_values.get("OLLAMA_MODEL", "qwen2.5:7b")),
+                timeout_seconds=int(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS") or os.getenv("QWEN_TIMEOUT_SECONDS") or file_values.get("LLM_TOTAL_TIMEOUT_SECONDS", "90")),
+                ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE") or file_values.get("OLLAMA_KEEP_ALIVE", "30m"),
+            )
+        if provider == "dashscope":
+            return cls(
+                provider="remote",
+                base_url=(
+                    os.getenv("LLM_BASE_URL")
+                    or file_values.get("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")
+                ),
+                api_key=(
+                    os.getenv("LLM_API_KEY")
+                    or file_values.get("LLM_API_KEY")
+                    or os.getenv("DASHSCOPE_API_KEY")
+                    or file_values.get("DASHSCOPE_API_KEY", "")
+                ),
+                model=(os.getenv("LLM_MODEL") or file_values.get("LLM_MODEL", "qwen-plus")),
+                timeout_seconds=int(
+                    os.getenv("LLM_TOTAL_TIMEOUT_SECONDS") or os.getenv("QWEN_TIMEOUT_SECONDS") or file_values.get("LLM_TOTAL_TIMEOUT_SECONDS", "90")
+                ),
+                ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE") or file_values.get("OLLAMA_KEEP_ALIVE", "30m"),
             )
         return cls(
             provider="remote",
-            base_url=os.getenv("LLM_BASE_URL", os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")),
-            api_key=os.getenv("LLM_API_KEY", os.getenv("QWEN_API_KEY", "")),
-            model=os.getenv("LLM_MODEL", os.getenv("QWEN_MODEL", "qwen-plus")),
-            timeout_seconds=int(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", os.getenv("QWEN_TIMEOUT_SECONDS", "90"))),
-            ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+            base_url=(os.getenv("LLM_BASE_URL") or os.getenv("QWEN_BASE_URL") or file_values.get("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")),
+            api_key=(os.getenv("LLM_API_KEY") or os.getenv("QWEN_API_KEY") or file_values.get("LLM_API_KEY", "")),
+            model=(os.getenv("LLM_MODEL") or os.getenv("QWEN_MODEL") or file_values.get("LLM_MODEL", "qwen-plus")),
+            timeout_seconds=int(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS") or os.getenv("QWEN_TIMEOUT_SECONDS") or file_values.get("LLM_TOTAL_TIMEOUT_SECONDS", "90")),
+            ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE") or file_values.get("OLLAMA_KEEP_ALIVE", "30m"),
         )
 
 
@@ -146,6 +194,187 @@ class OpenAICompatibleClient:
                 return self._chat_json(system_prompt, user_prompt, temperature, max_tokens)
         return self._chat_json(system_prompt, user_prompt, temperature, max_tokens)
 
+    def generate_structured(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+        temperature: float = 0.2,
+        max_tokens: int = 600,
+        retries: int = 2,
+    ) -> dict[str, Any]:
+        """Structured-output LLM call with bounded, feedback-driven repair.
+
+        The response is parsed locally and validated against ``schema``.  When
+        parsing or validation fails, the next attempt receives the previous
+        output, a sanitized validation error and the required schema.  Repair is
+        capped at two retries.  Exhaustion raises ``LLMResponseParseError`` so
+        the application layer can fail closed or hand off; unvalidated JSON is
+        never returned as a successful structured response.
+        """
+        provider = self._client.primary.provider
+        recorder = self.trace_recorder
+
+        def _traced_step(name: str, **details: Any) -> Any:
+            if recorder is not None:
+                return recorder.step(
+                    name,
+                    model=self.config.model,
+                    mode="structured",
+                    provider=provider,
+                    max_tokens=max_tokens,
+                    **details,
+                )
+            import contextlib
+            return contextlib.nullcontext()
+
+        provider = self._client.primary.provider
+        # 远程 OpenAI/DashScope 兼容接口使用 json_object；Ollama 接口使用 json。
+        kwargs: dict[str, Any] = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"} if provider == "remote" else "json",
+        }
+        last_error: str | None = None
+        # 防止调用方误传过大的 retries，保证一次请求最多产生 3 次模型调用。
+        repair_retries = max(0, min(int(retries), 2))
+        attempts = 1 + repair_retries
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        for attempt in range(attempts):
+            with _traced_step(
+                "structured_model_call",
+                attempt=attempt + 1,
+                repair=attempt > 0,
+            ):
+                response = self.chat(messages, **kwargs)
+            content: Any = None
+            try:
+                if "choices" in response:
+                    content = response["choices"][0]["message"]["content"]
+                else:
+                    content = response["message"]["content"]
+                if isinstance(content, dict):
+                    parsed = content
+                else:
+                    parsed = json.loads(content)
+                if not isinstance(parsed, dict):
+                    raise LLMResponseParseError("structured response is not an object")
+                validate(instance=parsed, schema=schema)
+                logger.debug("generate_structured succeeded model=%s attempt=%d", self.config.model, attempt + 1)
+                return parsed
+            except (LLMResponseParseError, ValidationError, json.JSONDecodeError, TypeError, KeyError, IndexError) as exc:
+                last_error = self._structured_validation_feedback(exc)
+                logger.warning("generate_structured attempt %d failed model=%s error=%s", attempt + 1, self.config.model, last_error)
+                if attempt < repair_retries:
+                    messages = self._structured_repair_messages(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        previous_content=content,
+                        validation_feedback=last_error,
+                        schema=schema,
+                    )
+                    continue
+                break
+
+        logger.error(
+            "generate_structured exhausted repair attempts model=%s attempts=%d error=%s",
+            self.config.model,
+            attempts,
+            last_error,
+        )
+        raise LLMResponseParseError(
+            f"Structured response failed validation after {attempts} attempts: {last_error or 'unknown_error'}"
+        )
+
+    @staticmethod
+    def _structured_validation_feedback(exc: Exception) -> str:
+        """生成可反馈给模型和日志的有限错误信息，不包含完整业务输入。"""
+        if isinstance(exc, ValidationError):
+            path = ".".join(str(item) for item in exc.absolute_path) or "$"
+            feedback: dict[str, Any] = {
+                "kind": "schema_validation_error",
+                "path": path,
+                "rule": str(exc.validator or "unknown"),
+            }
+            if exc.validator in {"required", "type", "additionalProperties", "enum"}:
+                feedback["expected"] = str(exc.validator_value)[:500]
+            return json.dumps(feedback, ensure_ascii=False, default=str)
+        if isinstance(exc, json.JSONDecodeError):
+            return json.dumps(
+                {
+                    "kind": "json_decode_error",
+                    "line": exc.lineno,
+                    "column": exc.colno,
+                    "reason": exc.msg,
+                },
+                ensure_ascii=False,
+            )
+        if isinstance(exc, (KeyError, IndexError)):
+            return json.dumps(
+                {"kind": "response_envelope_error", "detail": str(exc)[:200]},
+                ensure_ascii=False,
+            )
+        if isinstance(exc, TypeError):
+            return json.dumps({"kind": "invalid_response_type"}, ensure_ascii=False)
+        return json.dumps(
+            {"kind": "structured_response_error", "reason": str(exc)[:500]},
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _structured_repair_messages(
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        previous_content: Any,
+        validation_feedback: str,
+        schema: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """把上次输出与校验原因反馈给模型，但限制体积以避免重试放大上下文。"""
+        if isinstance(previous_content, str):
+            previous_text = previous_content
+        else:
+            previous_text = json.dumps(previous_content, ensure_ascii=False, default=str)
+        previous_text = previous_text[:4000]
+        schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"), default=str)
+        schema_feedback: dict[str, Any]
+        if len(schema_text) <= 8000:
+            schema_feedback = schema
+        else:
+            # 极大 schema 只反馈顶层约束，避免一次修复请求把上下文窗口挤满。
+            properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            schema_feedback = {
+                "type": schema.get("type"),
+                "required": schema.get("required") or [],
+                "property_names": list(properties)[:100],
+                "additionalProperties": schema.get("additionalProperties"),
+                "note": "schema_summary_due_to_size_limit",
+            }
+        repair_instruction = json.dumps(
+            {
+                "task": "repair_structured_output",
+                "validation_error": json.loads(validation_feedback),
+                "required_json_schema": schema_feedback,
+                "instructions": [
+                    "根据校验错误修复上一次输出",
+                    "保持原始任务语义，不添加输入中不存在的事实",
+                    "重新输出完整 JSON 对象，不要输出 Markdown 或解释",
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": previous_text},
+            {"role": "user", "content": repair_instruction},
+        ]
+
     def _chat_json(self, system_prompt: str, user_prompt: str, temperature: float, max_tokens: int) -> dict[str, Any]:
         response = self.chat(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
@@ -172,12 +401,33 @@ class OpenAICompatibleClient:
             content = [{"type": "text", "text": user_text}]
             content.extend({"type": "image_url", "image_url": {"url": value}} for value in image_urls)
             messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}]
-        response = self.chat(messages, temperature=temperature, max_tokens=max_tokens)
-        try:
-            raw = response["choices"][0]["message"]["content"] if "choices" in response else response["message"]["content"]
-            return raw if isinstance(raw, dict) else json.loads(raw)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise LLMResponseParseError("Vision model response cannot be parsed as JSON") from exc
+        # Vision models occasionally truncate a large structured answer. Keep one
+        # diagnostic retry with a larger budget, and log only a bounded response
+        # excerpt so the failure can be diagnosed without dumping the full payload.
+        retry_max_tokens = max(max_tokens, 320)
+        for attempt, request_max_tokens in enumerate((max_tokens, retry_max_tokens), start=1):
+            response = self.chat(messages, temperature=temperature, max_tokens=request_max_tokens)
+            raw: Any = None
+            try:
+                raw = response["choices"][0]["message"]["content"] if "choices" in response else response["message"]["content"]
+                parsed = raw if isinstance(raw, dict) else json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise TypeError(f"expected JSON object, got {type(parsed).__name__}")
+                return parsed
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+                raw_excerpt = str(raw if raw is not None else response)[:4000]
+                logger.warning(
+                    "vision_json_parse_failed model=%s attempt=%d max_tokens=%d error=%s raw_excerpt=%s",
+                    self.config.model,
+                    attempt,
+                    request_max_tokens,
+                    type(exc).__name__ + ": " + str(exc),
+                    raw_excerpt,
+                )
+                if attempt == 2:
+                    raise LLMResponseParseError(
+                        f"Vision model response cannot be parsed as JSON after {attempt} attempts"
+                    ) from exc
 
     @staticmethod
     def _extract_base64_image(image_url: str) -> str:

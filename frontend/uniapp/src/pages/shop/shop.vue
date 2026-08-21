@@ -1,12 +1,23 @@
 ﻿<template>
   <view class="page">
     <scroll-view class="product-list" scroll-y>
-      <view v-if="products.length === 0" class="empty">
+      <view v-if="viewState === 'loading'" class="status-panel">
+        <text class="status-title">正在加载商品</text>
+        <text class="status-text">请稍候...</text>
+      </view>
+
+      <view v-else-if="viewState === 'error'" class="status-panel">
+        <text class="status-title">商品加载失败</text>
+        <text class="status-text">{{ errorMessage }}</text>
+        <button class="retry-btn" @tap="loadProducts">重新加载</button>
+      </view>
+
+      <view v-else-if="viewState === 'empty'" class="empty">
         <text class="empty-icon">□</text>
         <text class="empty-text">暂无可购买商品</text>
       </view>
 
-      <view v-for="product in products" :key="product.id" class="product-card">
+      <view v-else v-for="product in products" :key="product.id" class="product-card">
         <image class="product-image" :src="normalizeImageUrl(product.mainImage)" mode="aspectFill" />
         <view class="product-info">
           <text class="product-name">{{ product.productName }}</text>
@@ -24,22 +35,37 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { computed, ref } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { normalizeProductList, resolveShopViewState } from '../../utils/shopPageState.mjs'
 
 const products = ref([])
 const buyingId = ref(null)
+const loading = ref(true)
+const errorMessage = ref('')
+const viewState = computed(() => resolveShopViewState({
+  loading: loading.value,
+  errorMessage: errorMessage.value,
+  products: products.value
+}))
 
-onLoad(() => {
+onShow(() => {
   loadProducts()
 })
 
 async function loadProducts() {
+  loading.value = true
+  errorMessage.value = ''
   try {
-    products.value = await request({ url: '/products' }) || []
+    const data = await request({ url: '/products' })
+    products.value = normalizeProductList(data)
   } catch (e) {
-    uni.showToast({ title: '商品加载失败', icon: 'none' })
+    products.value = []
+    errorMessage.value = e.message || '请检查后端服务后重试'
+    console.error('商品加载失败', e)
+  } finally {
+    loading.value = false
   }
 }
 
@@ -175,5 +201,43 @@ async function buy(product) {
   margin-top: 20rpx;
   font-size: 28rpx;
   color: #999;
+}
+
+.status-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 48rpx;
+  padding: 72rpx 32rpx;
+  border-radius: 24rpx;
+  background: #ffffff;
+}
+
+.status-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #333333;
+}
+
+.status-text {
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.retry-btn {
+  height: 64rpx;
+  line-height: 64rpx;
+  margin-top: 28rpx;
+  padding: 0 36rpx;
+  border: none;
+  border-radius: 32rpx;
+  background: #b86a4a;
+  color: #ffffff;
+  font-size: 24rpx;
+}
+
+.retry-btn::after {
+  border: none;
 }
 </style>

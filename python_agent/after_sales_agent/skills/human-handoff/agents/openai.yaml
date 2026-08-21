@@ -1,0 +1,4 @@
+interface:
+  display_name: "人工转接摘要"
+  short_description: "为人工客服生成简洁且基于已核实事实的接管摘要"
+  default_prompt: "使用 $human-handoff 生成人工客服可快速阅读的接管摘要。"

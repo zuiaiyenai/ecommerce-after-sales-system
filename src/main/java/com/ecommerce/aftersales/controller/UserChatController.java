@@ -27,6 +27,7 @@ import com.ecommerce.aftersales.mapper.OrderInfoMapper;
 import com.ecommerce.aftersales.service.ChatEmotionAnalysisService;
 import com.ecommerce.aftersales.service.NotificationService;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -37,8 +38,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashMap;
+import java.util.Collections;
 
 @RestController
 @RequestMapping("/chat")
@@ -50,7 +56,6 @@ public class UserChatController {
     private static final String STATUS_AI_ACTIVE = "AI_ACTIVE";
     private static final String STATUS_WAITING = "WAITING";
     private static final String STATUS_CLOSED = "CLOSED";
-    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final ChatSessionMapper chatSessionMapper;
     private final ChatMessageMapper chatMessageMapper;
@@ -92,8 +97,20 @@ public class UserChatController {
             fillBusinessContext(session, userId, request);
             session.setUserQuery(resolveUserQuery(request));
             session.setDeleted(0);
-            chatSessionMapper.insert(session);
-            created = true;
+            try {
+                chatSessionMapper.insert(session);
+                created = true;
+            } catch (DuplicateKeyException duplicateKeyException) {
+                // Another request created the same active business conversation
+                // after our lookup. Reuse it rather than creating a duplicate.
+                session = findExistingSession(userId, request);
+                if (session == null) {
+                    throw duplicateKeyException;
+                }
+                fillBusinessContext(session, userId, request);
+                session.setUserHidden(0);
+                chatSessionMapper.updateById(session);
+            }
         } else if (Integer.valueOf(1).equals(session.getUserHidden())) {
             fillBusinessContext(session, userId, request);
             session.setUserHidden(0);
@@ -120,14 +137,30 @@ public class UserChatController {
     }
 
     @GetMapping("/sessions")
-    public ApiResponse<ChatSessionListResponse> sessions(@CurrentUserId Long userId) {
-        List<ChatSessionSummary> summaries = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
+    public ApiResponse<ChatSessionListResponse> sessions(@CurrentUserId Long userId,
+                                                          @RequestParam(defaultValue = "100") Integer limit) {
+        int pageSize = Math.max(1, Math.min(limit == null ? 100 : limit, 200));
+        List<ChatSession> sessions = chatSessionMapper.selectList(new LambdaQueryWrapper<ChatSession>()
                         .eq(ChatSession::getUserId, userId)
                         .eq(ChatSession::getUserHidden, 0)
                         .ne(ChatSession::getStatus, STATUS_CLOSED)
-                        .orderByDesc(ChatSession::getUpdateTime))
-                .stream()
-                .map(this::toSessionSummary)
+                        .orderByDesc(ChatSession::getUpdateTime)
+                        .last("limit " + pageSize));
+        Set<Long> orderIds = sessions.stream().map(ChatSession::getOrderId).filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Set<Long> ticketIds = sessions.stream().map(ChatSession::getTicketId).filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Set<Long> sessionIds = sessions.stream().map(ChatSession::getId).collect(java.util.stream.Collectors.toSet());
+        Map<Long, OrderInfo> orders = orderIds.isEmpty() ? Map.of() : orderInfoMapper.selectByIds(orderIds).stream()
+                .collect(java.util.stream.Collectors.toMap(OrderInfo::getId, item -> item));
+        Map<Long, AfterSalesTicket> tickets = ticketIds.isEmpty() ? Map.of() : afterSalesTicketMapper.selectByIds(ticketIds).stream()
+                .collect(java.util.stream.Collectors.toMap(AfterSalesTicket::getId, item -> item));
+        Map<Long, ChatMessage> lastMessages = new HashMap<>();
+        if (!sessionIds.isEmpty()) {
+            chatMessageMapper.selectLatestBySessionIds(sessionIds)
+                    .forEach(message -> lastMessages.putIfAbsent(message.getSessionId(), message));
+        }
+        List<ChatSessionSummary> summaries = sessions.stream()
+                .map(session -> toSessionSummary(session, orders.get(session.getOrderId()),
+                        tickets.get(session.getTicketId()), lastMessages.get(session.getId())))
                 .toList();
         ChatSessionListResponse response = new ChatSessionListResponse();
         response.setList(summaries);
@@ -140,16 +173,17 @@ public class UserChatController {
         if (request.getSessionId() == null) {
             throw new BizException("会话ID不能为空");
         }
-        if (!StringUtils.hasText(request.getMessage())) {
-            throw new BizException("消息内容不能为空");
-        }
         ChatSession session = chatSessionMapper.selectById(request.getSessionId());
         if (session == null || !userId.equals(session.getUserId())) {
             throw new BizException(404, "会话不存在");
         }
 
-        String messageType = StringUtils.hasText(request.getMessageType()) ? request.getMessageType() : "TEXT";
-        addMessage(session.getId(), "USER", request.getMessage(), messageType);
+        String messageType = normalizeMessageType(request.getMessageType());
+        String fileUrl = resolveMessageFileUrl(messageType, request.getFileUrl());
+        if (!StringUtils.hasText(request.getMessage()) && !StringUtils.hasText(fileUrl)) {
+            throw new BizException("消息内容不能为空");
+        }
+        addMessage(session.getId(), "USER", resolveMessageContent(messageType, request.getMessage()), messageType, fileUrl);
 
         boolean humanSession = MODE_HUMAN.equals(session.getMode());
         boolean transferToHuman = !humanSession && shouldTransferToHuman(request.getMessage());
@@ -160,10 +194,10 @@ public class UserChatController {
             session.setStatus(STATUS_WAITING);
             chatSessionMapper.updateById(session);
             reply = "已为您转接人工客服，请稍候。人工客服接入后可以看到您前面和智能客服的对话内容。";
-            addMessage(session.getId(), "ASSISTANT", reply, "TEXT");
+            addMessage(session.getId(), "ASSISTANT", reply, "TEXT", null);
             notifyMerchant(session, request.getMessage());
         } else if (humanSession) {
-            broadcastToSession(session.getId(), "USER", request.getMessage(), messageType);
+            broadcastToSession(session.getId(), "USER", resolveMessageContent(messageType, request.getMessage()), messageType, fileUrl);
             notifyMerchant(session, request.getMessage());
         } else {
             session.setStatus(STATUS_AI_ACTIVE);
@@ -180,17 +214,29 @@ public class UserChatController {
     }
 
     @GetMapping("/history")
-    public ApiResponse<ChatHistoryResponse> history(@CurrentUserId Long userId, @RequestParam Long sessionId) {
+    public ApiResponse<ChatHistoryResponse> history(@CurrentUserId Long userId,
+                                                     @RequestParam Long sessionId,
+                                                     @RequestParam(required = false) Long beforeMessageId,
+                                                     @RequestParam(defaultValue = "100") Integer limit) {
         ChatSession session = chatSessionMapper.selectById(sessionId);
         if (session == null || !userId.equals(session.getUserId())) {
             throw new BizException(404, "会话不存在");
         }
-        List<ChatMessageView> messages = chatMessageMapper.selectList(new LambdaQueryWrapper<ChatMessage>()
-                        .eq(ChatMessage::getSessionId, sessionId)
-                        .orderByAsc(ChatMessage::getCreateTime))
-                .stream()
-                .map(this::toMessageView)
-                .toList();
+        int pageSize = Math.max(1, Math.min(limit == null ? 100 : limit, 200));
+        LambdaQueryWrapper<ChatMessage> wrapper = new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getSessionId, sessionId);
+        if (beforeMessageId != null) {
+            wrapper.lt(ChatMessage::getId, beforeMessageId);
+        }
+        List<ChatMessage> page = chatMessageMapper.selectList(wrapper.orderByDesc(ChatMessage::getId)
+                .last("limit " + (pageSize + 1)));
+        boolean hasMore = page.size() > pageSize;
+        if (hasMore) {
+            page = page.subList(0, pageSize);
+        }
+        Long nextBeforeId = hasMore && !page.isEmpty() ? page.get(page.size() - 1).getId() : null;
+        Collections.reverse(page);
+        List<ChatMessageView> messages = page.stream().map(this::toMessageView).toList();
         ChatHistoryResponse response = new ChatHistoryResponse();
         response.setSessionId(sessionId);
         response.setMerchantCode(session.getMerchantCode());
@@ -198,6 +244,8 @@ public class UserChatController {
         response.setMode(session.getMode());
         response.setStatus(session.getStatus());
         response.setList(messages);
+        response.setHasMore(hasMore);
+        response.setNextBeforeMessageId(nextBeforeId);
         return ApiResponse.success("获取成功", response);
     }
 
@@ -240,7 +288,7 @@ public class UserChatController {
         return ApiResponse.success("评价成功", null);
     }
 
-    private void broadcastToSession(Long sessionId, String role, String content, String messageType) {
+    private void broadcastToSession(Long sessionId, String role, String content, String messageType, String fileUrl) {
         try {
             chatWebSocketHandler.broadcastToSession(sessionId, WsChatMessage.builder()
                     .action("message")
@@ -248,7 +296,8 @@ public class UserChatController {
                     .role(role)
                     .content(content)
                     .messageType(messageType)
-                    .createdAt(LocalDateTime.now().format(DATE_TIME_FORMATTER))
+                    .fileUrl(fileUrl)
+                    .createdAt(formatTime(LocalDateTime.now()))
                     .build());
         } catch (Exception ignored) {
             // WebSocket broadcast failure should not break the HTTP response.
@@ -264,9 +313,9 @@ public class UserChatController {
                 .ne(ChatSession::getStatus, STATUS_CLOSED)
                 .orderByDesc(ChatSession::getCreateTime)
                 .last("limit 1");
-        if (request.getAfterSaleId() != null) {
+        if (request.getTicketId() != null) {
             wrapper.and(group -> {
-                group.eq(ChatSession::getTicketId, request.getAfterSaleId());
+                group.eq(ChatSession::getTicketId, request.getTicketId());
                 if (relatedOrderId != null) {
                     group.or().eq(ChatSession::getOrderId, relatedOrderId);
                 }
@@ -280,8 +329,8 @@ public class UserChatController {
     }
 
     private void fillBusinessContext(ChatSession session, Long userId, CreateSessionRequest request) {
-        if (request.getAfterSaleId() != null) {
-            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getAfterSaleId());
+        if (request.getTicketId() != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getTicketId());
             if (ticket == null || !userId.equals(ticket.getUserId())) {
                 throw new BizException(404, "售后单不存在");
             }
@@ -305,8 +354,8 @@ public class UserChatController {
     }
 
     private String resolveMerchantCode(CreateSessionRequest request) {
-        if (request.getAfterSaleId() != null) {
-            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getAfterSaleId());
+        if (request.getTicketId() != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getTicketId());
             if (ticket != null && StringUtils.hasText(ticket.getMerchantCode())) {
                 return ticket.getMerchantCode();
             }
@@ -321,8 +370,8 @@ public class UserChatController {
     }
 
     private Long resolveRelatedOrderId(CreateSessionRequest request) {
-        if (request.getAfterSaleId() != null) {
-            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getAfterSaleId());
+        if (request.getTicketId() != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getTicketId());
             if (ticket != null) {
                 return ticket.getOrderId();
             }
@@ -334,22 +383,37 @@ public class UserChatController {
         if (StringUtils.hasText(request.getMessage())) {
             return request.getMessage();
         }
-        if (request.getAfterSaleId() != null) {
-            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getAfterSaleId());
+        if (request.getTicketId() != null) {
+            AfterSalesTicket ticket = afterSalesTicketMapper.selectById(request.getTicketId());
             return ticket == null ? "售后咨询" : ticket.getProductName() + " 售后咨询";
         }
         return request.getOrderId() == null ? "在线咨询" : "订单咨询";
     }
 
     private void addMessage(Long sessionId, String role, String content, String messageType) {
+        addMessage(sessionId, role, content, messageType, null);
+    }
+
+    private void addMessage(Long sessionId, String role, String content, String messageType, String fileUrl) {
         ChatMessage message = new ChatMessage();
         message.setSessionId(sessionId);
         message.setRole(role);
-        message.setContent(content);
-        message.setMessageType(messageType);
+        String normalizedType = normalizeMessageType(messageType);
+        String resolvedFileUrl = resolveMessageFileUrl(normalizedType, fileUrl);
+        message.setContent(resolveMessageContent(normalizedType, content));
+        message.setMessageType(normalizedType);
+        message.setFileUrl(resolvedFileUrl);
         chatMessageMapper.insert(message);
+        ChatSession session = chatSessionMapper.selectById(sessionId);
+        if (session != null) {
+            session.setUserHidden(0);
+            session.setUpdateTime(message.getCreateTime() == null ? LocalDateTime.now() : message.getCreateTime());
+            if ("USER".equalsIgnoreCase(role) && StringUtils.hasText(content)) {
+                session.setUserQuery(shortText(content));
+            }
+            chatSessionMapper.updateById(session);
+        }
         if ("USER".equalsIgnoreCase(role) && chatEmotionAnalysisService != null) {
-            ChatSession session = chatSessionMapper.selectById(sessionId);
             if (session != null) {
                 chatEmotionAnalysisService.analyzeAndPersist(message, session);
             }
@@ -400,18 +464,13 @@ public class UserChatController {
         return "您好，我是智能客服，请问有什么可以帮您？如需人工处理，请发送“转人工”。";
     }
 
-    private ChatSessionSummary toSessionSummary(ChatSession session) {
-        OrderInfo order = session.getOrderId() == null ? null : orderInfoMapper.selectById(session.getOrderId());
-        AfterSalesTicket ticket = session.getTicketId() == null ? null : afterSalesTicketMapper.selectById(session.getTicketId());
-        ChatMessage lastMessage = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
-                .eq(ChatMessage::getSessionId, session.getId())
-                .orderByDesc(ChatMessage::getCreateTime)
-                .last("limit 1"));
+    private ChatSessionSummary toSessionSummary(ChatSession session, OrderInfo order,
+                                                AfterSalesTicket ticket, ChatMessage lastMessage) {
 
         ChatSessionSummary summary = new ChatSessionSummary();
         summary.setSessionId(session.getId());
         summary.setOrderId(session.getOrderId());
-        summary.setAfterSaleId(session.getTicketId());
+        summary.setTicketId(session.getTicketId());
         summary.setMerchantCode(session.getMerchantCode());
         summary.setMerchantDisplayName(resolveMerchantDisplayName(session.getMerchantCode()));
         summary.setMode(session.getMode());
@@ -436,16 +495,45 @@ public class UserChatController {
     }
 
     private String formatTime(LocalDateTime time) {
-        return time == null ? null : DATE_TIME_FORMATTER.format(time);
+        return time == null
+                ? null
+                : time.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+    }
+
+    private String normalizeMessageType(String messageType) {
+        String normalized = StringUtils.hasText(messageType) ? messageType.trim().toUpperCase() : "TEXT";
+        return List.of("TEXT", "IMAGE", "FILE").contains(normalized) ? normalized : "TEXT";
+    }
+
+    private String resolveMessageFileUrl(String messageType, String fileUrl) {
+        if (!List.of("IMAGE", "FILE").contains(normalizeMessageType(messageType))) {
+            return null;
+        }
+        if (StringUtils.hasText(fileUrl)) {
+            return fileUrl.trim();
+        }
+        throw new BizException("图片或文件消息必须提供 fileUrl");
+    }
+
+    private String resolveMessageContent(String messageType, String content) {
+        String normalized = normalizeMessageType(messageType);
+        if ("IMAGE".equals(normalized)) {
+            return StringUtils.hasText(content) ? content : "[图片]";
+        }
+        if ("FILE".equals(normalized)) {
+            return StringUtils.hasText(content) ? content : "文件";
+        }
+        return content == null ? "" : content;
     }
 
     private ChatMessageView toMessageView(ChatMessage message) {
         ChatMessageView view = new ChatMessageView();
-        view.setId(message.getId());
+        view.setMessageId(message.getId());
         view.setRole("USER".equals(message.getRole()) ? "user" : "service");
         view.setContent(message.getContent());
-        view.setMessageType(message.getMessageType());
-        view.setCreateTime(message.getCreateTime() == null ? null : DATE_TIME_FORMATTER.format(message.getCreateTime()));
+        view.setMessageType(normalizeMessageType(message.getMessageType()));
+        view.setFileUrl(StringUtils.hasText(message.getFileUrl()) ? message.getFileUrl().trim() : null);
+        view.setCreateTime(formatTime(message.getCreateTime()));
         return view;
     }
 

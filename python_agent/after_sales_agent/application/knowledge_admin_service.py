@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import base64
 import binascii
-import os
 from typing import Any
 
-from after_sales_agent.application.knowledge_ingestion_service import (
+from after_sales_agent.application.knowledge_ingestion import (
     KnowledgeIngestionService,
     KnowledgeParseError,
 )
-from after_sales_agent.application.tool_registry import AgentToolRegistry, normalize_knowledge_result
+from after_sales_agent.tools import AgentToolRegistry
+from after_sales_agent.tools.registry import normalize_knowledge_result
+from after_sales_agent.infrastructure import KnowledgeRepository, PsycopgKnowledgeRepository
 from after_sales_agent.retrieval.pgvector_retriever import PgVectorConfig, PgVectorKnowledgeRetriever
 
 
@@ -20,9 +21,11 @@ class KnowledgeAdminService:
         self,
         ingestion: KnowledgeIngestionService | None = None,
         retriever: PgVectorKnowledgeRetriever | None = None,
+        knowledge_repository: KnowledgeRepository | None = None,
     ) -> None:
         self.ingestion = ingestion or KnowledgeIngestionService()
         self.retriever = retriever if retriever is not None else PgVectorKnowledgeRetriever(PgVectorConfig.from_env())
+        self._knowledge_repository = knowledge_repository or PsycopgKnowledgeRepository()
 
     def parse_document(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create an unpersisted, Java-controlled knowledge draft from an uploaded document."""
@@ -85,36 +88,31 @@ class KnowledgeAdminService:
         }
 
     def reindex(self) -> dict[str, Any]:
-        try:
-            import psycopg
-            from psycopg.types.json import Jsonb
-        except Exception as exc:
-            raise RuntimeError(f"pg_dependency_missing: {exc}") from exc
-
+        import os
         dsn = os.getenv("PGVECTOR_DSN", "")
         if not dsn:
             raise RuntimeError("PGVECTOR_DSN is required")
 
-        rows = self._active_document_rows(dsn)
+        rows = self._knowledge_repository.list_active_documents(dsn)
         batch_size = max(1, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "10")), 25))
         chunk_records: list[dict[str, Any]] = []
 
         for row in rows:
-            for index, chunk_text in enumerate(self._chunks(row["text"])):
-                metadata = dict(row["metadata"])
-                metadata["title"] = row["title"]
+            for index, chunk_text in enumerate(self._chunks(row.text)):
+                metadata = dict(row.metadata)
+                metadata["title"] = row.title
                 chunk_records.append(
                     {
-                        "document_id": row["document_id"],
-                        "document_type": row["document_type"],
+                        "document_id": row.document_id,
+                        "document_type": row.document_type,
                         "chunk_index": index,
                         "chunk_text": chunk_text,
                         "metadata": metadata,
-                        "revision": row["revision"],
-                        "product_categories": row["product_categories"],
-                        "scenes": row["scenes"],
-                        "intents": row["intents"],
-                        "search_text": f"{row['title']}\n{chunk_text}".strip(),
+                        "revision": row.revision,
+                        "product_categories": row.product_categories,
+                        "scenes": row.scenes,
+                        "intents": row.intents,
+                        "search_text": row.text.strip(),
                     }
                 )
 
@@ -127,70 +125,25 @@ class KnowledgeAdminService:
                     raise RuntimeError("EMBEDDING_COUNT_MISMATCH")
                 embedded_records.extend(zip(batch, vectors))
 
-            document_ids = [row["document_id"] for row in rows]
+            document_ids = [row.document_id for row in rows]
             if document_ids:
-                with psycopg.connect(dsn) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT id, COALESCE(published_revision, revision), updated_at
-                            FROM knowledge_document
-                            WHERE id = ANY(%s)
-                              AND status = 1
-                              AND review_status = 'PUBLISHED'
-                              AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
-                            FOR UPDATE
-                            """,
-                            (document_ids,),
-                        )
-                        locked = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
-                        expected = {
-                            row["document_id"]: (row["revision"], row["updated_at"])
-                            for row in rows
-                        }
-                        if locked != expected:
-                            raise RuntimeError("REINDEX_SOURCE_CHANGED")
-                        cur.execute(
-                            "DELETE FROM knowledge_chunk WHERE document_id = ANY(%s)",
-                            (document_ids,),
-                        )
-                        for record, vector in embedded_records:
-                            cur.execute(
-                                """
-                                INSERT INTO knowledge_chunk
-                                  (document_id, document_type, chunk_index, chunk_text, embedding, metadata,
-                                   revision, product_categories, scenes, intents, heading_path, search_text)
-                                VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s)
-                                """,
-                                (
-                                    record["document_id"],
-                                    record["document_type"],
-                                    record["chunk_index"],
-                                    record["chunk_text"],
-                                    self.retriever._vector_literal(vector),
-                                    Jsonb(record["metadata"]),
-                                    record["revision"],
-                                    record["product_categories"],
-                                    record["scenes"],
-                                    record["intents"],
-                                    [],
-                                    record["search_text"],
-                                ),
-                            )
-                        cur.execute(
-                            """
-                            UPDATE knowledge_document
-                            SET published_revision = COALESCE(published_revision, revision),
-                                updated_at = NOW()
-                            WHERE id = ANY(%s)
-                              AND status = 1
-                              AND review_status = 'PUBLISHED'
-                              AND published_revision IS NULL
-                              AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
-                            """,
-                            (document_ids,),
-                        )
-                    conn.commit()
+                locked = self._knowledge_repository.lock_and_delete_chunks(dsn, document_ids)
+                expected = {
+                    row.document_id: (row.revision, row.updated_at)
+                    for row in rows
+                }
+                if locked != expected:
+                    raise RuntimeError("REINDEX_SOURCE_CHANGED")
+                for record, vector in embedded_records:
+                    record["vector"] = vector
+                self._knowledge_repository.insert_chunks(
+                    dsn,
+                    document_ids,
+                    [record for record, _ in embedded_records],
+                    vector_literal_fn=self.retriever._vector_literal,
+                    jsonb_type=self._jsonb_type(),
+                )
+                self._knowledge_repository.set_published_revision(dsn, document_ids)
         except Exception as exc:
             raise RuntimeError(f"pgvector_error: {exc}") from exc
 
@@ -209,13 +162,14 @@ class KnowledgeAdminService:
         }
 
     def list_documents(self, *, limit: int = 50) -> dict[str, Any]:
+        import os
+        safe_limit = max(1, min(int(limit), 200))
+        config = PgVectorConfig.from_env()
         try:
             import psycopg
         except Exception as exc:
             raise RuntimeError(f"pg_dependency_missing: {exc}") from exc
 
-        safe_limit = max(1, min(int(limit), 200))
-        config = PgVectorConfig.from_env()
         try:
             with psycopg.connect(config.dsn) as conn:
                 with conn.cursor() as cur:
@@ -254,70 +208,6 @@ class KnowledgeAdminService:
             ]
         }
 
-    def _active_document_rows(self, dsn: str) -> list[dict[str, Any]]:
-        import json
-        import psycopg
-
-        rows: list[dict[str, Any]] = []
-        with psycopg.connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT
-                        id,
-                        source_type,
-                        source_code,
-                        title,
-                        content,
-                        product_category,
-                        scene,
-                        intent,
-                        policy_version,
-                        tags,
-                        metadata,
-                        merchant_code,
-                        COALESCE(published_revision, revision) AS target_revision,
-                        updated_at
-                    FROM knowledge_document
-                    WHERE status = 1
-                      AND review_status = 'PUBLISHED'
-                      AND COALESCE(metadata ->> 'deleted', 'false') <> 'true'
-                    ORDER BY id
-                    """
-                )
-                for row in cur.fetchall():
-                    metadata = row[10] or {}
-                    if isinstance(metadata, str):
-                        metadata = json.loads(metadata)
-                    tags = row[9] or []
-                    metadata = {
-                        **metadata,
-                        "source_type": row[1],
-                        "source_code": row[2],
-                        "title": row[3],
-                        "merchant_code": row[11],
-                        "product_category": row[5],
-                        "scene": row[6],
-                        "intent": row[7],
-                        "policy_version": row[8],
-                        "tags": tags,
-                    }
-                    rows.append(
-                        {
-                            "document_id": row[0],
-                            "document_type": row[1],
-                            "title": row[3],
-                            "text": f"{row[3]}\n{row[4]}",
-                            "metadata": metadata,
-                            "revision": row[12],
-                            "updated_at": row[13],
-                            "product_categories": [row[5]] if row[5] else None,
-                            "scenes": [row[6]] if row[6] else None,
-                            "intents": [row[7]] if row[7] else None,
-                        }
-                    )
-        return rows
-
     @staticmethod
     def _chunks(text: str, limit: int = 700) -> list[str]:
         normalized = "\n".join(line.strip() for line in str(text or "").splitlines() if line.strip())
@@ -329,3 +219,11 @@ class KnowledgeAdminService:
             result.append(normalized[start : start + limit])
             start += int(limit * 0.8)
         return result
+
+    @staticmethod
+    def _jsonb_type() -> Any:
+        try:
+            from psycopg.types.json import Jsonb
+            return Jsonb
+        except Exception:
+            return dict

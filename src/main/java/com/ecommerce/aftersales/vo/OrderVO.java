@@ -1,5 +1,8 @@
 package com.ecommerce.aftersales.vo;
 
+import com.ecommerce.aftersales.common.OffsetLocalDateTimeSerializer;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -8,8 +11,10 @@ import java.util.List;
 
 @Data
 public class OrderVO {
-    private Long id;
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long orderId;
     private String orderNo;
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long merchantId;
     private String merchantCode;
     private String merchantDisplayName;
@@ -26,10 +31,15 @@ public class OrderVO {
     private Boolean hasAnyAfterSales;
     private String afterSalesStatus;
     private String afterSalesStatusText;
-    private String latestAfterSalesTicketNo;
+    private String latestTicketId;
+    private String latestTicketNo;
+    @JsonSerialize(using = OffsetLocalDateTimeSerializer.class)
     private LocalDateTime payTime;
+    @JsonSerialize(using = OffsetLocalDateTimeSerializer.class)
     private LocalDateTime shipTime;
+    @JsonSerialize(using = OffsetLocalDateTimeSerializer.class)
     private LocalDateTime receiveTime;
+    @JsonSerialize(using = OffsetLocalDateTimeSerializer.class)
     private LocalDateTime createTime;
     private List<OrderItemVO> items;
 }

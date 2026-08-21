@@ -61,7 +61,8 @@ function openSession(item) {
     `status=${encodeURIComponent(item.status || '')}`
   ]
   if (item.orderId) params.push(`orderId=${item.orderId}`)
-  if (item.afterSaleId) params.push(`afterSaleId=${item.afterSaleId}`)
+  const ticketId = item.ticketId
+  if (ticketId) params.push(`ticketId=${ticketId}`)
   uni.navigateTo({
     url: `/pages/chat/consult?${params.join('&')}`
   })

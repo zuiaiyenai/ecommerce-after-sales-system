@@ -37,7 +37,7 @@
       </view>
       <view class="divider"></view>
       <view class="order-list">
-        <view v-for="item in orders" :key="item.id" class="order-item" @tap="viewOrderDetail(item.id)">
+        <view v-for="item in orders" :key="item.orderId" class="order-item" @tap="viewOrderDetail(item.orderId)">
           <image class="order-icon" :src="normalizeImageUrl(item.icon)" mode="aspectFill" />
           <view class="order-content">
             <text class="order-title">{{ item.title }}</text>
@@ -102,7 +102,7 @@ const orders = computed(() => {
     const item = o.items && o.items[0]
     const display = resolveOrderDisplay(o)
     return {
-      id: o.id,
+      orderId: o.orderId,
       icon: item ? item.productImage : '',
       title: item ? item.productName : o.orderNo,
       desc: `${o.createTime.slice(0, 10)} | ¥${o.payAmount}`,

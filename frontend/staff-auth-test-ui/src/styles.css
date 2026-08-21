@@ -2888,6 +2888,14 @@ html.theme-changing textarea {
   justify-content: flex-start;
 }
 
+.template-message-row.system {
+  justify-content: center;
+}
+
+.template-message-row.system .template-user-avatar {
+  display: none;
+}
+
 .template-message-content {
   max-width: min(420px, 70%);
   display: flex;
@@ -2926,6 +2934,12 @@ html.theme-changing textarea {
 .template-message-row.service p {
   border-color: #dce9ff;
   background: #edf5ff;
+}
+
+.template-message-row.system p {
+  border-color: #edf1f7;
+  background: #f5f7fb;
+  color: #7a8491;
 }
 
 .template-message-content time {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后政策解释"
+  short_description: "解释可信售后政策证据、版本与不确定性"
+  default_prompt: "使用 $policy-consultation 解释检索到的售后政策证据及其不确定性。"

@@ -1,7 +1,7 @@
 spring:
   datasource:
-    username: root
-    password: your-local-mysql-password
+    username: ${DB_USERNAME:ecommerce}
+    password: ${DB_PASSWORD:local-dev-password}
 
 app:
   knowledge:

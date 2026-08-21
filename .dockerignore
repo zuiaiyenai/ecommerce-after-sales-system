@@ -1,0 +1,14 @@
+.git
+.idea
+.venv
+target
+uploads
+frontend
+python_agent
+docs
+tools
+observability
+src/main/resources/application-local.yml
+**/.pytest_cache
+**/__pycache__
+**/*.pyc

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import hashlib
 import json
@@ -25,16 +26,27 @@ from after_sales_agent.retrieval.knowledge_filters import (
     build_filter_plans,
     build_hard_filter_sql,
 )
-from after_sales_agent.retrieval.rrf import rrf_fuse
+from after_sales_agent.retrieval.rrf import rrf_fuse, rrf_fuse_rankings
+
+# Phase 1: Deferred imports — loaded lazily to avoid circular imports
+# embedding_service import is used via TYPE_CHECKING below and deferred in __init__
 
 logger = logging.getLogger("after_sales_agent.rag")
 
 RERANK_THRESHOLDS = {
-    "after_sales_policy": 0.75,
-    "refund_policy": 0.75,
-    "exchange_rule": 0.75,
-    "evidence_requirement": 0.65,
-    "faq": 0.60,
+    # Retrieval support and automatic approval are separate gates. These
+    # thresholds admit calibrated qwen3-rerank policy matches for answering;
+    # the workflow still requires >= 0.65 plus strict business filters,
+    # version/validity matching and traceable citations before a policy can
+    # contribute to automatic approval.
+    #
+    # Lowered from 0.55 to 0.35 to avoid filtering out relevant chunks
+    # that Reranker ranks lower but are still correct.
+    "after_sales_policy": 0.35,
+    "refund_policy": 0.35,
+    "exchange_rule": 0.35,
+    "evidence_requirement": 0.45,
+    "faq": 0.40,
 }
 
 
@@ -65,7 +77,9 @@ class PgVectorConfig:
             embedding_model=os.getenv("EMBEDDING_MODEL") or file_values.get("EMBEDDING_MODEL", "text-embedding-v3"),
             embedding_provider=os.getenv("EMBEDDING_PROVIDER") or file_values.get("EMBEDDING_PROVIDER", "dashscope"),
             embedding_api_key=(
-                os.getenv("DASHSCOPE_API_KEY")
+                os.getenv("EMBEDDING_API_KEY")
+                or file_values.get("EMBEDDING_API_KEY")
+                or os.getenv("DASHSCOPE_API_KEY")
                 or os.getenv("BAILIAN_API_KEY")
                 or file_values.get("DASHSCOPE_API_KEY")
                 or file_values.get("BAILIAN_API_KEY")
@@ -144,10 +158,12 @@ class PgVectorKnowledgeRetriever:
         *,
         reranker: Any | None = None,
     ) -> None:
+        from after_sales_agent.infrastructure.embedding_service import EmbeddingService
         self.config = config or PgVectorConfig.from_env()
         self.reranker = reranker if reranker is not None else RERANKER_CLIENTS.get()
         self._embedding_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache_lock = threading.Lock()
+        self._embedding_service = EmbeddingService(self.config)
 
     def retrieve(
         self,
@@ -161,14 +177,14 @@ class PgVectorKnowledgeRetriever:
         policy_version: str | None = None,
         as_of_time: datetime | None = None,
         top_k: int | None = None,
-        retrieval_mode: str = "rerank",
+        retrieval_mode: str = "rrf",
         query_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_query = str(query or "").strip()
-        selected_mode = str(retrieval_mode or "rerank").strip().lower()
+        selected_mode = str(retrieval_mode or "rrf").strip().lower()
         if selected_mode not in {"dense", "keyword", "rrf", "rerank"}:
             raise ValueError("retrieval_mode must be one of: dense, keyword, rrf, rerank")
-        resolved_as_of_time = as_of_time or datetime.now()
+        resolved_as_of_time = as_of_time or datetime.utcnow()
         filter_plans = build_filter_plans(
             FilterContext(
                 merchant_code=self._normalized_merchant_code(merchant_code),
@@ -186,19 +202,6 @@ class PgVectorKnowledgeRetriever:
                 {"mode": "skipped", "hits": [], "query": normalized_query, "trace": {}},
                 plan=strict_plan,
                 failure_reason="EMPTY_QUERY",
-            )
-        if self.config.layered_retrieval_enabled is False:
-            return self._retrieve_compatibility(
-                query=normalized_query,
-                merchant_code=merchant_code,
-                product_category=product_category,
-                scene=scene,
-                intent=intent,
-                source_type=source_type,
-                policy_version=policy_version,
-                as_of_time=resolved_as_of_time,
-                top_k=top_k,
-                plan=strict_plan,
             )
         safe_query_id = self._safe_query_id(query_id, normalized_query)
         logger.info(
@@ -255,7 +258,7 @@ class PgVectorKnowledgeRetriever:
             )
 
         limit = max(1, min(int(top_k or self.config.top_k), 10))
-        candidate_limit = 20
+        candidate_limit = 50
         if selected_mode == "keyword":
             keyword_started_at = time.perf_counter()
             keyword = self._lexical_fallback(
@@ -273,14 +276,22 @@ class PgVectorKnowledgeRetriever:
             keyword_latency_ms = round((time.perf_counter() - keyword_started_at) * 1000, 2)
             keyword = self._apply_filter_contract(keyword, strict_plan)
             keyword_hits = keyword.get("hits") or []
-            return self._finalize_ablation_result(
-                mode="keyword",
-                hits=keyword_hits[:limit],
+            no_answer = not keyword_hits
+            trace_update = {
+                "dense_candidate_count": 0,
+                "keyword_candidate_count": len(keyword_hits),
+                "rrf_candidate_count": 0,
+                "rerank_candidate_count": 0,
+                "retrieval_mode": "keyword",
+                "fallback_reason": "NO_MATCH" if no_answer else None,
+            }
+            combined_trace = {"stage_latency_ms": {"keyword": keyword_latency_ms}}
+            combined_trace.update(trace_update)
+            return self._finalize_result(
+                {"mode": "keyword", "hits": keyword_hits[:limit], "trace": combined_trace},
                 plan=strict_plan,
-                dense_count=0,
-                keyword_count=len(keyword_hits),
-                rrf_count=0,
-                trace={"stage_latency_ms": {"keyword": keyword_latency_ms}},
+                failure_reason="NO_MATCH" if no_answer else None,
+                no_answer=no_answer,
             )
 
         try:
@@ -403,17 +414,25 @@ class PgVectorKnowledgeRetriever:
         vector_latency_ms = round((time.perf_counter() - vector_started_at) * 1000, 2)
         hits = self._annotate_hits_with_filter_contract(hits, strict_plan)
         if selected_mode == "dense":
-            return self._finalize_ablation_result(
-                mode="dense",
-                hits=hits[:limit],
+            no_answer = not hits
+            trace_update = {
+                "dense_candidate_count": len(hits),
+                "keyword_candidate_count": 0,
+                "rrf_candidate_count": 0,
+                "rerank_candidate_count": 0,
+                "retrieval_mode": "dense",
+                "fallback_reason": "NO_MATCH" if no_answer else None,
+            }
+            combined_trace = {
+                "stage_latency_ms": {"vector": vector_latency_ms},
+                "embedding_cache_hit": embedding_cache_hit,
+            }
+            combined_trace.update(trace_update)
+            return self._finalize_result(
+                {"mode": "dense", "hits": hits[:limit], "trace": combined_trace},
                 plan=strict_plan,
-                dense_count=len(hits),
-                keyword_count=0,
-                rrf_count=0,
-                trace={
-                    "stage_latency_ms": {"vector": vector_latency_ms},
-                    "embedding_cache_hit": embedding_cache_hit,
-                },
+                failure_reason="NO_MATCH" if no_answer else None,
+                no_answer=no_answer,
             )
         keyword_started_at = time.perf_counter()
         lexical = self._lexical_fallback(
@@ -435,20 +454,28 @@ class PgVectorKnowledgeRetriever:
             if selected_mode == "rrf":
                 fused = rrf_fuse(hits, lexical_hits, limit=limit)
                 self._annotate_hits_with_filter_contract(fused, strict_plan)
-                return self._finalize_ablation_result(
-                    mode="rrf",
-                    hits=fused,
-                    plan=strict_plan,
-                    dense_count=len(hits),
-                    keyword_count=len(lexical_hits),
-                    rrf_count=len(fused),
-                    trace={
-                        "stage_latency_ms": {
-                            "vector": vector_latency_ms,
-                            "keyword": keyword_latency_ms,
-                        },
-                        "embedding_cache_hit": embedding_cache_hit,
+                no_answer = not fused
+                trace_update = {
+                    "dense_candidate_count": len(hits),
+                    "keyword_candidate_count": len(lexical_hits),
+                    "rrf_candidate_count": len(fused),
+                    "rerank_candidate_count": 0,
+                    "retrieval_mode": "rrf",
+                    "fallback_reason": "NO_MATCH" if no_answer else None,
+                }
+                combined_trace = {
+                    "stage_latency_ms": {
+                        "vector": vector_latency_ms,
+                        "keyword": keyword_latency_ms,
                     },
+                    "embedding_cache_hit": embedding_cache_hit,
+                }
+                combined_trace.update(trace_update)
+                return self._finalize_result(
+                    {"mode": "rrf", "hits": fused, "trace": combined_trace},
+                    plan=strict_plan,
+                    failure_reason="NO_MATCH" if no_answer else None,
+                    no_answer=no_answer,
                 )
             return self._finalize_reranked_result(
                 query=normalized_query,
@@ -485,6 +512,326 @@ class PgVectorKnowledgeRetriever:
                 retrieval_mode=selected_mode,
             )
             return relaxed
+
+    def retrieve_multi(
+        self,
+        *,
+        original_query: str,
+        queries: list[str],
+        merchant_code: str | None = None,
+        product_category: str | None = None,
+        scene: str | None = None,
+        intent: str | None = None,
+        source_type: str | None = None,
+        policy_version: str | None = None,
+        as_of_time: datetime | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_original = str(original_query or "").strip()
+        normalized_queries: list[str] = []
+        seen: set[str] = set()
+        for raw_query in queries:
+            query = " ".join(str(raw_query or "").split())
+            key = query.casefold()
+            if not query or key in seen:
+                continue
+            seen.add(key)
+            normalized_queries.append(query)
+            if len(normalized_queries) >= 3:
+                break
+        if not normalized_original or not normalized_queries:
+            raise ValueError("original_query and at least one candidate query are required")
+
+        resolved_as_of_time = as_of_time or datetime.utcnow()
+        plan = build_filter_plans(
+            FilterContext(
+                merchant_code=self._normalized_merchant_code(merchant_code),
+                source_type=source_type,
+                policy_version=policy_version,
+                as_of_time=resolved_as_of_time,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+            )
+        )[0]
+        limit = max(1, min(int(top_k or self.config.top_k), 10))
+        started_at = time.perf_counter()
+        results: dict[int, dict[str, Any]] = {}
+        candidate_traces: list[dict[str, Any]] = []
+
+        def retrieve_candidate(
+            index: int,
+            query: str,
+        ) -> tuple[int, dict[str, Any] | None, dict[str, Any]]:
+            candidate_started_at = time.perf_counter()
+            try:
+                result = self.retrieve(
+                    query=query,
+                    merchant_code=merchant_code,
+                    product_category=product_category,
+                    scene=scene,
+                    intent=intent,
+                    source_type=source_type,
+                    policy_version=policy_version,
+                    as_of_time=resolved_as_of_time,
+                    top_k=50,
+                    retrieval_mode="rrf",
+                    query_id=f"{self._safe_query_id(None, normalized_original)}-{index + 1}",
+                )
+                hits = result.get("hits") if isinstance(result.get("hits"), list) else []
+                return index, result, {
+                    "query_index": index,
+                    "latency_ms": round((time.perf_counter() - candidate_started_at) * 1000, 2),
+                    "hit_count": len(hits),
+                    "mode": str(result.get("mode") or "unknown"),
+                }
+            except Exception as exc:
+                return index, None, {
+                    "query_index": index,
+                    "latency_ms": round((time.perf_counter() - candidate_started_at) * 1000, 2),
+                    "hit_count": 0,
+                    "error_type": exc.__class__.__name__,
+                }
+
+        with ThreadPoolExecutor(
+            max_workers=min(3, len(normalized_queries)),
+            thread_name_prefix="rag-multi-query",
+        ) as executor:
+            futures = {
+                executor.submit(retrieve_candidate, index, query): (index, query)
+                for index, query in enumerate(normalized_queries)
+            }
+            for future in as_completed(futures):
+                index, _query = futures[future]
+                try:
+                    result_index, result, candidate_trace = future.result()
+                    candidate_traces.append(candidate_trace)
+                    if result is not None:
+                        results[result_index] = result
+                except Exception as exc:
+                    candidate_traces.append(
+                        {
+                            "query_index": index,
+                            "latency_ms": 0.0,
+                            "hit_count": 0,
+                            "error_type": exc.__class__.__name__,
+                        }
+                    )
+
+        rankings: list[list[dict[str, Any]]] = []
+        for index in range(len(normalized_queries)):
+            result = results.get(index)
+            hits = result.get("hits") if isinstance(result, dict) else None
+            rankings.append(
+                [dict(hit) for hit in hits if isinstance(hit, dict)]
+                if isinstance(hits, list)
+                else []
+            )
+        fused = rrf_fuse_rankings(rankings, limit=20)
+        self._annotate_hits_with_filter_contract(fused, plan)
+        candidate_traces.sort(key=lambda item: int(item.get("query_index") or 0))
+        failure_count = sum(1 for item in candidate_traces if item.get("error_type"))
+        base_trace = {
+            "candidate_query_count": len(normalized_queries),
+            "candidate_success_count": len(results),
+            "candidate_failure_count": failure_count,
+            "candidate_traces": candidate_traces,
+            "candidate_hit_count": sum(len(ranking) for ranking in rankings),
+            "unique_candidate_count": len(fused),
+            "stage_latency_ms": {
+                "multi_query": round((time.perf_counter() - started_at) * 1000, 2)
+            },
+            "filter_level": plan.level,
+            "relaxation_level": plan.level,
+        }
+        if not fused:
+            all_failed = bool(failure_count) and not results
+            return self._finalize_result(
+                {
+                    "mode": "multi_query_error" if all_failed else "multi_query_empty",
+                    "query": normalized_original,
+                    "hits": [],
+                    "trace": base_trace,
+                },
+                plan=plan,
+                failure_reason="MULTI_QUERY_ERROR" if all_failed else "NO_MATCH",
+                reranker_succeeded=False,
+                no_answer=True,
+                trusted_policy_eligible=False,
+            )
+
+        reranked, rerank_success_count = self._rerank_across_queries(
+            queries=normalized_queries,
+            candidates=fused,
+            top_n=limit,
+        )
+        reranker_enabled = bool(getattr(self.reranker.config, "configured", False))
+        output_hits: list[dict[str, Any]] = []
+        for raw_hit in reranked.items:
+            hit = dict(raw_hit)
+            source = self._hit_source_type(hit)
+            threshold = self._threshold_for_source(source)
+            hit["threshold"] = threshold
+            hit["relaxation_level"] = plan.level
+            hit["trusted_policy_eligible"] = False
+            if reranked.degraded:
+                output_hits.append(hit)
+                continue
+            if (
+                not reranker_enabled
+                and plan.level == "strict"
+                and source in POLICY_SOURCE_TYPES
+            ):
+                # RRF is the configured ranking authority when the optional
+                # reranker is disabled. Hard filters, citations, and policy
+                # version checks are still enforced by PolicyEvaluator.
+                hit["trusted_policy_eligible"] = True
+                output_hits.append(hit)
+                continue
+            if self._rerank_score(hit) < threshold:
+                continue
+            if (
+                plan.level == "strict"
+                and source in POLICY_SOURCE_TYPES
+            ):
+                hit["trusted_policy_eligible"] = True
+            output_hits.append(hit)
+
+        reranker_succeeded = reranker_enabled and not reranked.degraded
+        trusted_policy_eligible = bool(
+            plan.level == "strict"
+            and any(hit.get("trusted_policy_eligible") is True for hit in output_hits)
+        )
+        no_answer = bool(reranked.degraded or not output_hits)
+        stage_latency_ms = dict(base_trace["stage_latency_ms"])
+        stage_latency_ms["reranker"] = reranked.latency_ms
+        stage_latency_ms["total"] = round((time.perf_counter() - started_at) * 1000, 2)
+        base_trace.update(
+            {
+                "reranker_succeeded": reranker_succeeded,
+                "reranker_failure_reason": reranked.failure_reason,
+                "rerank_candidate_count": len(reranked.items),
+                "rerank_query_source": "validated_candidate_queries",
+                "rerank_query_count": len(normalized_queries),
+                "rerank_query_success_count": rerank_success_count,
+                "stage_latency_ms": stage_latency_ms,
+                "trusted_policy_eligible": trusted_policy_eligible,
+            }
+        )
+        return self._finalize_result(
+            {
+                "mode": (
+                    "multi_query_reranked"
+                    if reranker_enabled and reranker_succeeded
+                    else "multi_query_rrf"
+                    if not reranker_enabled and not reranked.degraded
+                    else "multi_query_rrf_degraded"
+                ),
+                "query": normalized_original,
+                "hits": output_hits,
+                "trace": base_trace,
+            },
+            plan=plan,
+            failure_reason=(
+                reranked.failure_reason
+                if reranked.degraded
+                else ("NO_MATCH" if no_answer else None)
+            ),
+            reranker_succeeded=reranker_succeeded,
+            no_answer=no_answer,
+            trusted_policy_eligible=trusted_policy_eligible,
+        )
+
+    def _rerank_across_queries(
+        self,
+        *,
+        queries: list[str],
+        candidates: list[dict[str, Any]],
+        top_n: int,
+    ) -> tuple[RerankResult, int]:
+        """Rerank each validated rewrite independently and keep each hit's best score."""
+        started_at = time.perf_counter()
+        bounded_top_n = max(1, min(len(candidates), 20))
+        if not bool(getattr(self.reranker.config, "configured", False)):
+            return (
+                RerankResult(
+                    items=list(candidates[:bounded_top_n]),
+                    mode="multi_query_rrf",
+                    degraded=False,
+                    failure_reason=None,
+                    latency_ms=round((time.perf_counter() - started_at) * 1000, 3),
+                ),
+                len(queries),
+            )
+        results: list[RerankResult] = []
+
+        def rerank_one(query: str) -> RerankResult:
+            try:
+                return self.reranker.rerank(query, candidates, top_n=bounded_top_n)
+            except Exception:
+                return RerankResult(
+                    items=[],
+                    mode="hybrid_rrf_degraded",
+                    degraded=True,
+                    failure_reason="UNEXPECTED_ERROR",
+                    latency_ms=0.0,
+                )
+
+        with ThreadPoolExecutor(
+            max_workers=min(3, len(queries)),
+            thread_name_prefix="rag-multi-query-rerank",
+        ) as executor:
+            futures = [executor.submit(rerank_one, query) for query in queries]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        successful = [result for result in results if not result.degraded]
+        latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+        if not successful:
+            failure_reason = next(
+                (result.failure_reason for result in results if result.failure_reason),
+                "UNEXPECTED_ERROR",
+            )
+            return (
+                RerankResult(
+                    items=list(candidates[:top_n]),
+                    mode="hybrid_rrf_degraded",
+                    degraded=True,
+                    failure_reason=failure_reason,
+                    latency_ms=latency_ms,
+                ),
+                0,
+            )
+
+        best_by_hit: dict[str, dict[str, Any]] = {}
+        for result in successful:
+            for item in result.items:
+                key = str(
+                    item.get("chunk_id")
+                    or item.get("id")
+                    or item.get("source_code")
+                    or item.get("title")
+                    or ""
+                )
+                current = best_by_hit.get(key)
+                if current is None or self._rerank_score(item) > self._rerank_score(current):
+                    best_by_hit[key] = dict(item)
+        ranked = sorted(
+            best_by_hit.values(),
+            key=self._rerank_score,
+            reverse=True,
+        )[: max(1, top_n)]
+        return (
+            RerankResult(
+                items=ranked,
+                mode="hybrid_reranked",
+                degraded=False,
+                failure_reason=None,
+                latency_ms=latency_ms,
+            ),
+            len(successful),
+        )
+
     def _relaxed_retrieve_after_empty_vector(
         self,
         *,
@@ -577,7 +924,7 @@ class PgVectorKnowledgeRetriever:
                     policy_version=plan.policy_version,
                     as_of_time=plan.as_of_time,
                     filter_plan=plan,
-                    top_k=20,
+                    top_k=50,
                 )
             except Exception as exc:
                 return self._finalize_result(
@@ -644,14 +991,22 @@ class PgVectorKnowledgeRetriever:
                 if retrieval_mode == "rrf":
                     fused = rrf_fuse(vector_hits, lexical_hits, limit=limit)
                     self._annotate_hits_with_filter_contract(fused, plan)
-                    return self._finalize_ablation_result(
-                        mode="rrf",
-                        hits=fused,
+                    no_answer = not fused
+                    trace_update = {
+                        "dense_candidate_count": len(vector_hits),
+                        "keyword_candidate_count": len(lexical_hits),
+                        "rrf_candidate_count": len(fused),
+                        "rerank_candidate_count": 0,
+                        "retrieval_mode": "rrf",
+                        "fallback_reason": "NO_MATCH" if no_answer else None,
+                    }
+                    updated_trace = dict(trace) if trace else {}
+                    updated_trace.update(trace_update)
+                    return self._finalize_result(
+                        {"mode": "rrf", "hits": fused, "trace": updated_trace},
                         plan=plan,
-                        dense_count=len(vector_hits),
-                        keyword_count=len(lexical_hits),
-                        rrf_count=len(fused),
-                        trace=trace,
+                        failure_reason="NO_MATCH" if no_answer else None,
+                        no_answer=no_answer,
                     )
                 return self._finalize_reranked_result(
                     query=query,
@@ -691,16 +1046,13 @@ class PgVectorKnowledgeRetriever:
 
     @staticmethod
     def _normalized_merchant_code(merchant_code: str | None) -> str:
-        normalized = str(merchant_code or "").strip()
-        return normalized or "GLOBAL"
+        from after_sales_agent.retrieval.retrieval_result import normalized_merchant_code
+        return normalized_merchant_code(merchant_code)
 
     @staticmethod
     def _safe_query_id(query_id: str | None, query: str) -> str:
-        candidate = str(query_id or "").strip()
-        safe = "".join(char for char in candidate if char.isalnum() or char in {"-", "_"})[:64]
-        if safe:
-            return safe
-        return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+        from after_sales_agent.retrieval.retrieval_result import safe_query_id
+        return safe_query_id(query_id, query)
 
     def _strict_filter_plan(
         self,
@@ -718,7 +1070,7 @@ class PgVectorKnowledgeRetriever:
                 merchant_code=self._normalized_merchant_code(merchant_code),
                 source_type=source_type,
                 policy_version=policy_version,
-                as_of_time=as_of_time or datetime.now(),
+                as_of_time=as_of_time or datetime.utcnow(),
                 product_category=product_category,
                 scene=scene,
                 intent=intent,
@@ -727,21 +1079,18 @@ class PgVectorKnowledgeRetriever:
 
     @staticmethod
     def _serialize_time(value: Any) -> str | None:
-        if value is None:
-            return None
-        if hasattr(value, "isoformat"):
-            return str(value.isoformat())
-        return str(value)
+        from after_sales_agent.retrieval.retrieval_result import serialize_time
+        return serialize_time(value)
 
     @staticmethod
     def _annotate_hits_with_filter_contract(
         hits: list[dict[str, Any]],
         plan: FilterPlan,
     ) -> list[dict[str, Any]]:
-        for hit in hits:
-            hit["trusted_policy_eligible"] = False
-            hit["relaxation_level"] = plan.level
-        return hits
+        from after_sales_agent.retrieval.retrieval_result import (
+            annotate_hits_with_filter_contract,
+        )
+        return annotate_hits_with_filter_contract(hits, plan)
 
     @classmethod
     def _apply_filter_contract(
@@ -749,15 +1098,8 @@ class PgVectorKnowledgeRetriever:
         result: dict[str, Any],
         plan: FilterPlan,
     ) -> dict[str, Any]:
-        result["trusted_policy_eligible"] = False
-        result["relaxation_level"] = plan.level
-        trace = result.setdefault("trace", {})
-        trace["trusted_policy_eligible"] = False
-        trace["relaxation_level"] = plan.level
-        hits = result.get("hits")
-        if isinstance(hits, list):
-            cls._annotate_hits_with_filter_contract(hits, plan)
-        return result
+        from after_sales_agent.retrieval.retrieval_result import apply_filter_contract
+        return apply_filter_contract(result, plan)
 
     @classmethod
     def _finalize_result(
@@ -796,7 +1138,7 @@ class PgVectorKnowledgeRetriever:
         safe_stage_latency = {
             str(stage): float(duration)
             for stage, duration in stage_latency.items()
-            if stage in {"embedding", "vector", "keyword", "rrf", "reranker", "total"}
+            if stage in {"embedding", "vector", "keyword", "rrf", "reranker", "multi_query", "total"}
             and isinstance(duration, (int, float))
             and math.isfinite(float(duration))
             and float(duration) >= 0
@@ -817,12 +1159,43 @@ class PgVectorKnowledgeRetriever:
             "keyword_candidate_count": cls._safe_trace_count(raw_trace.get("keyword_candidate_count")),
             "rrf_candidate_count": cls._safe_trace_count(raw_trace.get("rrf_candidate_count")),
             "rerank_candidate_count": cls._safe_trace_count(raw_trace.get("rerank_candidate_count")),
+            "candidate_query_count": cls._safe_trace_count(raw_trace.get("candidate_query_count")),
+            "candidate_success_count": cls._safe_trace_count(raw_trace.get("candidate_success_count")),
+            "candidate_failure_count": cls._safe_trace_count(raw_trace.get("candidate_failure_count")),
+            "candidate_hit_count": cls._safe_trace_count(raw_trace.get("candidate_hit_count")),
+            "unique_candidate_count": cls._safe_trace_count(raw_trace.get("unique_candidate_count")),
+            "rerank_query_count": cls._safe_trace_count(raw_trace.get("rerank_query_count")),
+            "rerank_query_success_count": cls._safe_trace_count(
+                raw_trace.get("rerank_query_success_count")
+            ),
             "retrieval_mode": cls._safe_trace_name(
                 raw_trace.get("retrieval_mode"), str(finalized.get("mode") or "unknown")
+            ),
+            "rerank_query_source": cls._safe_trace_name(
+                raw_trace.get("rerank_query_source"), None
             ),
             "fallback_reason": cls._safe_trace_name(raw_trace.get("fallback_reason"), failure_reason),
             "trusted_policy_eligible": bool(trusted_policy_eligible),
         }
+        raw_candidate_traces = raw_trace.get("candidate_traces")
+        if isinstance(raw_candidate_traces, list):
+            safe_candidate_traces: list[dict[str, Any]] = []
+            for item in raw_candidate_traces[:3]:
+                if not isinstance(item, dict):
+                    continue
+                candidate_trace = {
+                    "query_index": cls._safe_trace_count(item.get("query_index")),
+                    "latency_ms": max(0.0, float(item.get("latency_ms") or 0.0)),
+                    "hit_count": cls._safe_trace_count(item.get("hit_count")),
+                }
+                mode = cls._safe_trace_name(item.get("mode"), None)
+                error_type = cls._safe_trace_name(item.get("error_type"), None)
+                if mode is not None:
+                    candidate_trace["mode"] = mode
+                if error_type is not None:
+                    candidate_trace["error_type"] = error_type
+                safe_candidate_traces.append(candidate_trace)
+            trace["candidate_traces"] = safe_candidate_traces
         fallback_level = raw_trace.get("fallback_level")
         if fallback_level in {"strict", "category_relaxed", "scene_relaxed", "category_and_scene_relaxed", "intent_relaxed"}:
             trace["fallback_level"] = fallback_level
@@ -855,40 +1228,7 @@ class PgVectorKnowledgeRetriever:
             return candidate
         return default
 
-    @classmethod
-    def _finalize_ablation_result(
-        cls,
-        *,
-        mode: str,
-        hits: list[dict[str, Any]],
-        plan: FilterPlan,
-        dense_count: int,
-        keyword_count: int,
-        rrf_count: int,
-        trace: dict[str, Any],
-    ) -> dict[str, Any]:
-        no_answer = not hits
-        trace.update(
-            {
-                "dense_candidate_count": dense_count,
-                "keyword_candidate_count": keyword_count,
-                "rrf_candidate_count": rrf_count,
-                "rerank_candidate_count": 0,
-                "retrieval_mode": mode,
-                "fallback_reason": "NO_MATCH" if no_answer else None,
-            }
-        )
-        return cls._finalize_result(
-            {"mode": mode, "hits": hits, "trace": trace},
-            plan=plan,
-            failure_reason="NO_MATCH" if no_answer else None,
-            no_answer=no_answer,
-        )
-
-    def _retrieve_compatibility(
-        self,
-        *,
-        query: str,
+    def _vector_search(
         merchant_code: str | None,
         product_category: str | None,
         scene: str | None,
@@ -975,7 +1315,11 @@ class PgVectorKnowledgeRetriever:
         filter_plan: FilterPlan | None = None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        plan = filter_plan or self._strict_filter_plan(
+        from after_sales_agent.retrieval.search.vector_search import vector_search
+        return vector_search(
+            psycopg_module=psycopg_module,
+            config=self.config,
+            embedding=embedding,
             merchant_code=merchant_code,
             product_category=product_category,
             scene=scene,
@@ -983,96 +1327,14 @@ class PgVectorKnowledgeRetriever:
             source_type=source_type,
             policy_version=policy_version,
             as_of_time=as_of_time,
+            filter_plan=filter_plan,
+            limit=limit,
         )
-        filter_sql, filter_params = build_hard_filter_sql(plan)
-        where_sql = "WHERE " + filter_sql
-        params = [self._vector_literal(embedding), *filter_params]
-        safe_limit = max(1, min(int(limit), 20))
-        sql = f"""
-            SELECT kc.id, kc.document_type, kd.source_code, kc.chunk_text, kc.metadata,
-                   kd.title, kc.product_categories, kc.scenes, kc.intents, kd.policy_version,
-                   kd.tags, kd.merchant_code, kc.heading_path, kc.page_number, kc.revision,
-                   kd.valid_from, kd.valid_to, kc.document_id,
-                   1 - (kc.embedding <=> %s::vector) AS score
-            FROM knowledge_chunk kc
-            JOIN knowledge_document kd ON kd.id = kc.document_id
-            {where_sql}
-            ORDER BY kc.embedding <=> %s::vector
-            LIMIT {safe_limit}
-        """
-        params.append(self._vector_literal(embedding))
-        with psycopg_module.connect(self.config.dsn) as conn:
-            with conn.cursor() as cur:
-                # IVFFlat trades recall for speed. Keep this per transaction so
-                # the setting cannot leak to pooled connections.
-                probes = max(1, min(int(self.config.ivfflat_probes), 1000))
-                cur.execute(f"SET LOCAL ivfflat.probes = {probes}")
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-        hits = [self._row_to_hit(row, rank=rank, channel="dense") for rank, row in enumerate(rows, start=1)]
-        return self._annotate_hits_with_filter_contract(hits, plan)
 
     @staticmethod
     def _row_to_hit(row: Any, *, rank: int = 1, channel: str = "dense") -> dict[str, Any]:
-        metadata = row[4]
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except json.JSONDecodeError:
-                metadata = {}
-        metadata = {
-            **(metadata or {}),
-            "title": row[5],
-            "product_categories": row[6] or [],
-            "scenes": row[7] or [],
-            "intents": row[8] or [],
-            "product_category": (row[6] or [None])[0],
-            "scene": (row[7] or [None])[0],
-            "intent": (row[8] or [None])[0],
-            "policy_version": row[9],
-            "tags": row[10] or [],
-            "merchant_code": row[11],
-            "source_type": row[1],
-            "source_code": str(row[2]),
-            "heading_path": row[12] or [],
-            "page_number": row[13],
-            "revision": row[14],
-            "valid_from": PgVectorKnowledgeRetriever._serialize_time(row[15]),
-            "valid_to": PgVectorKnowledgeRetriever._serialize_time(row[16]),
-            "document_id": row[17],
-        }
-        citation = {
-            "chunk_id": row[0],
-            "document_id": row[17],
-            "source_type": row[1],
-            "source_code": str(row[2]),
-            "title": row[5],
-            "merchant_code": row[11],
-            "heading_path": row[12] or [],
-            "page_number": row[13],
-            "revision": row[14],
-            "policy_version": row[9],
-            "valid_from": PgVectorKnowledgeRetriever._serialize_time(row[15]),
-            "valid_to": PgVectorKnowledgeRetriever._serialize_time(row[16]),
-        }
-        raw_score = float(row[18] or 0)
-        return {
-            "id": row[0],
-            "chunk_id": row[0],
-            "source_type": row[1],
-            "source_code": str(row[2]),
-            "title": metadata.get("title") or row[1],
-            "snippet": row[3],
-            "score": round(raw_score, 4),
-            "raw_score": raw_score,
-            "rank": rank,
-            "channel": channel,
-            f"{channel}_rank": rank,
-            f"{channel}_score": raw_score,
-            "retrieval_channels": [channel],
-            "citation": citation,
-            "metadata": metadata,
-        }
+        from after_sales_agent.retrieval.search.vector_search import row_to_hit
+        return row_to_hit(row, rank=rank, channel=channel)
 
     def _merge_and_rerank_hits(
         self,
@@ -1094,103 +1356,31 @@ class PgVectorKnowledgeRetriever:
         limit: int,
         trace: dict[str, Any],
     ) -> dict[str, Any]:
-        fused = rrf_fuse(dense_hits, keyword_hits, limit=20)
-        self._annotate_hits_with_filter_contract(fused, plan)
-        try:
-            reranked = self.reranker.rerank(query, fused, top_n=limit)
-        except Exception:
-            reranked = RerankResult(
-                items=fused[:limit],
-                mode="hybrid_rrf_degraded",
-                degraded=True,
-                failure_reason="UNEXPECTED_ERROR",
-                latency_ms=0.0,
-            )
-
-        default_source = plan.source_type or self._hit_source_type(fused[0] if fused else {})
-        threshold = self._threshold_for_source(default_source)
-        output_hits: list[dict[str, Any]] = []
-        for raw_hit in reranked.items:
-            hit = dict(raw_hit)
-            source = self._hit_source_type(hit)
-            hit_threshold = self._threshold_for_source(source)
-            hit["threshold"] = hit_threshold
-            hit["relaxation_level"] = plan.level
-            hit["trusted_policy_eligible"] = False
-            if reranked.degraded:
-                output_hits.append(hit)
-                continue
-            score = self._rerank_score(hit)
-            if score < hit_threshold:
-                continue
-            if (
-                plan.level == "strict"
-                and {"dense", "keyword"}.issubset(set(hit.get("retrieval_channels") or []))
-                and source in POLICY_SOURCE_TYPES
-            ):
-                hit["trusted_policy_eligible"] = True
-            output_hits.append(hit)
-
-        reranker_succeeded = not reranked.degraded
-        trusted_policy_eligible = bool(
-            reranker_succeeded
-            and plan.level == "strict"
-            and any(hit.get("trusted_policy_eligible") is True for hit in output_hits)
-        )
-        stage_latency = trace.get("stage_latency_ms")
-        if not isinstance(stage_latency, dict):
-            stage_latency = {}
-        if "vector_latency_ms" in trace:
-            stage_latency["vector"] = trace["vector_latency_ms"]
-        stage_latency["reranker"] = reranked.latency_ms
-        trace["stage_latency_ms"] = stage_latency
-        trace["filter_level"] = plan.level
-        trace["reranker_succeeded"] = reranker_succeeded
-        trace["reranker_failure_reason"] = reranked.failure_reason
-        trace["threshold"] = threshold
-        trace["trusted_policy_eligible"] = trusted_policy_eligible
-        trace["dense_candidate_count"] = len(dense_hits)
-        trace["keyword_candidate_count"] = len(keyword_hits)
-        trace["rrf_candidate_count"] = len(fused)
-        trace["rerank_candidate_count"] = len(reranked.items)
-        trace["retrieval_mode"] = reranked.mode
-        trace["fallback_reason"] = reranked.failure_reason
-        no_answer = bool(reranked.degraded or not output_hits)
-        failure_reason = reranked.failure_reason if reranked.degraded else ("NO_MATCH" if no_answer else None)
-        return self._finalize_result(
-            {
-                "mode": reranked.mode,
-                "query": query,
-                "hits": output_hits,
-                "trace": trace,
-            },
+        from after_sales_agent.retrieval.ranking.reranker import _finalize_reranked_result
+        return _finalize_reranked_result(
+            query=query,
+            dense_hits=dense_hits,
+            keyword_hits=keyword_hits,
             plan=plan,
-            failure_reason=failure_reason,
-            reranker_succeeded=reranker_succeeded,
-            no_answer=no_answer,
-            trusted_policy_eligible=trusted_policy_eligible,
-            threshold=threshold,
+            limit=limit,
+            trace=trace,
+            reranker_client=self.reranker,
         )
 
     @staticmethod
     def _hit_source_type(hit: dict[str, Any]) -> str:
-        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
-        return str(hit.get("source_type") or metadata.get("source_type") or "").strip()
+        from after_sales_agent.retrieval.retrieval_result import hit_source_type
+        return hit_source_type(hit)
 
     @staticmethod
     def _threshold_for_source(source_type: str | None) -> float:
-        return RERANK_THRESHOLDS.get(str(source_type or "").strip(), 0.60)
+        from after_sales_agent.retrieval.retrieval_result import threshold_for_source
+        return threshold_for_source(source_type)
 
     @staticmethod
     def _rerank_score(hit: dict[str, Any]) -> float:
-        raw = hit.get("rerank_score")
-        if raw is None:
-            raw = hit.get("relevance_score")
-        try:
-            score = float(raw)
-        except (TypeError, ValueError):
-            return -1.0
-        return score if math.isfinite(score) else -1.0
+        from after_sales_agent.retrieval.retrieval_result import rerank_score
+        return rerank_score(hit)
 
     def _keyword_search(
         self,
@@ -1207,7 +1397,11 @@ class PgVectorKnowledgeRetriever:
         filter_plan: FilterPlan | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        plan = filter_plan or self._strict_filter_plan(
+        from after_sales_agent.retrieval.search.keyword_search import _keyword_search
+        return _keyword_search(
+            psycopg_module=psycopg_module,
+            config=self.config,
+            query=query,
             merchant_code=merchant_code,
             product_category=product_category,
             scene=scene,
@@ -1215,32 +1409,9 @@ class PgVectorKnowledgeRetriever:
             source_type=source_type,
             policy_version=policy_version,
             as_of_time=as_of_time,
+            filter_plan=filter_plan,
+            limit=limit,
         )
-        filter_sql, filter_params = build_hard_filter_sql(plan)
-        phrase = f"%{query}%"
-        safe_limit = max(1, min(int(limit), 20))
-        sql = f"""
-            SELECT kc.id, kc.document_type, kd.source_code, kc.chunk_text, kc.metadata,
-                   kd.title, kc.product_categories, kc.scenes, kc.intents, kd.policy_version,
-                   kd.tags, kd.merchant_code, kc.heading_path, kc.page_number, kc.revision,
-                   kd.valid_from, kd.valid_to, kc.document_id,
-                   (similarity(kc.search_text, %s)
-                    + CASE WHEN kc.search_text ILIKE %s THEN 1.0 ELSE 0 END
-                    + CASE WHEN array_to_string(kc.heading_path, ' ') ILIKE %s THEN 0.6 ELSE 0 END) AS score
-            FROM knowledge_chunk kc
-            JOIN knowledge_document kd ON kd.id = kc.document_id
-            WHERE {filter_sql}
-              AND (kc.search_text %% %s OR kc.search_text ILIKE %s)
-            ORDER BY score DESC, kc.id
-            LIMIT {safe_limit}
-        """
-        params = [query, phrase, phrase, *filter_params, query, phrase]
-        with psycopg_module.connect(self.config.dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-        hits = [self._row_to_hit(row, rank=rank, channel="keyword") for rank, row in enumerate(rows, start=1)]
-        return self._annotate_hits_with_filter_contract(hits, plan)
 
     def _lexical_fallback(
         self,
@@ -1256,6 +1427,8 @@ class PgVectorKnowledgeRetriever:
         filter_plan: FilterPlan | None = None,
         top_k: int | None = None,
     ) -> dict[str, Any]:
+        from after_sales_agent.retrieval.search.keyword_search import lexical_fallback
+
         plan = filter_plan or self._strict_filter_plan(
             merchant_code=merchant_code,
             product_category=product_category,
@@ -1287,11 +1460,12 @@ class PgVectorKnowledgeRetriever:
             "intent": intent,
             "source_type": source_type,
             "policy_version": policy_version,
-            "as_of_time": (as_of_time or datetime.now()).isoformat(),
+            "as_of_time": (as_of_time or datetime.utcnow()).isoformat(),
         }
         try:
-            hits = self._keyword_search(
+            hits = lexical_fallback(
                 psycopg_module=psycopg,
+                config=self.config,
                 query=query,
                 merchant_code=merchant_code,
                 product_category=product_category,
@@ -1301,7 +1475,7 @@ class PgVectorKnowledgeRetriever:
                 policy_version=policy_version,
                 as_of_time=as_of_time,
                 filter_plan=filter_plan,
-                limit=max(1, min(int(top_k or self.config.top_k), 20)),
+                limit=max(1, min(int(top_k or self.config.top_k), 50)),
             )
         except Exception as exc:
             return self._finalize_result(
@@ -1313,7 +1487,7 @@ class PgVectorKnowledgeRetriever:
             "mode": "lexical_fallback",
             "query": query,
             "hits": hits,
-            "trace": {"filters": metadata_filters, "top_k": len(hits), "tokens": self._lexical_tokens(query)},
+            "trace": {"filters": metadata_filters, "top_k": len(hits)} ,
         }
         return self._finalize_result(
             result,
@@ -1322,97 +1496,18 @@ class PgVectorKnowledgeRetriever:
         )
 
     @staticmethod
-    def _lexical_tokens(query: str) -> list[str]:
-        """通用中文分词 — 不区分领域特定术语，按自然词边界切分。"""
-        import re as _re
-        text = str(query or "")
-        # 中文按字切 bigram + trigram，英文/数字保持原样
-        tokens: list[str] = []
-        # 提取中文连续片段做 n-gram
-        for segment in _re.split(r"[^一-鿿]+", text):
-            segment = segment.strip()
-            if len(segment) >= 2:
-                # bigram
-                for i in range(len(segment) - 1):
-                    tokens.append(segment[i:i + 2])
-                # trigram for longer segments
-                if len(segment) >= 3:
-                    for i in range(len(segment) - 2):
-                        tokens.append(segment[i:i + 3])
-        # 保留英文/数字 tokens（按空格分）
-        for raw in text.replace("_", " ").replace("/", " ").split():
-            value = raw.strip()
-            if len(value) >= 2 and not _re.fullmatch(r"[一-鿿]+", value):
-                tokens.append(value)
-        # 去重，限制数量
-        seen: set[str] = set()
-        result: list[str] = []
-        for t in tokens:
-            if t not in seen:
-                seen.add(t)
-                result.append(t)
-        return result[:16]
 
     @staticmethod
-    def _lexical_token_weight(token: str) -> float:
-        """按 token 长度自适应权重 — 长词更可能是关键信息。"""
-        length = len(token)
-        if length >= 6:
-            return 2.0
-        if length >= 4:
-            return 1.5
-        return 1.0
 
     @staticmethod
     def _scene_aliases(scene: str | None) -> list[str]:
-        value = str(scene or "").strip()
-        if not value:
-            return []
-        alias_map = {
-            "damage": ["damage", "product_damage"],
-            "product_damage": ["product_damage", "damage"],
-            "quality_issue": ["quality_issue"],
-            "package_damage": ["package_damage"],
-            "wrong_or_missing_items": ["wrong_or_missing_items"],
-            "logistics_issue": ["logistics_issue", "logistics_damage"],
-            "logistics_damage": ["logistics_damage", "logistics_issue"],
-        }
-        aliases = alias_map.get(value, [value])
-        return list(dict.fromkeys(aliases))
+        from after_sales_agent.retrieval.alias_mapping import scene_aliases
+        return scene_aliases(scene)
 
     @staticmethod
     def _product_category_aliases(product_category: str | None) -> list[str]:
-        value = str(product_category or "").strip()
-        if not value:
-            return []
-        lowered = value.lower()
-        alias_map = {
-            "数码": ["数码", "digital", "headphone", "phone"],
-            "digital": ["digital", "数码", "headphone", "phone"],
-            "耳机": ["耳机", "headphone", "digital", "数码"],
-            "蓝牙耳机": ["蓝牙耳机", "耳机", "headphone", "digital", "数码"],
-            "蓝牙降噪耳机": ["蓝牙降噪耳机", "蓝牙耳机", "耳机", "headphone", "digital", "数码"],
-            "headphone": ["headphone", "耳机", "digital", "数码"],
-            "手机": ["手机", "phone", "digital", "数码"],
-            "phone": ["phone", "手机", "digital", "数码"],
-            "服装": ["服装", "apparel"],
-            "apparel": ["apparel", "服装"],
-            "日用": ["日用", "daily"],
-            "daily": ["daily", "日用"],
-            "鞋靴": ["鞋靴", "shoes"],
-            "shoes": ["shoes", "鞋靴"],
-            "食品": ["食品", "food"],
-            "food": ["food", "食品"],
-            "家居": ["家居", "home"],
-            "home": ["home", "家居"],
-            "其他": ["其他", "other"],
-            "other": ["other", "其他"],
-            "综合": ["综合", "general", "通用"],
-            "通用": ["通用", "general"],
-            "general": ["general", "通用"],
-        }
-        aliases = alias_map.get(value) or alias_map.get(lowered) or [value]
-        return list(dict.fromkeys([str(item).strip() for item in aliases if str(item).strip()]))
+        from after_sales_agent.retrieval.alias_mapping import product_category_aliases
+        return product_category_aliases(product_category)
 
     def _local_knowledge_fallback(
         self,
@@ -1426,6 +1521,11 @@ class PgVectorKnowledgeRetriever:
         policy_version: str | None = None,
         top_k: int | None = None,
     ) -> dict[str, Any]:
+        from after_sales_agent.retrieval.search.local_fallback import (
+            local_knowledge_hits,
+        )
+
+        knowledge = self._load_local_policy_knowledge()
         plan = self._strict_filter_plan(
             merchant_code=merchant_code,
             product_category=product_category,
@@ -1435,114 +1535,59 @@ class PgVectorKnowledgeRetriever:
             policy_version=policy_version,
             as_of_time=None,
         )
-        knowledge = self._load_local_policy_knowledge()
-        if not knowledge:
+        try:
+            hits, trace_info = local_knowledge_hits(
+                query=query,
+                merchant_code=merchant_code,
+                product_category=product_category,
+                scene=scene,
+                intent=intent,
+                source_type=source_type,
+                policy_version=policy_version,
+                top_k=top_k,
+                config=self.config,
+                _policy_knowledge_index=knowledge,
+            )
+        except Exception as exc:
             return self._finalize_result(
-                {"mode": "local_json_missing", "query": query, "hits": [], "trace": {"reason": "policy-knowledge-base.json missing"}},
+                {"mode": "local_error", "query": query, "hits": [], "trace": {"error": exc.__class__.__name__, "message": str(exc)}},
+                plan=plan,
+                failure_reason="LOCAL_ERROR",
+            )
+
+        if not hits:
+            return self._finalize_result(
+                {"mode": "local_json_missing", "query": query, "hits": [], "trace": {"reason": "no matching local knowledge"}},
                 plan=plan,
                 failure_reason="LOCAL_JSON_MISSING",
             )
 
-        hits: list[dict[str, Any]] = []
-        scene_aliases = set(self._scene_aliases(scene))
-        limit = max(1, min(int(top_k or self.config.top_k), 10))
-
-        for item in knowledge.get("scene_evidence_knowledge") or []:
-            if not isinstance(item, dict):
-                continue
-            item_scene = str(item.get("scene") or "").strip()
-            if scene_aliases and item_scene not in scene_aliases:
-                continue
-            default_evidence = item.get("default_evidence")
-            snippet = str(item.get("description") or "")
-            hits.append(
-                {
-                    "id": f"local-scene-{item_scene}",
-                    "source_type": "scene_evidence",
-                    "source_code": item_scene,
-                    "title": str(item.get("label") or item_scene),
-                    "snippet": snippet,
-                    "score": 0.99,
-                    "metadata": {
-                        "scene": item_scene,
-                        "default_evidence": default_evidence if isinstance(default_evidence, list) else [],
-                        "merchant_code": merchant_code,
-                        "product_category": product_category,
-                        "intent": intent,
-                        "policy_version": policy_version,
-                    },
-                }
-            )
-
-        query_lower = query.lower()
-        for section_name, source_name in (
-            ("after_sales_policy_knowledge", "after_sales_policy"),
-            ("faq_knowledge", "faq"),
-            ("product_knowledge", "product_knowledge"),
-            ("review_interpretation_knowledge", "review_interpretation"),
-            ("reply_template_knowledge", "reply_template"),
-        ):
-            for item in knowledge.get(section_name) or []:
-                if not isinstance(item, dict):
-                    continue
-                text = " ".join(str(item.get(key) or "") for key in ("title", "question", "summary", "content", "template", "meaning", "description"))
-                if not text.strip():
-                    continue
-                score = self._local_text_match_score(query_lower, text.lower())
-                if score <= 0:
-                    continue
-                item_scene = str(item.get("scene") or "").strip()
-                if scene_aliases and item_scene and item_scene not in scene_aliases:
-                    continue
-                item_category = str(item.get("product_category") or item.get("product_name") or "").strip()
-                category_aliases = {alias.lower() for alias in self._product_category_aliases(product_category)}
-                if (
-                    product_category
-                    and item_category
-                    and item_category.lower() not in category_aliases
-                    and item_category not in {"general", "通用"}
-                ):
-                    continue
-                hits.append(
-                    {
-                        "id": f"local-{section_name}-{item.get('code') or item.get('policy_code') or item.get('product_id') or len(hits)}",
-                        "source_type": source_name,
-                        "source_code": str(item.get("code") or item.get("policy_code") or item.get("question") or item.get("title") or len(hits)),
-                        "title": str(item.get("title") or item.get("question") or item.get("policy_name") or section_name),
-                        "snippet": text[:700],
-                        "score": round(score, 4),
-                        "metadata": item,
-                    }
-                )
-
-        hits.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        result = {
+            "mode": "local_json_fallback",
+            "query": query,
+            "hits": hits,
+            "trace": trace_info,
+        }
         return self._finalize_result(
-            {
-                "mode": "local_json_fallback",
-                "query": query,
-                "hits": hits[:limit],
-                "trace": {
-                    "scene": scene,
-                    "product_category": product_category,
-                    "merchant_code": merchant_code,
-                },
-            },
+            result,
             plan=plan,
             failure_reason="LOCAL_FALLBACK_ONLY",
         )
 
     @staticmethod
     def _local_text_match_score(query: str, text: str) -> float:
-        tokens = [token for token in PgVectorKnowledgeRetriever._lexical_tokens(query) if token]
-        if not tokens:
-            return 0.0
-        matched = sum(1 for token in tokens if token.lower() in text)
-        if matched == 0:
-            return 0.0
-        return min(0.55 + matched * 0.08, 0.95)
+        from after_sales_agent.retrieval.search.keyword_search import _local_text_match_score as _ltms
+        return _ltms(query, text)
 
     @staticmethod
     def _load_local_policy_knowledge() -> dict[str, Any]:
+        from after_sales_agent.retrieval.search.local_fallback import (
+            load_local_policy_knowledge,
+        )
+        result = load_local_policy_knowledge()
+        if result is not None:
+            return result
+        # Fallback to original path resolution
         candidates = [
             Path.cwd() / "src" / "main" / "resources" / "agent-knowledge-base" / "policy-knowledge-base.json",
             Path(__file__).resolve().parents[3] / "src" / "main" / "resources" / "agent-knowledge-base" / "policy-knowledge-base.json",
@@ -1551,6 +1596,7 @@ class PgVectorKnowledgeRetriever:
             if not path.exists():
                 continue
             try:
+                import json
                 return json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 return {}
@@ -1558,26 +1604,11 @@ class PgVectorKnowledgeRetriever:
 
     @staticmethod
     def _embedding_error_info(exc: Exception) -> dict[str, Any]:
-        message = str(exc)
-        lowered = message.lower()
-        info = {
-            "error": exc.__class__.__name__,
-            "message": message,
-            "type": "embedding_error",
-        }
-        if "10013" in message or "permission" in lowered or "访问套接字" in message:
-            info["type"] = "network_blocked"
-            info["hint"] = "Outbound connection to embedding service is blocked by local OS/network policy."
-        elif "timed out" in lowered or "timeout" in lowered:
-            info["type"] = "network_timeout"
-            info["hint"] = "Embedding service request timed out."
-        elif "name or service not known" in lowered or "nodename nor servname provided" in lowered:
-            info["type"] = "dns_error"
-            info["hint"] = "Embedding host DNS resolution failed."
-        return info
+        from after_sales_agent.infrastructure.embedding_service import embedding_error_info
+        return embedding_error_info(exc)
 
     def _embed(self, text: str) -> list[float]:
-        return self.embed_many([text])[0]
+        return self._embedding_service.get_embedding(text)
 
     def _get_query_embedding(self, text: str) -> tuple[list[float], bool]:
         """Cache query vectors only; documents remain live after knowledge updates."""
@@ -1602,37 +1633,7 @@ class PgVectorKnowledgeRetriever:
         return embedding, False
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
-        if not self.config.embedding_api_key:
-            raise RuntimeError("DASHSCOPE_API_KEY or BAILIAN_API_KEY is required for text-embedding-v3")
-        normalized_texts = [str(text or "").strip() for text in texts]
-        if not normalized_texts:
-            return []
-        if any(not text for text in normalized_texts):
-            raise RuntimeError("embedding input contains empty text")
-
-        payload = self._embedding_payload(normalized_texts)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self._embedding_url(),
-            data=body,
-            headers={
-                "Authorization": f"Bearer {self.config.embedding_api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        response_body = self._post_embedding(request)
-
-        data = json.loads(response_body)
-        vectors = self._parse_embedding_response(data)
-        if len(vectors) != len(normalized_texts):
-            raise RuntimeError(f"embedding count mismatch: expected {len(normalized_texts)}, got {len(vectors)}")
-        for vector in vectors:
-            if len(vector) != self.config.dimensions:
-                raise RuntimeError(
-                    f"embedding dimension mismatch: expected {self.config.dimensions}, got {len(vector)}"
-                )
-        return vectors
+        return self._embedding_service.embed_many(texts)
 
     def _embedding_url(self) -> str:
         base_url = self.config.embedding_base_url.rstrip("/")
@@ -1695,4 +1696,5 @@ class PgVectorKnowledgeRetriever:
 
     @staticmethod
     def _vector_literal(vector: list[float]) -> str:
-        return "[" + ",".join(f"{item:.8f}" for item in vector) + "]"
+        from after_sales_agent.retrieval.search.vector_search import _vector_literal
+        return _vector_literal(vector)

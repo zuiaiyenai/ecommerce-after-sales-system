@@ -29,7 +29,7 @@ async function handleShip() {
   loading.value = true;
   error.value = '';
   try {
-    order.value = await shipOrder(order.value.id);
+    order.value = await shipOrder(order.value.orderId);
   } catch (err) {
     error.value = err.message || '发货失败';
   } finally {

@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import unittest
+
+from after_sales_agent.tools import AgentToolRegistry
+
+
+class ToolRegistrySchemaTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.registry = AgentToolRegistry()
+        self.specs = {spec["name"]: spec for spec in self.registry.tool_specs()}
+
+    def test_all_executable_tools_have_strict_complete_object_schemas(self) -> None:
+        self.assertEqual(set(self.registry.registry()), set(self.specs))
+        for name, spec in self.specs.items():
+            with self.subTest(tool=name):
+                schema = spec["input_schema"]
+                self.assertEqual("object", schema["type"])
+                self.assertIs(False, schema["additionalProperties"])
+                self.assertTrue(set(schema["required"]).issubset(schema["properties"]))
+
+    def test_trusted_identity_fields_are_not_model_visible(self) -> None:
+        trusted = {"user_id", "session_id", "order_id", "ticket_id", "review_request_id"}
+        for spec in self.specs.values():
+            schema = spec["input_schema"]
+            self.assertTrue(trusted.isdisjoint(schema["properties"]))
+            self.assertTrue(trusted.isdisjoint(schema["required"]))
+
+    def test_representative_schema_types_are_explicit(self) -> None:
+        search = self.specs["search_user_orders"]["input_schema"]["properties"]
+        knowledge = self.specs["retrieve_knowledge"]["input_schema"]["properties"]
+        review = self.specs["review_images"]["input_schema"]["properties"]
+        submit = self.specs["submit_ai_review"]["input_schema"]["properties"]
+
+        self.assertEqual("string", search["keyword"]["type"])
+        self.assertEqual("array", search["status_filter"]["type"])
+        self.assertEqual("number", knowledge["top_k"]["type"])
+        self.assertEqual("array", review["attachments"]["type"])
+        self.assertEqual("object", review["attachments"]["items"]["type"])
+        self.assertEqual("boolean", submit["visual_uncertain"]["type"])
+        self.assertEqual("number", submit["ai_review_confidence"]["type"])
+
+    def test_runtime_defaulted_fields_remain_required_for_model_calls(self) -> None:
+        self.assertEqual(
+            ["attachments"],
+            self.specs["review_images"]["input_schema"]["required"],
+        )
+        self.assertEqual(
+            ["merchant_code"],
+            self.specs["get_merchant_policy"]["input_schema"]["required"],
+        )
+
+    def test_final_reply_is_not_an_executable_registry_tool(self) -> None:
+        self.assertNotIn("final_reply", self.registry.registry())
+        self.assertNotIn("final_reply", self.specs)
+
+    def test_review_revision_fields_are_camelized_for_java_contract(self) -> None:
+        payload = self.registry._camelize(
+            {"evidence_revision": 2, "expected_evidence_revision": 3}
+        )
+
+        self.assertEqual({"evidenceRevision": 3}, payload)
+
+    def test_multi_query_tool_is_internal_and_preserves_filter_arguments(self) -> None:
+        class RecordingRetriever:
+            def __init__(self) -> None:
+                self.arguments = None
+
+            def retrieve_multi(self, **kwargs):
+                self.arguments = kwargs
+                return {"mode": "multi_query_reranked", "hits": []}
+
+        retriever = RecordingRetriever()
+        registry = AgentToolRegistry(retriever=retriever)  # type: ignore[arg-type]
+
+        result = registry.call(
+            "retrieve_knowledge_multi",
+            {
+                "original_query": "原始问题",
+                "queries": ["候选查询一", "候选查询二"],
+                "merchant_code": "M1",
+                "product_category": "数码",
+                "scene": "quality_issue",
+                "intent": "refund",
+                "source_type": "after_sales_policy",
+                "policy_version": "v2",
+                "as_of_time": "2026-07-20T09:00:00+08:00",
+                "top_k": 5,
+            },
+        )
+
+        self.assertTrue(result.ok)
+        self.assertNotIn("retrieve_knowledge_multi", registry.registry())
+        self.assertNotIn("retrieve_knowledge_multi", {item["name"] for item in registry.tool_specs()})
+        self.assertEqual("原始问题", retriever.arguments["original_query"])
+        self.assertEqual(["候选查询一", "候选查询二"], retriever.arguments["queries"])
+        self.assertEqual("M1", retriever.arguments["merchant_code"])
+        self.assertEqual("v2", retriever.arguments["policy_version"])
+        self.assertEqual(
+            "2026-07-20T09:00:00+08:00",
+            retriever.arguments["as_of_time"].isoformat(),
+        )
+
+    def test_graph_owned_nested_audit_fields_are_not_model_visible(self) -> None:
+        properties = self.specs["submit_ai_review"]["input_schema"]["properties"]
+
+        for internal_field in (
+            "ai_review_audit_json",
+            "policy_citations",
+            "skill_versions",
+            "image_review",
+        ):
+            with self.subTest(internal_field=internal_field):
+                self.assertNotIn(internal_field, properties)
+
+    def test_all_nested_model_visible_objects_are_closed(self) -> None:
+        def assert_closed(schema: dict[str, object], path: str) -> None:
+            if schema.get("type") == "object":
+                self.assertIs(False, schema.get("additionalProperties"), path)
+                properties = schema.get("properties")
+                self.assertIsInstance(properties, dict, path)
+                for name, child in properties.items():
+                    self.assertIsInstance(child, dict, f"{path}.{name}")
+                    assert_closed(child, f"{path}.{name}")
+            if schema.get("type") == "array":
+                items = schema.get("items")
+                self.assertIsInstance(items, dict, f"{path}[]")
+                assert_closed(items, f"{path}[]")
+
+        for name, spec in self.specs.items():
+            with self.subTest(tool=name):
+                assert_closed(spec["input_schema"], name)
+
+
+if __name__ == "__main__":
+    unittest.main()

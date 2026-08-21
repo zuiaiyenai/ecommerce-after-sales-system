@@ -3,7 +3,9 @@ package com.ecommerce.aftersales.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.config.ChatWebSocketHandler;
 import com.ecommerce.aftersales.dto.InternalAgentToolDtos;
+import com.ecommerce.aftersales.dto.WsChatMessage;
 import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
@@ -44,11 +46,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
@@ -72,9 +78,13 @@ public class InternalAgentToolsController {
     private final AiReviewUserNotificationService aiReviewUserNotificationService;
     private final AgentGatewayMetrics metrics;
     private final ObjectMapper objectMapper;
+    private final ChatWebSocketHandler chatWebSocketHandler;
 
     @Value("${app.agent.internal-token:}")
     private String internalToken;
+
+    @Value("${app.agent.review.minimum-confidence:0.75}")
+    private BigDecimal minimumAiReviewConfidence = new BigDecimal("0.75");
 
     @PostMapping("/orders/search")
     public ApiResponse<List<InternalAgentToolDtos.OrderSummary>> searchOrders(
@@ -155,6 +165,9 @@ public class InternalAgentToolsController {
         if (!StringUtils.hasText(request.getReviewRequestId())) {
             throw new BizException(400, "reviewRequestId is required");
         }
+        if (request.getEvidenceRevision() == null || request.getEvidenceRevision() < 0) {
+            throw new BizException(400, "evidenceRevision is required");
+        }
         String verdict = Optional.ofNullable(request.getVerdict()).orElse("").trim().toUpperCase();
         if ("MANUAL_REVIEW".equals(verdict)) {
             verdict = "MANUAL_REVIEW_REQUIRED";
@@ -164,18 +177,24 @@ public class InternalAgentToolsController {
         }
 
         AfterSalesTicket ticket = resolveOwnedTicket(request.getUserId(), request.getTicketId(), request.getOrderId());
-        if (request.getReviewRequestId().equals(ticket.getAiReviewRequestId())) {
+        if (!request.getReviewRequestId().equals(ticket.getAiReviewRequestId())) {
+            return rejectedReviewResult(request, verdict, ticket, "INSTANCE_MISMATCH");
+        }
+        if (ticket.getAiReviewResult() != null) {
             metrics.recordAiReviewApply("idempotent");
             log.info("ai_review_apply ticket_id={} review_request_id={} transition=idempotent failure_class=none",
                     ticket.getId(), request.getReviewRequestId());
             InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
             result.setVerdict(ticket.getAiReviewResult());
             result.setAiReviewResult(ticket.getAiReviewResult());
-            result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+            result.setAiReviewStatus(ticket.getAiReviewStatus());
             result.setReviewRequestId(ticket.getAiReviewRequestId());
             result.setReviewApplied(true);
             result.setIdempotentReplay(true);
             return ApiResponse.success("idempotent_replay", result);
+        }
+        if (!request.getEvidenceRevision().equals(ticket.getEvidenceRevision())) {
+            return rejectedReviewResult(request, verdict, ticket, "STALE_EVIDENCE");
         }
 
         String previousStatus = ticket.getStatus();
@@ -209,6 +228,7 @@ public class InternalAgentToolsController {
             int changed = afterSalesTicketMapper.applyAiApprovalIfPending(
                     ticket.getId(),
                     request.getReviewRequestId(),
+                    request.getEvidenceRevision(),
                     shortText(request.getReason(), 500),
                     writeJson(reviewAuditPayload(request)),
                     normalizeScore(request.getAiReviewConfidence()),
@@ -225,6 +245,7 @@ public class InternalAgentToolsController {
             AiReviewManualHandoffService.ManualHandoffResult handoff = aiReviewManualHandoffService.markManualRequired(
                     ticket.getId(),
                     request.getReviewRequestId(),
+                    request.getEvidenceRevision(),
                     request.getReason(),
                     "AGENT_TOOL",
                     writeJson(reviewAuditPayload(request)),
@@ -273,7 +294,8 @@ public class InternalAgentToolsController {
             Long ticketId
     ) {
         AfterSalesTicket current = afterSalesTicketMapper.selectById(ticketId);
-        if (current != null && request.getReviewRequestId().equals(current.getAiReviewRequestId())) {
+        if (current != null && request.getReviewRequestId().equals(current.getAiReviewRequestId())
+                && current.getAiReviewResult() != null) {
             metrics.recordAiReviewApply("idempotent");
             log.info("ai_review_apply ticket_id={} review_request_id={} transition=idempotent failure_class=none",
                     ticketId, request.getReviewRequestId());
@@ -285,6 +307,10 @@ public class InternalAgentToolsController {
             replay.setReviewApplied(true);
             replay.setIdempotentReplay(true);
             return ApiResponse.success("idempotent_replay", replay);
+        }
+        if (current != null && request.getReviewRequestId().equals(current.getAiReviewRequestId())
+                && !request.getEvidenceRevision().equals(current.getEvidenceRevision())) {
+            return rejectedReviewResult(request, verdict, current, "STALE_EVIDENCE");
         }
         if (current != null) {
             addTicketLog(
@@ -310,6 +336,23 @@ public class InternalAgentToolsController {
         log.info("ai_review_apply ticket_id={} review_request_id={} transition=stale failure_class={}",
                 ticketId, request.getReviewRequestId(), result.getReviewRejectReason());
         return ApiResponse.success("stale_review", result);
+    }
+
+    private ApiResponse<InternalAgentToolDtos.TicketResult> rejectedReviewResult(
+            InternalAgentToolDtos.SubmitAiReviewRequest request,
+            String verdict,
+            AfterSalesTicket ticket,
+            String reason
+    ) {
+        InternalAgentToolDtos.TicketResult result = toTicketResult(ticket, false);
+        result.setVerdict(verdict);
+        result.setReviewRequestId(request.getReviewRequestId());
+        result.setReviewApplied(false);
+        result.setIdempotentReplay(false);
+        result.setReviewRejectReason(reason);
+        result.setCurrentEvidenceRevision(ticket.getEvidenceRevision());
+        metrics.recordAiReviewApply("STALE_EVIDENCE".equals(reason) ? "stale_evidence" : "stale");
+        return ApiResponse.success("STALE_EVIDENCE".equals(reason) ? "stale_evidence" : "review_instance_mismatch", result);
     }
 
     private void bindSessionToTicket(Long sessionId, AfterSalesTicket ticket, Long userId) {
@@ -395,6 +438,16 @@ public class InternalAgentToolsController {
         session.setUpdateTime(message.getCreateTime() == null ? LocalDateTime.now() : message.getCreateTime());
         chatSessionMapper.updateById(session);
 
+        runAfterCommit(() -> chatWebSocketHandler.broadcastToSession(session.getId(), WsChatMessage.builder()
+                .action("message")
+                .sessionId(session.getId())
+                .role(message.getRole())
+                .content(message.getContent())
+                .messageType(message.getMessageType())
+                .fileUrl(message.getFileUrl())
+                .createdAt(formatTime(message.getCreateTime()))
+                .build()));
+
         InternalAgentToolDtos.MessageResult result = new InternalAgentToolDtos.MessageResult();
         result.setMessageId(message.getId());
         result.setSessionId(session.getId());
@@ -423,6 +476,31 @@ public class InternalAgentToolsController {
         session.setUserHidden(0);
         session.setUpdateTime(LocalDateTime.now());
         chatSessionMapper.updateById(session);
+
+        String noticeContent = "当前问题需要人工进一步处理，已转接人工客服，请稍候。";
+        ChatMessage existingNotice = chatMessageMapper.selectOne(
+                new LambdaQueryWrapper<ChatMessage>()
+                        .eq(ChatMessage::getSessionId, session.getId())
+                        .eq(ChatMessage::getRole, "SYSTEM")
+                        .eq(ChatMessage::getContent, noticeContent)
+                        .last("limit 1")
+        );
+        if (existingNotice == null) {
+            ChatMessage notice = new ChatMessage();
+            notice.setSessionId(session.getId());
+            notice.setRole("SYSTEM");
+            notice.setMessageType("TEXT");
+            notice.setContent(noticeContent);
+            chatMessageMapper.insert(notice);
+            runAfterCommit(() -> chatWebSocketHandler.broadcastToSession(session.getId(), WsChatMessage.builder()
+                    .action("message")
+                    .sessionId(session.getId())
+                    .role(notice.getRole())
+                    .content(notice.getContent())
+                    .messageType(notice.getMessageType())
+                    .createdAt(formatTime(notice.getCreateTime()))
+                    .build()));
+        }
         return ApiResponse.success("ok", toSessionResult(session));
     }
 
@@ -433,6 +511,9 @@ public class InternalAgentToolsController {
             @RequestBody InternalAgentToolDtos.MissingEvidenceRequest request
     ) {
         verifyInternalToken(token);
+        if (StringUtils.hasText(request.getReviewRequestId()) && request.getEvidenceRevision() != null) {
+            return persistMissingEvidence(request);
+        }
         InternalAgentToolDtos.AppendMessageRequest append = new InternalAgentToolDtos.AppendMessageRequest();
         append.setUserId(request.getUserId());
         append.setSessionId(request.getSessionId());
@@ -442,6 +523,78 @@ public class InternalAgentToolsController {
         append.setMessageType("TEXT");
         append.setContent(firstNonBlank(request.getAssistantReply(), "请补充必要售后凭证后继续处理。"));
         return appendMessage(token, append);
+    }
+
+    private ApiResponse<InternalAgentToolDtos.MessageResult> persistMissingEvidence(
+            InternalAgentToolDtos.MissingEvidenceRequest request
+    ) {
+        requireUser(request.getUserId());
+        if (request.getTicketId() == null) {
+            throw new BizException(400, "ticketId is required");
+        }
+        AfterSalesTicket ticket = afterSalesTicketMapper.selectByIdForUpdate(request.getTicketId());
+        if (ticket == null || !request.getUserId().equals(ticket.getUserId())) {
+            throw new BizException(404, "ticket not found");
+        }
+        if (!request.getReviewRequestId().equals(ticket.getAiReviewRequestId())) {
+            throw new BizException(409, "review instance mismatch");
+        }
+        if (!request.getEvidenceRevision().equals(ticket.getEvidenceRevision())) {
+            InternalAgentToolDtos.MessageResult stale = new InternalAgentToolDtos.MessageResult();
+            stale.setSessionId(request.getSessionId());
+            stale.setIdempotentReplay(false);
+            stale.setReviewRejectReason("STALE_EVIDENCE");
+            stale.setCurrentEvidenceRevision(ticket.getEvidenceRevision());
+            return ApiResponse.success("stale_evidence", stale);
+        }
+        String businessKey = "review:evidence-required:" + ticket.getAiReviewRequestId()
+                + ":" + ticket.getEvidenceRevision();
+        ChatMessage existing = chatMessageMapper.selectOne(new LambdaQueryWrapper<ChatMessage>()
+                .eq(ChatMessage::getBusinessKey, businessKey)
+                .last("limit 1"));
+        if (existing != null) {
+            return ApiResponse.success("idempotent_replay", messageResult(existing, true));
+        }
+
+        String content = firstNonBlank(request.getAssistantReply(), "请补充必要售后凭证后继续处理。");
+        int changed = afterSalesTicketMapper.markWaitingEvidenceIfCurrent(
+                ticket.getId(), ticket.getAiReviewRequestId(), ticket.getEvidenceRevision(),
+                shortText(content, 500), LocalDateTime.now());
+        if (changed != 1) {
+            throw new BizException(409, "review context changed");
+        }
+        ChatSession session = resolveOrCreateSession(
+                request.getUserId(), request.getSessionId(), request.getOrderId(), ticket.getId());
+        assertSessionOwner(session, request.getUserId());
+        applySessionBusinessContext(session, request.getUserId(), request.getOrderId(), ticket.getId());
+        ChatMessage message = new ChatMessage();
+        message.setSessionId(session.getId());
+        message.setRole("ASSISTANT");
+        message.setMessageType("TEXT");
+        message.setContent(content);
+        message.setBusinessKey(businessKey);
+        chatMessageMapper.insert(message);
+        session.setUserHidden(0);
+        session.setUpdateTime(message.getCreateTime() == null ? LocalDateTime.now() : message.getCreateTime());
+        chatSessionMapper.updateById(session);
+        addTicketLog(ticket.getId(), ticket.getStatus(), ticket.getStatus(),
+                "AI_REVIEW_WAITING_EVIDENCE", content);
+        runAfterCommit(() -> {
+            aiReviewStatusCacheService.cacheStatus(ticket.getId(), "WAITING_EVIDENCE");
+            chatWebSocketHandler.broadcastToSession(session.getId(), WsChatMessage.builder()
+                    .action("message").sessionId(session.getId()).role(message.getRole())
+                    .content(message.getContent()).messageType(message.getMessageType())
+                    .createdAt(formatTime(message.getCreateTime())).build());
+        });
+        return ApiResponse.success("waiting_evidence", messageResult(message, false));
+    }
+
+    private InternalAgentToolDtos.MessageResult messageResult(ChatMessage message, boolean replay) {
+        InternalAgentToolDtos.MessageResult result = new InternalAgentToolDtos.MessageResult();
+        result.setMessageId(message.getId());
+        result.setSessionId(message.getSessionId());
+        result.setIdempotentReplay(replay);
+        return result;
     }
 
     private void runAfterCommit(Runnable action) {
@@ -564,23 +717,32 @@ public class InternalAgentToolsController {
         result.setMerchantCode(ticket.getMerchantCode());
         result.setStatus(ticket.getStatus());
         result.setAfterSalesType(ticket.getAfterSaleType());
+        result.setReason(ticket.getReason());
+        result.setReasonDetail(ticket.getReasonDetail());
+        result.setDescription(ticket.getDescription());
         result.setRefundAmount(ticket.getRefundAmount());
         result.setExisting(existing);
         result.setProductName(ticket.getProductName());
         result.setPolicyVersion(ticket.getPolicyVersion());
         result.setAfterSalesAppliedAt(ticket.getCreateTime());
         result.setAiReviewResult(ticket.getAiReviewResult());
-        result.setAiReviewStatus(reviewStatus(ticket.getAiReviewResult()));
+        result.setAiReviewStatus(StringUtils.hasText(ticket.getAiReviewStatus())
+                ? ticket.getAiReviewStatus()
+                : reviewStatus(ticket.getAiReviewResult()));
         result.setReviewRequestId(ticket.getAiReviewRequestId());
-        result.setReviewApplied(ticket.getAiReviewRequestId() != null);
+        result.setEvidenceRevision(ticket.getEvidenceRevision());
+        result.setCurrentEvidenceRevision(ticket.getEvidenceRevision());
+        result.setReviewApplied(ticket.getAiReviewResult() != null);
         result.setIdempotentReplay(false);
-        result.setEvidenceUrls(ticketAttachmentMapper.selectList(new LambdaQueryWrapper<TicketAttachment>()
+        List<String> evidenceUrls = ticketAttachmentMapper.selectList(new LambdaQueryWrapper<TicketAttachment>()
                         .eq(TicketAttachment::getTicketId, ticket.getId())
                         .orderByAsc(TicketAttachment::getSortOrder))
                 .stream()
                 .map(TicketAttachment::getFileUrl)
                 .filter(StringUtils::hasText)
-                .toList());
+                .toList();
+        result.setEvidenceUrls(evidenceUrls);
+        result.setContextVersion(reviewContextVersion(ticket, evidenceUrls));
         return result;
     }
 
@@ -607,6 +769,10 @@ public class InternalAgentToolsController {
         payload.put("trusted_policy_eligible", request.getTrustedPolicyEligible());
         payload.put("policy_version", request.getPolicyVersion());
         payload.put("ai_review_confidence", request.getAiReviewConfidence());
+        payload.put("model_confidence", request.getModelConfidence());
+        payload.put("confidence_model_version", request.getConfidenceModelVersion());
+        payload.put("confidence_breakdown", request.getConfidenceBreakdown());
+        payload.put("minimum_review_confidence", minimumAiReviewConfidence);
         payload.put("visual_confidence", request.getVisualConfidence());
         payload.put("knowledge_retrieval_mode", request.getKnowledgeRetrievalMode());
         payload.put("policy_match_score", request.getPolicyMatchScore());
@@ -614,6 +780,9 @@ public class InternalAgentToolsController {
         payload.put("policy_citations", request.getPolicyCitations());
         payload.put("skill_versions", request.getSkillVersions());
         payload.put("image_review", request.getImageReview());
+        payload.put("agent_architecture", request.getAgentArchitecture());
+        payload.put("context_version", request.getContextVersion());
+        payload.put("specialist_assessments", request.getSpecialistAssessments());
         return payload;
     }
 
@@ -630,11 +799,16 @@ public class InternalAgentToolsController {
         if (!"strict".equals(request.getFilterLevel())) {
             return "FILTER_NOT_STRICT";
         }
-        if (!Boolean.TRUE.equals(request.getRerankerSucceeded())) {
+        if (!Boolean.TRUE.equals(request.getRerankerSucceeded())
+                && !"multi_query_rrf".equals(request.getKnowledgeRetrievalMode())) {
             return "RERANKER_NOT_SUCCEEDED";
         }
         if (!Boolean.TRUE.equals(request.getTrustedPolicyEligible())) {
             return "POLICY_NOT_EXPLICITLY_TRUSTED";
+        }
+        if (request.getAiReviewConfidence() == null
+                || request.getAiReviewConfidence().compareTo(minimumAiReviewConfidence) < 0) {
+            return "REVIEW_CONFIDENCE_BELOW_THRESHOLD";
         }
         if (!StringUtils.hasText(ticket.getPolicyVersion())
                 || !StringUtils.hasText(request.getPolicyVersion())
@@ -644,7 +818,34 @@ public class InternalAgentToolsController {
         if (!hasTraceablePolicyCitation(request.getPolicyCitations())) {
             return "POLICY_CITATION_INVALID";
         }
+        if ("controlled_multi_agent".equals(request.getAgentArchitecture())) {
+            List<String> evidenceUrls = ticketAttachmentMapper.selectList(
+                            new LambdaQueryWrapper<TicketAttachment>()
+                                    .eq(TicketAttachment::getTicketId, ticket.getId())
+                                    .orderByAsc(TicketAttachment::getSortOrder))
+                    .stream()
+                    .map(TicketAttachment::getFileUrl)
+                    .filter(StringUtils::hasText)
+                    .toList();
+            String expectedContextVersion = reviewContextVersion(ticket, evidenceUrls);
+            if (!StringUtils.hasText(request.getContextVersion())
+                    || !expectedContextVersion.equals(request.getContextVersion())) {
+                return "CONTEXT_VERSION_MISMATCH";
+            }
+        }
         return null;
+    }
+
+    private String reviewContextVersion(AfterSalesTicket ticket, List<String> evidenceUrls) {
+        String canonical = String.join("|",
+                String.valueOf(ticket.getId()),
+                String.valueOf(ticket.getOrderId()),
+                firstNonBlank(ticket.getStatus()),
+                firstNonBlank(ticket.getPolicyVersion()),
+                String.valueOf(ticket.getUpdateTime()),
+                String.join(",", evidenceUrls == null ? List.of() : evidenceUrls)
+        );
+        return UUID.nameUUIDFromBytes(canonical.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private boolean hasTraceablePolicyCitation(List<Map<String, Object>> citations) {
@@ -691,7 +892,10 @@ public class InternalAgentToolsController {
             return existing;
         }
         ChatSession session = new ChatSession();
-        session.setSessionNo("CS" + System.currentTimeMillis());
+        // Millisecond timestamps collide when several consumers create
+        // sessions concurrently. Keep the existing 32-char contract while
+        // using a random suffix for a database-unique session number.
+        session.setSessionNo("CS" + UUID.randomUUID().toString().replace("-", "").substring(0, 30));
         session.setUserId(userId);
         session.setOrderId(order == null ? null : order.getId());
         session.setTicketId(ticket == null ? null : ticket.getId());
@@ -760,6 +964,12 @@ public class InternalAgentToolsController {
     private String normalizeMessageType(String messageType) {
         String normalized = StringUtils.hasText(messageType) ? messageType.trim().toUpperCase() : "TEXT";
         return List.of("TEXT", "IMAGE", "FILE").contains(normalized) ? normalized : "TEXT";
+    }
+
+    private String formatTime(LocalDateTime time) {
+        return time == null
+                ? null
+                : time.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private String resolveMessageFileUrl(String messageType, String fileUrl) {

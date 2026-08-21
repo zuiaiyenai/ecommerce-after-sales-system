@@ -1,0 +1,153 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "up{job=~\"ecommerce-java|ecommerce-python-agent\"}", "legendFormat": "{{job}}", "range": true, "refId": "A"}
+      ],
+      "title": "采集目标在线状态",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}, "max": 1, "min": 0, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum(rate(agent_gateway_requests_total{outcome=\"success\"}[5m])) / clamp_min(sum(rate(agent_gateway_requests_total[5m])), 0.001)", "legendFormat": "gateway success rate", "range": true, "refId": "A"}
+      ],
+      "title": "Java Agent 网关成功率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "agent_merchant_queue_unreplied", "legendFormat": "unreplied sessions", "range": true, "refId": "A"}
+      ],
+      "title": "商家待回复会话数",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
+      "id": 4,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum by (outcome) (rate(agent_gateway_requests_total[5m]))", "legendFormat": "{{outcome}}", "range": true, "refId": "A"}
+      ],
+      "title": "Java Agent 网关吞吐",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
+      "id": 5,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_gateway_duration_seconds_bucket[5m])))", "legendFormat": "Java gateway p95", "range": true, "refId": "A"}
+      ],
+      "title": "Java Agent 网关 P95 延迟",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+      "id": 6,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum by (route) (rate(agent_requests_total[5m]))", "legendFormat": "{{route}}", "range": true, "refId": "A"}
+      ],
+      "title": "Python Agent 请求吞吐",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+      "id": 7,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(agent_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}", "range": true, "refId": "A"}
+      ],
+      "title": "Python Agent 请求 P95 延迟",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "id": 8,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum by (tool) (rate(agent_tool_calls_total{outcome=\"failure\"}[5m]))", "legendFormat": "{{tool}}", "range": true, "refId": "A"}
+      ],
+      "title": "Agent 工具失败速率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "id": 9,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum by (mode) (rate(agent_rag_retrievals_total[5m]))", "legendFormat": "{{mode}}", "range": true, "refId": "A"}
+      ],
+      "title": "RAG 检索模式分布",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "id": 10,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum(rate(agent_handoffs_total[5m]))", "legendFormat": "human handoffs", "range": true, "refId": "A"},
+        {"editorMode": "code", "expr": "sum by (verdict) (rate(agent_review_verdicts_total[5m]))", "legendFormat": "review {{verdict}}", "range": true, "refId": "B"}
+      ],
+      "title": "人工转接与审核结论",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "id": 11,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"editorMode": "code", "expr": "sum by (status) (rate(agent_outbox_publishes_total[5m]))", "legendFormat": "outbox {{status}}", "range": true, "refId": "A"},
+        {"editorMode": "code", "expr": "sum by (stage) (rate(agent_kafka_dlq_events_total[5m]))", "legendFormat": "DLQ {{stage}}", "range": true, "refId": "B"}
+      ],
+      "title": "Outbox 与 DLQ 可靠性",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["agent", "micrometer", "prometheus"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Ecommerce After-sales Agent Overview",
+  "uid": "ecommerce-agent-overview",
+  "version": 1
+}

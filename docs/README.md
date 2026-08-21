@@ -67,7 +67,7 @@ Offline metrics must be reported with sample size, data distribution, annotation
 3. [项目全景架构图](interview/project-overview.md)
 4. [源码深挖面试手册](interview/source-code-deep-dive.md)
 5. [优化简历](简历材料/resume_optimized.md)
-6. [Python Agent 当前架构](../python_agent/ARCHITECTURE.md)
+6. [Python Agent 当前架构](../python_agent/代码结构.md)
 
 ## 指标口径与证据
 

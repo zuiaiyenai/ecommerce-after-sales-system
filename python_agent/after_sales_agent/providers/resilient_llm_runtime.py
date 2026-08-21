@@ -11,6 +11,8 @@ from typing import Any, AsyncIterator, Iterator, Protocol
 
 import httpx
 
+from after_sales_agent.infrastructure import CircuitBreaker, CircuitOpenError
+
 
 logger = logging.getLogger(__name__)
 
@@ -324,44 +326,16 @@ class ProviderConfig:
     ollama_keep_alive: str = "30m"
 
 
-class CircuitBreaker:
-    def __init__(self, threshold: int, recovery_seconds: float) -> None:
-        self.threshold = max(1, threshold)
-        self.recovery_seconds = max(0.1, recovery_seconds)
-        self._lock = threading.Lock()
-        self._failures = 0
-        self._opened_at: float | None = None
-        self._probe_running = False
-
-    def before_call(self) -> None:
-        with self._lock:
-            if self._opened_at is None:
-                return
-            if time.monotonic() - self._opened_at < self.recovery_seconds or self._probe_running:
-                raise LLMCircuitOpenError("LLM provider circuit is open")
-            self._probe_running = True
-
-    def success(self) -> None:
-        with self._lock:
-            self._failures = 0
-            self._opened_at = None
-            self._probe_running = False
-
-    def failure(self) -> None:
-        with self._lock:
-            self._probe_running = False
-            self._failures += 1
-            if self._failures >= self.threshold:
-                self._opened_at = time.monotonic()
-
-
 class BaseHTTPModelClient:
     def __init__(self, config: ProviderConfig, client: httpx.Client | None = None) -> None:
         self.config = config
         self.provider = config.provider
         self.model = config.model
         self._semaphore = threading.BoundedSemaphore(max(1, config.max_concurrent))
-        self._circuit = CircuitBreaker(config.circuit_failure_threshold, config.circuit_recovery_seconds)
+        self._circuit = CircuitBreaker(
+            threshold=config.circuit_failure_threshold,
+            recovery_seconds=config.circuit_recovery_seconds,
+        )
         self._owns_client = client is None
         self._client = client or httpx.Client(
             base_url=config.base_url.rstrip("/"),
@@ -369,6 +343,7 @@ class BaseHTTPModelClient:
             limits=httpx.Limits(max_connections=config.max_connections, max_keepalive_connections=config.max_keepalive_connections, keepalive_expiry=config.keepalive_expiry),
             headers={"Authorization": f"Bearer {config.api_key}"} if config.api_key else {},
         )
+        self._use_urllib = False  # Flag to fallback to urllib if httpx has SSL issues
 
     def close(self) -> None:
         if self._owns_client:
@@ -387,10 +362,19 @@ class BaseHTTPModelClient:
             self._circuit.before_call()
             for attempt in range(self.config.max_retries + 1):
                 try:
-                    response = self._client.post(path, json=payload, timeout=self.config.total_timeout)
-                    if response.status_code >= 400:
-                        raise self._classify_status(response)
-                    result = response.json()
+                    if self._use_urllib:
+                        result = self._request_with_urllib(path, payload)
+                    else:
+                        try:
+                            response = self._client.post(path, json=payload, timeout=self.config.total_timeout)
+                            if response.status_code >= 400:
+                                raise self._classify_status(response)
+                            result = response.json()
+                        except (httpx.ConnectError, httpx.NetworkError) as exc:
+                            # SSL issue detected, fallback to urllib
+                            logger.warning("llm_httpx_fallback_to_urllib provider=%s model=%s error=%s", self.provider, self.model, type(exc).__name__)
+                            self._use_urllib = True
+                            result = self._request_with_urllib(path, payload)
                     self._circuit.success()
                     logger.info("llm_call provider=%s model=%s queue_ms=%.1f total_ms=%.1f retries=%d", self.provider, self.model, queue_ms, (time.monotonic() - started) * 1000, attempt)
                     return result
@@ -412,6 +396,31 @@ class BaseHTTPModelClient:
         finally:
             self._semaphore.release()
 
+    def _request_with_urllib(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Fallback to urllib when httpx has SSL issues."""
+        import urllib.error
+        import urllib.request
+
+        base_url = self.config.base_url.rstrip("/")
+        url = f"{base_url}/{path}"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.total_timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            # Create a mock response for _classify_status
+            raise LLMProviderUnavailableError(f"LLM provider unavailable (HTTP {exc.code}): {error_body[:200]}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise LLMTimeoutError(f"LLM request timed out: {exc}") from exc
+
     @staticmethod
     def _classify_status(response: httpx.Response) -> LLMError:
         status = response.status_code
@@ -424,7 +433,24 @@ class BaseHTTPModelClient:
             return LLMProviderUnavailableError(f"LLM provider unavailable (HTTP {status})")
         if "context" in detail and ("length" in detail or "token" in detail):
             return LLMContextLengthError("LLM context length exceeded")
-        return LLMInvalidRequestError(f"LLM request rejected (HTTP {status})")
+        provider_detail = BaseHTTPModelClient._provider_error_detail(response)
+        suffix = f": {provider_detail}" if provider_detail else ""
+        return LLMInvalidRequestError(f"LLM request rejected (HTTP {status}){suffix}")
+
+    @staticmethod
+    def _provider_error_detail(response: httpx.Response) -> str:
+        """Keep provider error code/message while never echoing the request payload."""
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, ValueError):
+            return ""
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict):
+            return ""
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip().replace("\r", " ").replace("\n", " ")
+        parts = [part for part in (code[:100], message[:300]) if part]
+        return " - ".join(parts)
 
 
 class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
@@ -437,7 +463,7 @@ class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
         }
         if tools:
             payload["tools"] = tools
-        return self._request("/v1/chat/completions", payload)
+        return self._request("v1/chat/completions", payload)
 
     def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
         payload = {
@@ -453,7 +479,7 @@ class OpenAICompatibleHTTPClient(BaseHTTPModelClient):
         emitted = False
         started = time.monotonic()
         try:
-            with self._client.stream("POST", "/v1/chat/completions", json=payload, timeout=self.config.total_timeout) as response:
+            with self._client.stream("POST", "v1/chat/completions", json=payload, timeout=self.config.total_timeout) as response:
                 if response.status_code >= 400:
                     response.read()
                     raise self._classify_status(response)
@@ -496,7 +522,7 @@ class OllamaHTTPClient(BaseHTTPModelClient):
         }
         if tools:
             payload["tools"] = tools
-        return self._request("/api/chat", payload)
+        return self._request("api/chat", payload)
 
     def stream_chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs: Any) -> Iterator[dict[str, Any]]:
         raise LLMInvalidRequestError("Ollama streaming is not exposed by the current Agent HTTP protocol")

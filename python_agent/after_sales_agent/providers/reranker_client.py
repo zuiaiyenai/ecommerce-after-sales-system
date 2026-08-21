@@ -4,11 +4,36 @@ import atexit
 from dataclasses import dataclass
 import math
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable, Protocol
 
 import httpx
+
+from after_sales_agent.infrastructure import CircuitBreaker, CircuitOpenError
+
+
+def _read_local_env() -> dict[str, str]:
+    """Read local .env file for configuration values."""
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        Path.cwd() / "python_agent" / ".env",
+        Path.cwd() / ".env",
+        repo_root / "python_agent" / ".env",
+    ]
+    values: dict[str, str] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+        break
+    return values
 
 
 class RerankError(RuntimeError):
@@ -38,9 +63,9 @@ _NUMERIC_CONFIG_SPECS: dict[str, tuple[type[int] | type[float], int | float, int
 }
 
 
-def _safe_numeric_config(name: str) -> tuple[int | float, str | None]:
+def _safe_numeric_config(name: str, file_values: dict[str, str] | None = None) -> tuple[int | float, str | None]:
     value_type, default, minimum, maximum = _NUMERIC_CONFIG_SPECS[name]
-    raw = os.getenv(name, str(default))
+    raw = os.getenv(name) or (file_values.get(name) if file_values else None) or str(default)
     try:
         value = value_type(raw)
     except (TypeError, ValueError, OverflowError):
@@ -68,20 +93,23 @@ class RerankerConfig:
 
     @classmethod
     def from_env(cls) -> "RerankerConfig":
+        file_values = _read_local_env()
         numeric: dict[str, int | float] = {}
         first_error: str | None = None
         for name in _NUMERIC_CONFIG_SPECS:
-            numeric[name], error = _safe_numeric_config(name)
+            numeric[name], error = _safe_numeric_config(name, file_values)
             first_error = first_error or error
         return cls(
-            provider=os.getenv("RERANK_PROVIDER", "").strip(),
-            base_url=os.getenv("RERANK_BASE_URL", "").strip(),
+            provider=(os.getenv("RERANK_PROVIDER") or file_values.get("RERANK_PROVIDER", "")).strip(),
+            base_url=(os.getenv("RERANK_BASE_URL") or file_values.get("RERANK_BASE_URL", "")).strip(),
             api_key=(
                 os.getenv("RERANK_API_KEY")
+                or file_values.get("RERANK_API_KEY")
                 or os.getenv("VISION_API_KEY")
+                or file_values.get("VISION_API_KEY")
                 or ""
             ).strip(),
-            model=os.getenv("RERANK_MODEL", "text-rerank-v2").strip(),
+            model=(os.getenv("RERANK_MODEL") or file_values.get("RERANK_MODEL", "text-rerank-v2")).strip(),
             timeout_seconds=float(numeric["RERANK_TIMEOUT_SECONDS"]),
             max_retries=int(numeric["RERANK_MAX_RETRIES"]),
             max_candidates=int(numeric["RERANK_MAX_CANDIDATES"]),
@@ -135,12 +163,26 @@ class ManagedHTTPRerankTransport:
         self.api_key = api_key
         self._owns_client = client is None
         self._client = client or httpx.Client()
+        self._use_urllib = False  # Flag to fallback to urllib if httpx has SSL issues
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
 
     def post_json(self, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        # Try httpx first, fallback to urllib if SSL issues
+        if not self._use_urllib:
+            try:
+                return self._post_with_httpx(payload, timeout=timeout)
+            except RerankError as exc:
+                if exc.code == "NETWORK_ERROR":
+                    # Check if it's an SSL issue, fallback to urllib
+                    self._use_urllib = True
+                    return self._post_with_urllib(payload, timeout=timeout)
+                raise
+        return self._post_with_urllib(payload, timeout=timeout)
+
+    def _post_with_httpx(self, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
         try:
             response = self._client.post(
                 self.base_url,
@@ -165,8 +207,44 @@ class ManagedHTTPRerankTransport:
             raise RerankError("INVALID_RESPONSE", "reranker response must be an object")
         return data
 
+    def _post_with_urllib(self, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+        import json
+        import urllib.error
+        import urllib.request
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RerankError(f"HTTP_{exc.code}", error_body) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RerankError("TIMEOUT", str(exc)) from exc
+        if not isinstance(data, dict):
+            raise RerankError("INVALID_RESPONSE", "reranker response must be an object")
+        return data
+
 
 class RerankCircuitBreaker:
+    """Backward-compatible wrapper around infrastructure.CircuitBreaker.
+
+    Provides the same public API as before extraction:
+      - before_call() -> bool
+      - record_success()
+      - record_failure()
+      - injectable clock for tests
+    """
+
     def __init__(
         self,
         *,
@@ -176,35 +254,20 @@ class RerankCircuitBreaker:
     ) -> None:
         self.threshold = max(1, int(threshold))
         self.recovery_seconds = max(0.0, float(recovery_seconds))
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._failure_count = 0
-        self._opened_at: float | None = None
-        self._probe_running = False
+        self._cb = CircuitBreaker(
+            threshold=self.threshold,
+            recovery_seconds=self.recovery_seconds,
+            clock=clock,
+        )
 
     def before_call(self) -> bool:
-        with self._lock:
-            if self._opened_at is None:
-                return True
-            if self._clock() - self._opened_at < self.recovery_seconds:
-                return False
-            if self._probe_running:
-                return False
-            self._probe_running = True
-            return True
+        return self._cb.before_call(raise_on_open=False)
 
     def record_success(self) -> None:
-        with self._lock:
-            self._failure_count = 0
-            self._opened_at = None
-            self._probe_running = False
+        self._cb.success()
 
     def record_failure(self) -> None:
-        with self._lock:
-            self._probe_running = False
-            self._failure_count += 1
-            if self._failure_count >= self.threshold:
-                self._opened_at = self._clock()
+        self._cb.failure()
 
 
 class RerankerClient:
@@ -317,12 +380,30 @@ class RerankerClient:
                     return self._degraded(fallback, "CLIENT_CLOSED", started)
                 if not self.breaker.before_call():
                     return self._degraded(fallback, "CIRCUIT_OPEN", started)
-                payload = {
-                    "model": self.config.model,
-                    "query": str(query or ""),
-                    "documents": [self._candidate_text(item) for item in bounded_candidates],
-                    "top_n": bounded_top_n,
-                }
+                # Support both OpenAI compatibility and DashScope native formats
+                query_text = str(query or "")
+                doc_texts = [self._candidate_text(item) for item in bounded_candidates]
+                if self.config.provider == "dashscope_native":
+                    # DashScope native format
+                    payload = {
+                        "model": self.config.model,
+                        "input": {
+                            "query": query_text,
+                            "documents": doc_texts,
+                        },
+                        "parameters": {
+                            "top_n": bounded_top_n,
+                            "return_documents": False,
+                        },
+                    }
+                else:
+                    # OpenAI compatibility format (default)
+                    payload = {
+                        "model": self.config.model,
+                        "query": query_text,
+                        "documents": doc_texts,
+                        "top_n": bounded_top_n,
+                    }
                 attempts = min(max(0, int(self.config.max_retries)), 1) + 1
                 try:
                     transport = self._get_transport()
@@ -351,6 +432,8 @@ class RerankerClient:
                             continue
                         self.breaker.record_failure()
                         return self._degraded(fallback, exc.code, started)
+                    except CircuitOpenError:
+                        return self._degraded(fallback, "CIRCUIT_OPEN", started)
                     except Exception:
                         self.breaker.record_failure()
                         return self._degraded(fallback, "UNEXPECTED_ERROR", started)
@@ -370,7 +453,15 @@ class RerankerClient:
         candidates: list[dict[str, Any]],
         top_n: int,
     ) -> list[dict[str, Any]]:
+        # Support two response formats:
+        # 1. OpenAI compatibility: {"results": [...]}
+        # 2. DashScope native: {"output": {"results": [...]}}
         raw_results = data.get("results")
+        if not isinstance(raw_results, list):
+            # Try DashScope native format
+            output = data.get("output")
+            if isinstance(output, dict):
+                raw_results = output.get("results")
         if not isinstance(raw_results, list):
             raise RerankError("INVALID_RESPONSE")
         if len(raw_results) != top_n:
@@ -436,6 +527,17 @@ class RerankerClientLifecycle:
             client = self._client
             if client is not None:
                 client.close()
+                self._client = None
+
+    def reset(self) -> None:
+        """Close the current client and reset state. Used by tests to prevent
+        singleton state leakage between test modules."""
+        with self._lock:
+            self._closed = False
+            client = self._client
+            self._client = None
+        if client is not None:
+            client.close()
 
 
 RERANKER_CLIENTS = RerankerClientLifecycle()

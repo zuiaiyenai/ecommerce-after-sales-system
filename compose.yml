@@ -28,6 +28,8 @@ services:
       - ./sql/pgvector_schema.sql:/docker-entrypoint-initdb.d/01-pgvector-schema.sql:ro
       - ./sql/seed_knowledge_base.sql:/docker-entrypoint-initdb.d/02-seed-knowledge-base.sql:ro
       - ./sql/seed_extended_after_sales_knowledge.sql:/docker-entrypoint-initdb.d/03-seed-extended-knowledge.sql:ro
+      - ./src/main/resources/agent-knowledge-base/after-sales-knowledge-v2.json:/docker-entrypoint-initdb.d/04-after-sales-knowledge-v2.json:ro
+      - ./sql/seed_comprehensive_after_sales_knowledge.sql:/docker-entrypoint-initdb.d/05-seed-comprehensive-after-sales-knowledge.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d after_sales_rag"]
       interval: 5s
@@ -62,32 +64,78 @@ services:
 
   agent:
     build: ./python_agent
+    command: ["python", "-m", "after_sales_agent.interface.http_server"]
     env_file: ./python_agent/.env
     environment:
       LLM_NATIVE_FUNCTION_CALLING_ENABLED: ${LLM_NATIVE_FUNCTION_CALLING_ENABLED:-true}
-      LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED: ${LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED:-true}
-      JAVA_TOOLS_BASE_URL: http://java:8080/api/internal/agent-tools
+      AFTERSALES_JAVA_TOOL_BASE_URL: http://java:8080/api/internal/agent-tools
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       AFTER_SALES_REVIEW_IDEMPOTENCY_REDIS_URL: redis://redis:6379/0
       PGVECTOR_DSN: postgresql://postgres:${PGVECTOR_PASSWORD:-local-dev-password}@postgres:5432/after_sales_rag
       RAG_LAYERED_RETRIEVAL_ENABLED: ${RAG_LAYERED_RETRIEVAL_ENABLED:-false}
+      RAG_SUFFICIENCY_MIN_CONFIDENCE: ${RAG_SUFFICIENCY_MIN_CONFIDENCE:-0.70}
       RERANK_PROVIDER: ${RERANK_PROVIDER:-}
       RERANK_BASE_URL: ${RERANK_BASE_URL:-}
       RERANK_API_KEY: ${RERANK_API_KEY:-}
-      RERANK_MODEL: ${RERANK_MODEL:-text-rerank-v2}
+      RERANK_MODEL: ${RERANK_MODEL:-}
       RERANK_TIMEOUT_SECONDS: ${RERANK_TIMEOUT_SECONDS:-3}
       RERANK_MAX_RETRIES: ${RERANK_MAX_RETRIES:-1}
       RERANK_MAX_CANDIDATES: ${RERANK_MAX_CANDIDATES:-20}
       RERANK_MAX_CONCURRENCY: ${RERANK_MAX_CONCURRENCY:-4}
+      FORMAL_REVIEW_AUTO_APPROVE_ENABLED: ${FORMAL_REVIEW_AUTO_APPROVE_ENABLED:-true}
+      FORMAL_REVIEW_MIN_CONFIDENCE: ${FORMAL_REVIEW_MIN_CONFIDENCE:-0.75}
       RERANK_CIRCUIT_FAILURE_THRESHOLD: ${RERANK_CIRCUIT_FAILURE_THRESHOLD:-5}
       RERANK_CIRCUIT_RECOVERY_SECONDS: ${RERANK_CIRCUIT_RECOVERY_SECONDS:-30}
       VISION_DISK_CACHE_PATH: /app/.runtime/vision-cache.sqlite3
       AGENT_HOST: 0.0.0.0
+      AGENT_MAX_CONCURRENT_REQUESTS: ${AGENT_MAX_CONCURRENT_REQUESTS:-4}
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-local-dev-agent-token}
       KNOWLEDGE_PARSE_MAX_REQUEST_BYTES: ${KNOWLEDGE_PARSE_MAX_REQUEST_BYTES:-15029592}
     expose: ["8000"]
     volumes: ["agent-cache:/app/.runtime"]
     depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  review-consumer:
+    build: ./python_agent
+    command: ["python", "-m", "after_sales_agent.interface.kafka_adapter"]
+    env_file: ./python_agent/.env
+    environment:
+      LLM_NATIVE_FUNCTION_CALLING_ENABLED: ${LLM_NATIVE_FUNCTION_CALLING_ENABLED:-true}
+      AFTERSALES_JAVA_TOOL_BASE_URL: http://java:8080/api/internal/agent-tools
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      AFTER_SALES_REVIEW_IDEMPOTENCY_REDIS_URL: redis://redis:6379/0
+      AFTER_SALES_REVIEW_METRICS_PORT: ${AFTER_SALES_REVIEW_METRICS_PORT:-8001}
+      AFTER_SALES_REVIEW_AGENT_TIMEOUT_SECONDS: ${AFTER_SALES_REVIEW_AGENT_TIMEOUT_SECONDS:-60}
+      PGVECTOR_DSN: postgresql://postgres:${PGVECTOR_PASSWORD:-local-dev-password}@postgres:5432/after_sales_rag
+      LANGGRAPH_CHECKPOINT_DSN: postgresql://postgres:${PGVECTOR_PASSWORD:-local-dev-password}@postgres:5432/after_sales_rag
+      LANGGRAPH_CHECKPOINT_SCHEMA: agent_runtime
+      RAG_LAYERED_RETRIEVAL_ENABLED: ${RAG_LAYERED_RETRIEVAL_ENABLED:-false}
+      RAG_SUFFICIENCY_MIN_CONFIDENCE: ${RAG_SUFFICIENCY_MIN_CONFIDENCE:-0.70}
+      RERANK_PROVIDER: ${RERANK_PROVIDER:-}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      RERANK_MODEL: ${RERANK_MODEL:-}
+      RERANK_TIMEOUT_SECONDS: ${RERANK_TIMEOUT_SECONDS:-3}
+      RERANK_MAX_RETRIES: ${RERANK_MAX_RETRIES:-1}
+      RERANK_MAX_CANDIDATES: ${RERANK_MAX_CANDIDATES:-20}
+      RERANK_MAX_CONCURRENCY: ${RERANK_MAX_CONCURRENCY:-4}
+      FORMAL_REVIEW_AUTO_APPROVE_ENABLED: ${FORMAL_REVIEW_AUTO_APPROVE_ENABLED:-true}
+      FORMAL_REVIEW_MIN_CONFIDENCE: ${FORMAL_REVIEW_MIN_CONFIDENCE:-0.75}
+      RERANK_CIRCUIT_FAILURE_THRESHOLD: ${RERANK_CIRCUIT_FAILURE_THRESHOLD:-5}
+      RERANK_CIRCUIT_RECOVERY_SECONDS: ${RERANK_CIRCUIT_RECOVERY_SECONDS:-30}
+      VISION_DISK_CACHE_PATH: /app/.runtime/vision-cache.sqlite3
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-local-dev-agent-token}
+    expose: ["8001"]
+    volumes: ["agent-cache:/app/.runtime"]
+    depends_on:
+      java:
+        condition: service_started
       postgres:
         condition: service_healthy
       kafka:
@@ -103,6 +151,11 @@ services:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ecommerce_aftersales?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       AGENT_BASE_URL: http://agent:8000/api
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:-local-dev-agent-token}
+      # Keep the Java admission semaphore aligned with the single Agent
+      # instance's HTTP capacity; otherwise the gateway returns 429 before
+      # the Agent can use its configured four execution slots.
+      AGENT_PER_INSTANCE_MAX_CONCURRENT_REQUESTS: ${AGENT_PER_INSTANCE_MAX_CONCURRENT_REQUESTS:-4}
+      AGENT_REVIEW_MINIMUM_CONFIDENCE: ${FORMAL_REVIEW_MIN_CONFIDENCE:-0.75}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -111,9 +164,12 @@ services:
       PGVECTOR_PASSWORD: ${PGVECTOR_PASSWORD:-local-dev-password}
       RAG_LAYERED_RETRIEVAL_ENABLED: ${RAG_LAYERED_RETRIEVAL_ENABLED:-false}
       KNOWLEDGE_MAX_FILE_BYTES: ${KNOWLEDGE_MAX_FILE_BYTES:-10485760}
+      APP_UPLOAD_DIR: /app/uploads
       PROMETHEUS_BASE_URL: http://prometheus:9090
       GRAFANA_AGENT_URL: http://localhost:3000/d/ecommerce-agent-overview/ecommerce-after-sales-agent-overview
     ports: ["8080:8080"]
+    volumes:
+      - ./uploads:/app/uploads
     depends_on:
       mysql:
         condition: service_healthy

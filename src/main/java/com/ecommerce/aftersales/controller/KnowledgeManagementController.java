@@ -66,6 +66,13 @@ public class KnowledgeManagementController {
                 new FileImportCommand(title, knowledgeType, scope, merchantCode, file)));
     }
 
+    @PostMapping("/text-import")
+    public ApiResponse<Map<String, Object>> textImport(
+            @RequestBody KnowledgeUploadDto.TextImportRequest request
+    ) {
+        return ApiResponse.success("Text import created", knowledgeService.createTextImport(request));
+    }
+
     @GetMapping("/{id:\\d+}/ingestion-status")
     public ApiResponse<IngestionStatusResponse> ingestionStatus(@PathVariable Long id) {
         return ApiResponse.success("Query successful", knowledgeService.ingestionStatus(id));

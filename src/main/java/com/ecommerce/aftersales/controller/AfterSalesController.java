@@ -4,8 +4,11 @@ import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.common.annotation.CurrentUserId;
 import com.ecommerce.aftersales.request.CreateAfterSalesRequest;
+import com.ecommerce.aftersales.request.SupplementAfterSalesRequest;
 import com.ecommerce.aftersales.response.AfterSalesResponse;
+import com.ecommerce.aftersales.response.SupplementAfterSalesResponse;
 import com.ecommerce.aftersales.service.AfterSalesService;
+import com.ecommerce.aftersales.service.AfterSalesSupplementService;
 import com.ecommerce.aftersales.service.RedisRateLimiterService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +28,7 @@ import java.util.List;
 public class AfterSalesController {
 
     private final AfterSalesService afterSalesService;
+    private final AfterSalesSupplementService afterSalesSupplementService;
     private final RedisRateLimiterService redisRateLimiterService;
 
     @Value("${app.rate-limit.after-sales-submit.enabled:true}")
@@ -68,5 +72,17 @@ public class AfterSalesController {
             throw new BizException(429, "提交过于频繁，请稍后再试");
         }
         return ApiResponse.success("创建成功", afterSalesService.create(userId, request));
+    }
+
+    @PostMapping("/{id}/supplements")
+    public ApiResponse<SupplementAfterSalesResponse> supplement(
+            @PathVariable Long id,
+            @CurrentUserId Long userId,
+            @Valid @RequestBody SupplementAfterSalesRequest request
+    ) {
+        return ApiResponse.success(
+                "补充材料已提交",
+                afterSalesSupplementService.supplement(userId, id, request)
+        );
     }
 }

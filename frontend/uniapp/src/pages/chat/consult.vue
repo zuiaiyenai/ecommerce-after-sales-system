@@ -39,11 +39,11 @@
         <view class="message" :class="msg.role">
           <view class="msg-bubble" :class="{ 'image-bubble': msg.type === 'IMAGE', 'ai-suggestion-bubble': msg.isAiSuggestion }">
             <image
-              v-if="msg.type === 'IMAGE'"
+              v-if="msg.type === 'IMAGE' && msg.fileUrl"
               class="msg-image"
-              :src="normalizeImageUrl(msg.content)"
+              :src="normalizeImageUrl(msg.fileUrl)"
               mode="aspectFill"
-              @tap="previewMessageImage(msg.content)"
+              @tap="previewMessageImage(msg.fileUrl)"
             />
             <view v-else-if="msg.isAiSuggestion" class="ai-suggestion-content">
               <view class="suggestion-header">
@@ -109,8 +109,11 @@
 
 <script setup>
 import { computed, nextTick, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { normalizeImageUrl, request } from '../../utils/request'
+import { mergePersistedChatHistory } from '../../utils/chatMessageMerge.mjs'
+import { getChatWebSocketUrl } from '../../utils/apiConfig'
+import { resolveAfterSalesTicketDisplay } from '../../utils/orderStatus'
 import {
   buildAttachments,
   buildChatPayload,
@@ -119,7 +122,8 @@ import {
   checkAgentHealth,
   loadConversationState,
   reviewImages,
-  saveConversationState
+  saveConversationState,
+  uploadEvidenceAttachments
 } from '../../utils/afterSalesAgent'
 import { createChatSession, getChatHistory, sendChatMessage } from '../../utils/userChat'
 
@@ -154,6 +158,11 @@ const canSend = computed(() => (inputText.value.trim() || attachments.value.leng
 
 let messageSequence = 0  // 添加消息序号计数器
 
+let chatSocketTask = null
+let chatSocketSessionId = ''
+let historyRefreshGeneration = 0
+let historyRequestGeneration = 0
+
 function getNowTime() {
   const now = new Date()
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
@@ -182,7 +191,7 @@ function scrollToBottom() {
   })
 }
 
-function addMessage(role, content, meta = '', isAiSuggestion = false) {
+function addMessage(role, content, meta = '', isAiSuggestion = false, sendGroupId = '') {
   messages.value.push({
     key: `local-text-${Date.now()}-${messageSequence}`,
     role,
@@ -192,20 +201,23 @@ function addMessage(role, content, meta = '', isAiSuggestion = false) {
     createdAt: getNowDateTime(),
     time: getNowTime(),
     isAiSuggestion,
+    sendGroupId,
     sequence: messageSequence++  // 添加序号
   })
   scrollToBottom()
 }
 
-function addImageMessage(role, imagePath) {
+function addImageMessage(role, imagePath, sendGroupId = '') {
   messages.value.push({
     key: `local-image-${Date.now()}-${messageSequence}`,
     role,
-    content: imagePath,
+    content: '[图片]',
+    fileUrl: imagePath,
     type: 'IMAGE',
     meta: '',
     createdAt: getNowDateTime(),
     time: getNowTime(),
+    sendGroupId,
     sequence: messageSequence++  // 添加序号
   })
   scrollToBottom()
@@ -219,80 +231,17 @@ function collectLocalImageMessages() {
   ]
   const seen = new Set()
   return candidates.filter((message) => {
-    if (message?.type !== 'IMAGE' || !message.content) return false
-    const key = `${message.role || 'user'}:${message.content}`
+    if (message?.type !== 'IMAGE' || !message.fileUrl) return false
+    const key = message.key || [
+      message.role || 'user',
+      message.fileUrl,
+      message.createdAt || '',
+      message.sequence ?? ''
+    ].join(':')
     if (seen.has(key)) return false
     seen.add(key)
     return true
   })
-}
-
-function isImagePlaceholderMessage(message) {
-  return message?.type !== 'IMAGE' && String(message?.content || '') === '[图片]'
-}
-
-function getMessageTimeMs(message) {
-  const value = message?.createdAt || message?.time || ''
-  if (!value) return 0
-  const normalized = String(value).replace(/-/g, '/')
-  const timestamp = Date.parse(normalized)
-  return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-function isSameMinute(a, b) {
-  const timeA = getMessageTimeMs(a)
-  const timeB = getMessageTimeMs(b)
-  if (!timeA || !timeB) return false
-  return Math.abs(timeA - timeB) < 60000
-}
-
-function insertLocalImageMessage(allMessages, imageMessage) {
-  const sameSendTextIndex = allMessages.findIndex(
-    (msg) => msg.role === imageMessage.role && msg.type === 'TEXT' && isSameMinute(msg, imageMessage)
-  )
-  if (sameSendTextIndex >= 0) {
-    allMessages.splice(sameSendTextIndex, 0, imageMessage)
-    return
-  }
-
-  let insertIndex = allMessages.findIndex((msg) => getMessageTimeMs(msg) > getMessageTimeMs(imageMessage))
-  if (insertIndex < 0) insertIndex = allMessages.length
-  allMessages.splice(insertIndex, 0, imageMessage)
-}
-
-function mergeLocalImageMessages(remoteMessages, localImages) {
-  const imageQueue = [...localImages]
-  const consumed = new Set()
-  const allMessages = remoteMessages.map((message) => {
-    if (!isImagePlaceholderMessage(message)) {
-      return message
-    }
-    const imageMessage = imageQueue.find((item) => !consumed.has(item.content))
-    if (!imageMessage) {
-      return null
-    }
-    consumed.add(imageMessage.content)
-    return {
-      ...message,
-      key: `remote-image-${message.id || message.sequence || imageMessage.content}`,
-      content: imageMessage.content,
-      type: 'IMAGE',
-      meta: imageMessage.meta || ''
-    }
-  }).filter(Boolean)
-
-  localImages.forEach((imageMessage) => {
-    if (consumed.has(imageMessage.content)) return
-    // 检查是否已存在（根据content去重）
-    const exists = allMessages.some(
-      (msg) => msg.type === 'IMAGE' && msg.content === imageMessage.content
-    )
-    if (exists) return
-
-    // 图片消息不一定会作为独立远端消息返回；按同一分钟的用户文字前插，避免历史回填后跑到欢迎语上方或文字下方。
-    insertLocalImageMessage(allMessages, imageMessage)
-  })
-  return allMessages
 }
 
 function goBack() {
@@ -318,7 +267,8 @@ function buildFallbackOrder(options = {}) {
   const orderNo = decodeURIComponent(options.orderNo || '')
   if (!orderNo && !item.productName) return null
   return {
-    id: options.orderId || '',
+    orderId: options.orderId || '',
+    ticketId: options.ticketId || '',
     orderNo,
     merchantCode: decodeURIComponent(options.merchantCode || ''),
     merchantDisplayName: decodeURIComponent(options.merchantDisplayName || ''),
@@ -343,6 +293,18 @@ function applyOrderToView(order) {
   hasOrder.value = Boolean(order)
 }
 
+function attachAfterSaleContext(order, options = {}) {
+  if (!order) return order
+  const ticketId = options.ticketId || order.ticketId || ''
+  if (!ticketId) return order
+  return {
+    ...order,
+    ticketId: String(ticketId),
+    hasOpenAfterSales: true,
+    afterSalesStatus: order.afterSalesStatus || options.afterSalesStatus || 'PENDING_REVIEW'
+  }
+}
+
 async function loadOrderById(orderId, fallbackOptions = {}) {
   const expectedOrderNo = decodeURIComponent(fallbackOptions.orderNo || '')
   try {
@@ -354,7 +316,7 @@ async function loadOrderById(orderId, fallbackOptions = {}) {
         return
       }
     }
-    applyOrderToView(order)
+    applyOrderToView(attachAfterSaleContext(order, fallbackOptions))
   } catch (error) {
     const fallbackOrder = buildFallbackOrder({ ...fallbackOptions, orderId })
     if (fallbackOrder) {
@@ -423,41 +385,154 @@ function persistConversation() {
 
 async function loadSessionHistory(id) {
   if (!id) return false
+  const requestGeneration = ++historyRequestGeneration
   try {
     const localImages = collectLocalImageMessages()
     const result = await getChatHistory(id)
+    if (requestGeneration !== historyRequestGeneration) return false
     sessionId.value = String(id)
     syncSessionMode(result?.mode, result?.status)
     const remoteMessages = (result.list || []).map((item, index) => ({
-        key: `remote-${item.id || index}`,
-        id: item.id,
+        key: `remote-${item.messageId || index}`,
+        messageId: item.messageId,
         role: item.role === 'user' || item.role === 'USER' ? 'user' : 'service',
         content: item.content,
+        fileUrl: item.fileUrl || '',
         type: item.messageType === 'IMAGE' || item.type === 'IMAGE' ? 'IMAGE' : 'TEXT',
         meta: '',
         createdAt: item.createTime || '',
         time: item.createTime ? String(item.createTime).slice(11, 16) : '',
         sequence: index
       }))
-    messages.value = mergeLocalImageMessages(remoteMessages, localImages)
+    messages.value = mergePersistedChatHistory(remoteMessages, localImages)
     scrollToBottom()
+    connectChatSocket()
     return true
   } catch (error) {
     return false
   }
 }
 
+function collectRemoteServiceMessageIds() {
+  return new Set(
+    messages.value
+      .filter((message) => message.role === 'service' && message.messageId)
+      .map((message) => String(message.messageId))
+  )
+}
+
+function waitFor(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+async function waitForPersistedServiceReply(targetSessionId, knownMessageIds, maxAttempts = 15) {
+  const generation = ++historyRefreshGeneration
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (generation !== historyRefreshGeneration) return false
+    if (attempt > 0) {
+      await waitFor(1000)
+    }
+    const loaded = await loadSessionHistory(targetSessionId)
+    if (!loaded) continue
+    const hasNewReply = messages.value.some(
+      (message) =>
+        message.role === 'service' &&
+        message.messageId &&
+        !knownMessageIds.has(String(message.messageId))
+    )
+    if (hasNewReply) return true
+  }
+  return false
+}
+
+function readAuthToken() {
+  try {
+    return uni.getStorageSync('token') || ''
+  } catch (error) {
+    return ''
+  }
+}
+
+function connectChatSocket() {
+  if (!sessionId.value) return
+  const targetSessionId = String(sessionId.value)
+  if (chatSocketTask && chatSocketSessionId === targetSessionId) return
+  closeChatSocket()
+  const token = readAuthToken()
+  if (!token) return
+  chatSocketSessionId = targetSessionId
+  chatSocketTask = uni.connectSocket({
+    url: `${getChatWebSocketUrl()}?token=${encodeURIComponent(token)}`,
+    complete: () => {}
+  })
+  chatSocketTask.onOpen(() => {
+    chatSocketTask?.send({
+      data: JSON.stringify({ action: 'subscribe', sessionId: targetSessionId })
+    })
+  })
+  chatSocketTask.onMessage(async (event) => {
+    let payload = {}
+    try {
+      payload = JSON.parse(event.data || '{}')
+    } catch (error) {
+      return
+    }
+    if (String(payload.action || '') !== 'message') return
+    await loadSessionHistory(targetSessionId)
+    await refreshAfterSalesSnapshot()
+  })
+  chatSocketTask.onClose(() => {
+    chatSocketTask = null
+    chatSocketSessionId = ''
+  })
+  chatSocketTask.onError(() => {
+    closeChatSocket()
+  })
+}
+
+function closeChatSocket() {
+  const task = chatSocketTask
+  chatSocketTask = null
+  chatSocketSessionId = ''
+  if (task) {
+    try {
+      task.close()
+    } catch (error) {}
+  }
+}
+
+async function refreshAfterSalesSnapshot() {
+  const ticketId = orderData.value?.ticketId
+  if (!ticketId) return
+  try {
+    const ticket = await request({ url: `/aftersales/${ticketId}` })
+    if (!ticket) return
+    const display = resolveAfterSalesTicketDisplay(ticket)
+    orderData.value = {
+      ...(orderData.value || {}),
+      ticketId: String(ticket.ticketId || ticketId),
+      afterSalesStatus: ticket.status,
+      statusText: display.statusText
+    }
+    orderInfo.value = {
+      ...orderInfo.value,
+      statusText: display.statusText
+    }
+  } catch (error) {}
+}
+
 async function resolveRemoteSession(options) {
   if (options.sessionId) {
     return await loadSessionHistory(options.sessionId)
   }
-  if (!options.orderId && !options.afterSaleId) {
+  const ticketId = options.ticketId
+  if (!options.orderId && !ticketId) {
     return false
   }
   try {
     const result = await createChatSession({
       orderId: options.orderId ? String(options.orderId) : null,
-      afterSaleId: options.afterSaleId ? String(options.afterSaleId) : null,
+      ticketId: ticketId ? String(ticketId) : null,
       merchantCode: options.merchantCode ? decodeURIComponent(options.merchantCode) : ''
     })
     if (!result?.sessionId) return false
@@ -532,7 +607,7 @@ async function reviewSelectedImages(order, imagePaths = attachments.value) {
   const result = await reviewImages({
     attachments: attachmentPayload,
     order_hint: buildOrderHint({
-      order_id: order.orderNo,
+      order_id: order.orderId,
       product_name: order.items?.[0]?.productName || ''
     })
   })
@@ -624,6 +699,67 @@ async function runDeferredImageReview(imagePaths) {
   }
 }
 
+function createSupplementRequestId() {
+  return `supp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+async function submitTicketSupplement({
+  text,
+  imagePaths = attachments.value,
+  renderLocal = true
+}) {
+  const ticketId = String(orderData.value?.ticketId || '').trim()
+  if (!ticketId) {
+    throw new Error('售后工单尚未建立，请稍后重试')
+  }
+  if (!sessionId.value) {
+    const session = await createChatSession({
+      orderId: orderData.value?.orderId ? String(orderData.value.orderId) : null,
+      ticketId,
+      merchantCode: orderData.value?.merchantCode || orderInfo.value?.merchantCode || ''
+    })
+    if (session?.sessionId) {
+      sessionId.value = String(session.sessionId)
+      syncSessionMode(session.mode, session.status)
+    }
+  }
+  if (!sessionId.value) {
+    throw new Error('售后会话尚未建立，请稍后重试')
+  }
+
+  const normalizedText = text === '[图片]' ? '' : String(text || '').trim()
+  if (renderLocal) {
+    const sendGroupId = `supplement-${Date.now()}-${messageSequence}`
+    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath, sendGroupId))
+    if (normalizedText) {
+      addMessage('user', normalizedText, '', false, sendGroupId)
+    }
+    persistConversation()
+  }
+
+  const uploadedAttachments = imagePaths.length > 0
+    ? await uploadEvidenceAttachments(imagePaths)
+    : []
+  const result = await request({
+    url: `/aftersales/${ticketId}/supplements`,
+    method: 'POST',
+    data: {
+      requestId: createSupplementRequestId(),
+      sessionId: String(sessionId.value),
+      message: normalizedText,
+      attachmentUrls: uploadedAttachments
+        .map((attachment) => attachment.file_url)
+        .filter(Boolean)
+    }
+  })
+
+  attachments.value = []
+  await loadSessionHistory(sessionId.value)
+  await refreshAfterSalesSnapshot()
+  persistConversation()
+  return result
+}
+
 async function sendAgentMessage({
   text,
   description = text,
@@ -634,19 +770,22 @@ async function sendAgentMessage({
 }) {
   const hasImages = Array.isArray(imagePaths) && imagePaths.length > 0
   if (renderLocal) {
+    const sendGroupId = `send-${Date.now()}-${messageSequence}`
     // 图文同时发送时先展示图片，再展示文字描述，避免历史回填后顺序错乱
-    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath))
+    imagePaths.forEach((imagePath) => addImageMessage('user', imagePath, sendGroupId))
     // 如果text是占位符[图片]，不渲染
     if (text && text !== '[图片]') {
-      addMessage('user', text)
+      addMessage('user', text, '', false, sendGroupId)
     }
     persistConversation()
   }
   if (sessionMode.value === 'HUMAN') {
     if (!sessionId.value) {
       const session = await createChatSession({
-        orderId: orderData.value?.id ? String(orderData.value.id) : null,
-        afterSaleId: orderData.value?.afterSaleId ? String(orderData.value.afterSaleId) : null,
+        orderId: orderData.value?.orderId ? String(orderData.value.orderId) : null,
+        ticketId: orderData.value?.ticketId
+          ? String(orderData.value.ticketId)
+          : null,
         merchantCode: orderData.value?.merchantCode || orderInfo.value?.merchantCode || ''
       })
       if (session?.sessionId) {
@@ -766,49 +905,31 @@ async function consumePendingApply(orderId) {
   const userProblem = String(pending.description || pending.initialMessage || pending.reasonLabel || '').trim()
 
   try {
-    // 如果有图片，发送图片让AI分析
+    // 工单中的图片属于补充材料，提交 Java 事务后由 Kafka -> LangGraph 正式复审。
     if (imagePaths.length > 0) {
-      const result = await sendAgentMessage({
+      await submitTicketSupplement({
         text: userProblem || pending.initialMessage || '我已上传售后凭证，请AI客服分析。',
-        description: userProblem || pending.reasonLabel || '',
         imagePaths,
-        selectedOrderExtra: {
-          hasOpenAfterSales: true,
-          afterSalesStatus: 'PENDING',
-          existingTicketNo: pending.ticketNo || '',
-          uploadedEvidence: ['商品照片']
-        },
         renderLocal: true
       })
-
-      // 如果AI判断通过，更新订单状态
-      if (result?.ticket?.status === 'PROCESSING') {
-        orderData.value = {
-          ...orderData.value,
-          hasOpenAfterSales: true,
-          afterSalesStatus: 'PROCESSING',
-          afterSalesStatusText: '处理中',
-          latestAfterSalesTicketNo: pending.ticketNo || result?.ticket?.ticket_id
-        }
-        applyOrderToView(orderData.value)
-      }
     } else {
-      // 没有图片，发送一条消息触发AI引导
-      const result = await sendAgentMessage({
-        text: userProblem || '我的售后申请已提交',
-        description: userProblem || pending.reasonLabel || '',
-        imagePaths: [],
-        selectedOrderExtra: {
-          hasOpenAfterSales: true,
-          afterSalesStatus: 'PENDING',
-          existingTicketNo: pending.ticketNo || '',
-          uploadedEvidence: []
-        },
-        renderLocal: true
+      // 售后审核由 Kafka -> LangGraph 正式审核链路处理。这里仅把用户提交的
+      // 原因写入 Java/MySQL 会话，避免同时触发普通咨询 RAG 抢先转人工。
+      if (!sessionId.value) {
+        throw new Error('售后会话尚未建立，请稍后重试')
+      }
+      const knownServiceMessageIds = collectRemoteServiceMessageIds()
+      await sendChatMessage({
+        sessionId: sessionId.value,
+        message: userProblem || pending.initialMessage || '我的售后申请已提交',
+        messageType: 'TEXT'
       })
+      await waitForPersistedServiceReply(sessionId.value, knownServiceMessageIds)
+      persistConversation()
     }
   } catch (error) {
-    addMessage('service', error.message || '当前暂时无法获取处理结果，请稍后再试。')
+    console.error('pending after-sales request failed', error)
+    addMessage('service', '当前请求暂未处理完成，已为您保留售后记录，请稍后重试或选择人工帮助。')
     persistConversation()
   } finally {
     processingPendingApply.value = false
@@ -822,7 +943,8 @@ async function sendMessage() {
   // 完全不自动添加文字，用户没输入就不发送文本消息
   const text = typedText
 
-  if (text && /人工|客服|真人/.test(text)) {
+  const requestsHumanHandoff = text && /人工|客服|真人/.test(text)
+  if (requestsHumanHandoff) {
     humanRequestCount.value += 1
   }
 
@@ -835,19 +957,44 @@ async function sendMessage() {
     // 但本地不渲染这个占位符
     const messageText = text || (imagePaths.length > 0 ? '[图片]' : '')
 
-    await sendAgentMessage({
-      text: messageText,
-      description: text || '用户上传了图片',
-      imagePaths,
-      selectedOrderExtra: {
-        existingTicketNo: orderData.value?.latestAfterSalesTicketNo || '',
-        hasOpenAfterSales: orderData.value?.hasOpenAfterSales || false,
-        afterSalesStatus: orderData.value?.afterSalesStatus || ''
-      },
-      renderLocal: true  // 总是渲染，但在sendAgentMessage内部会判断text是否为空
-    })
+    if (orderData.value?.ticketId && requestsHumanHandoff) {
+      if (imagePaths.length > 0) {
+        await submitTicketSupplement({
+          text: '',
+          imagePaths,
+          renderLocal: true
+        })
+      }
+      await sendChatMessage({
+        sessionId: sessionId.value,
+        message: text,
+        messageType: 'TEXT'
+      })
+      attachments.value = []
+      await loadSessionHistory(sessionId.value)
+      persistConversation()
+    } else if (orderData.value?.ticketId) {
+      await submitTicketSupplement({
+        text: messageText,
+        imagePaths,
+        renderLocal: true
+      })
+    } else {
+      await sendAgentMessage({
+        text: messageText,
+        description: text || '用户上传了图片',
+        imagePaths,
+        selectedOrderExtra: {
+          existingTicketNo: orderData.value?.latestTicketNo || '',
+          hasOpenAfterSales: orderData.value?.hasOpenAfterSales || false,
+          afterSalesStatus: orderData.value?.afterSalesStatus || ''
+        },
+        renderLocal: true
+      })
+    }
   } catch (error) {
-    addMessage('service', error.message || '消息发送失败，请稍后重试')
+    console.error('chat send failed', error)
+    addMessage('service', '当前请求暂未处理完成，已为您保留会话，请稍后重试或选择人工帮助。')
   } finally {
     sending.value = false
   }
@@ -871,8 +1018,8 @@ function submitEvaluation() {
   if (!sessionId.value) return
   const params = [
     'sessionId=' + encodeURIComponent(sessionId.value || ''),
-    'orderId=' + encodeURIComponent(orderData.value?.id || ''),
-    'afterSaleId=' + encodeURIComponent(orderData.value?.afterSaleId || ''),
+    'orderId=' + encodeURIComponent(orderData.value?.orderId || ''),
+    'ticketId=' + encodeURIComponent(orderData.value?.ticketId || ''),
     'orderNo=' + encodeURIComponent(orderInfo.value.orderNo || ''),
     'productName=' + encodeURIComponent(orderInfo.value.productName || ''),
     'productIcon=' + encodeURIComponent(orderInfo.value.productIcon || '')
@@ -897,6 +1044,11 @@ onLoad(async (options) => {
   if (options.fromApply === '1' && options.orderId) {
     await consumePendingApply(options.orderId)
   }
+})
+
+onUnload(() => {
+  historyRefreshGeneration += 1
+  closeChatSocket()
 })
 </script>
 

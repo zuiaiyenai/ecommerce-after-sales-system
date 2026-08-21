@@ -15,7 +15,7 @@
         <text class="empty-text">暂无订单</text>
       </view>
 
-      <view v-for="order in filteredOrders" :key="order.id" class="order-card" @tap="goDetail(order.id)">
+      <view v-for="order in filteredOrders" :key="order.orderId" class="order-card" @tap="goDetail(order.orderId)">
         <view class="order-header">
           <text class="order-no">订单号：{{ order.orderNo }}</text>
           <text class="order-status" :class="order.statusClass">{{ order.statusText }}</text>
@@ -37,8 +37,8 @@
         <view class="order-footer">
           <text class="order-total">共{{ order.quantity }}件 合计：<text class="total-price">¥{{ order.totalPrice }}</text></text>
           <view class="order-actions">
-            <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.id)">确认收货</button>
-            <button v-if="order.canApplyAfterSales" class="action-btn primary" @tap.stop="applyAfterSale(order.id)">申请售后</button>
+            <button v-if="order.status === 'SHIPPED'" class="action-btn" @tap.stop="confirmReceive(order.orderId)">确认收货</button>
+            <button v-if="order.canApplyAfterSales" class="action-btn primary" @tap.stop="applyAfterSale(order.orderId)">申请售后</button>
             <button v-if="order.canContactService && order.status !== 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">联系客服</button>
             <button v-if="order.status === 'AWAITING_EVALUATION'" class="action-btn primary" @tap.stop="contactService(order)">去评价</button>
           </view>
@@ -82,7 +82,7 @@ const orders = computed(() => {
     const display = resolveOrderDisplay(o)
     const afterSales = resolveOrderAfterSalesSnapshot(o)
     return {
-      id: o.id,
+      orderId: o.orderId,
       orderNo: o.orderNo,
       productName: item ? item.productName : o.orderNo,
       productIcon: item ? item.productImage : '',
@@ -144,7 +144,7 @@ function applyAfterSale(id) {
 
 function contactService(order) {
   const params = [
-    'orderId=' + encodeURIComponent(order.id || ''),
+    'orderId=' + encodeURIComponent(order.orderId || ''),
     'orderNo=' + encodeURIComponent(order.orderNo || ''),
     'productName=' + encodeURIComponent(order.productName || ''),
     'productIcon=' + encodeURIComponent(order.productIcon || ''),

@@ -47,3 +47,52 @@ def rrf_fuse(
     for rank, item in enumerate(ranked, start=1):
         item["rank"] = rank
     return ranked
+
+
+def rrf_fuse_rankings(
+    rankings: list[list[dict[str, Any]]],
+    *,
+    k: int = 60,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Fuse an arbitrary number of query rankings by stable chunk identity."""
+    if k < 0:
+        raise ValueError("k must be non-negative")
+    if limit <= 0:
+        return []
+
+    merged: dict[str, dict[str, Any]] = {}
+    for query_index, hits in enumerate(rankings, start=1):
+        channel = f"query_{query_index}"
+        seen_chunk_ids: set[str] = set()
+        rank = 0
+        for hit in hits:
+            raw_chunk_id = hit.get("chunk_id", hit.get("id"))
+            if raw_chunk_id is None:
+                raise ValueError(f"{channel} hit is missing chunk_id")
+            chunk_id = str(raw_chunk_id)
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            rank += 1
+            item = merged.setdefault(
+                chunk_id,
+                {
+                    **hit,
+                    "chunk_id": raw_chunk_id,
+                    "rrf_score": 0.0,
+                    "query_channels": [],
+                    "query_ranks": {},
+                },
+            )
+            item["rrf_score"] += 1.0 / (k + rank)
+            item["query_channels"].append(channel)
+            item["query_ranks"][channel] = rank
+
+    ranked = sorted(
+        merged.values(),
+        key=lambda item: (-item["rrf_score"], str(item["chunk_id"])),
+    )[:limit]
+    for rank, item in enumerate(ranked, start=1):
+        item["rank"] = rank
+    return ranked

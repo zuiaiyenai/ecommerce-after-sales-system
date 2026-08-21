@@ -1,5 +1,7 @@
 package com.ecommerce.aftersales.dto;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import lombok.Data;
 
 import java.util.List;
@@ -23,6 +25,7 @@ public final class AdminConsoleDtos {
 
     @Data
     public static class AdminProfile {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long adminId;
         private String account;
         private String realName;
@@ -61,6 +64,7 @@ public final class AdminConsoleDtos {
 
     @Data
     public static class ServiceAccountView {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long id;
         private String staffNo;
         private String account;
@@ -79,6 +83,7 @@ public final class AdminConsoleDtos {
 
     @Data
     public static class PasswordResetView {
+        @JsonSerialize(using = ToStringSerializer.class)
         private Long accountId;
         private String account;
         private String temporaryPassword;

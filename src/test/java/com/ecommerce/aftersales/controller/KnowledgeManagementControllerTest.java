@@ -65,6 +65,34 @@ class KnowledgeManagementControllerTest {
     }
 
     @Test
+    void textImportUsesLifecycleServiceAndReturnsTextualDocumentId() throws Exception {
+        when(knowledgeService.createTextImport(any())).thenReturn(Map.of(
+                "documentId", 9007199254740993L,
+                "ingestionStatus", "PROCESSING",
+                "ingestionSourceType", "TEXT"));
+
+        mockMvc.perform(post("/admin/knowledge/text-import")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "title": "服装质量问题规则",
+                                  "knowledgeType": "after_sales_policy",
+                                  "sourceCode": "category_apparel_quality_001",
+                                  "scope": "MERCHANT",
+                                  "merchantCode": "MERCHANT_DEMO",
+                                  "content": "# 服装质量问题规则\\n测试内容",
+                                  "productCategory": "apparel",
+                                  "scene": "quality_issue",
+                                  "intent": "refund"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.documentId").value("9007199254740993"))
+                .andExpect(jsonPath("$.data.ingestionStatus").value("PROCESSING"))
+                .andExpect(jsonPath("$.data.ingestionSourceType").value("TEXT"));
+    }
+
+    @Test
     void legacyImportEndpointsAreNotMapped() throws Exception {
         MockMvc noMappingMvc = MockMvcBuilders.standaloneSetup(new KnowledgeManagementController(knowledgeService)).build();
         for (String path : List.of("/admin/knowledge/import/text", "/admin/knowledge/upload", "/admin/knowledge/batch-upload")) {

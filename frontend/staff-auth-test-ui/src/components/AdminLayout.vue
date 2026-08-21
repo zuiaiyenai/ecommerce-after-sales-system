@@ -34,7 +34,7 @@ let logoutEnterTimer = 0;
 let routeTransitionTimer = 0;
 
 const isDarkTheme = computed(() => themeMode.value === 'dark');
-const fullHeightRoutes = ['adminDashboard', 'adminAccounts', 'adminKnowledge'];
+const fullHeightRoutes = ['adminDashboard', 'adminAccounts', 'adminKnowledge', 'adminAgentOperations'];
 
 function setAction(message) {
   actionMessage.value = message;
@@ -49,16 +49,25 @@ async function loadShellData() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    const [profile, overviewData, accountPage, knowledgePage] = await Promise.all([
+    const [profileResult, overviewResult, accountResult, knowledgeResult] = await Promise.allSettled([
       getCurrentAdmin(),
       getAdminOverview(),
       getAgentAccounts(),
       getKnowledgeLibraries()
     ]);
-    admin.value = profile;
-    overview.value = overviewData;
-    accountTotal.value = accountPage.total ?? accountPage.records?.length ?? 0;
-    knowledgeTotal.value = knowledgePage.total ?? knowledgePage.records?.length ?? 0;
+    if (profileResult.status === 'rejected') {
+      throw profileResult.reason;
+    }
+    admin.value = profileResult.value;
+    if (overviewResult.status === 'fulfilled') {
+      overview.value = overviewResult.value;
+    }
+    if (accountResult.status === 'fulfilled') {
+      accountTotal.value = accountResult.value.total ?? accountResult.value.records?.length ?? 0;
+    }
+    if (knowledgeResult.status === 'fulfilled') {
+      knowledgeTotal.value = knowledgeResult.value.total ?? knowledgeResult.value.records?.length ?? 0;
+    }
   } catch (error) {
     errorMessage.value = error.message || '管理员基础数据加载失败';
   } finally {

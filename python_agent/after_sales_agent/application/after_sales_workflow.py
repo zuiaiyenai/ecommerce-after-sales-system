@@ -14,15 +14,17 @@ from typing import Any, ClassVar, Literal, Optional, TypedDict, TYPE_CHECKING
 from langgraph.graph import END, StateGraph
 
 from .function_calling import FunctionCallingAdapter, FunctionCallingProtocolError
-from .skill_registry import AgentSkillRegistry
-from .tool_registry import AgentToolRegistry
-from ..infra.request_tracing import bind_trace_id
-from ..infra.agent_metrics import AGENT_RUNTIME_METRICS
+from .rag_query_rewrite import RagQueryRewriteService, RagRewriteError
+from .rag_retrieval_policy import RagRetrievalPolicy
+from ..agent.skill_registry import AgentSkillRegistry
+from ..tools import AgentToolRegistry
+from ..infrastructure.request_tracing import bind_trace_id
+from ..infrastructure.agent_metrics import AGENT_RUNTIME_METRICS
 from ..providers.llm_client import OpenAICompatibleClient, get_llm_client
 from ..providers.resilient_llm_runtime import LLMError
 
 if TYPE_CHECKING:
-    from ..infra.request_tracing import TraceRecorder
+    from ..infrastructure.request_tracing import TraceRecorder
 
 logger = logging.getLogger("after_sales_agent.langgraph")
 
@@ -72,6 +74,11 @@ class AgentGraphState(TypedDict, total=False):
     decision_protocol: str
     current_function_call_mode: str
     current_provider_tool_call_shape: str
+    retrieval_attempts: int
+    retrieval_query_count: int
+    retrieval_queries: list[str]
+    retrieval_assessment: dict[str, Any]
+    retrieval_rewrite_completed: bool
 
 
 @dataclass
@@ -95,8 +102,11 @@ class LangGraphAfterSalesAgent:
     max_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "8")))
     max_tool_calls: int = field(default_factory=lambda: int(os.getenv("MAX_TOOL_CALLS", "10")))
     max_duplicate_tool_calls: int = field(default_factory=lambda: int(os.getenv("MAX_DUPLICATE_TOOL_CALLS", "2")))
+    max_rag_query_candidates: int = field(
+        default_factory=lambda: int(os.getenv("RAG_MULTI_QUERY_MAX_CANDIDATES", "3"))
+    )
+    rag_rewrite_service: RagQueryRewriteService | None = None
     native_function_calling_enabled: bool = field(default_factory=lambda: _env_bool("LLM_NATIVE_FUNCTION_CALLING_ENABLED", True))
-    legacy_tool_call_fallback_enabled: bool = field(default_factory=lambda: _env_bool("LLM_LEGACY_TOOL_CALL_FALLBACK_ENABLED", True))
     _trace_recorder: ContextVar[Any | None] = field(
         default_factory=lambda: ContextVar("langgraph_trace_recorder", default=None),
         init=False,
@@ -104,6 +114,12 @@ class LangGraphAfterSalesAgent:
     )
 
     def __post_init__(self) -> None:
+        self.max_rag_query_candidates = min(3, max(1, self.max_rag_query_candidates))
+        if self.rag_rewrite_service is None:
+            self.rag_rewrite_service = RagQueryRewriteService(
+                llm=self.llm,
+                max_candidates=self.max_rag_query_candidates,
+            )
         graph = StateGraph(AgentGraphState)
         graph.add_node("receive_message", self.receive_message)
         graph.add_node("classify_or_plan", self.classify_or_plan)
@@ -187,6 +203,11 @@ class LangGraphAfterSalesAgent:
             "decision_protocol": "native",
             "current_function_call_mode": "deterministic",
             "current_provider_tool_call_shape": "none",
+            "retrieval_attempts": 0,
+            "retrieval_query_count": 0,
+            "retrieval_queries": [],
+            "retrieval_assessment": {},
+            "retrieval_rewrite_completed": False,
         }
         final_state = self.graph.invoke(state)
         normalized_ticket = self._normalize_ticket(final_state.get("ticket"))
@@ -209,6 +230,10 @@ class LangGraphAfterSalesAgent:
                 "decision_protocol": final_state.get("decision_protocol") or "fail_closed",
                 "allow_ai_review_submit": bool(final_state.get("allow_ai_review_submit")),
                 "skill_versions": final_state.get("skill_versions") or {},
+                "retrieval_attempts": int(final_state.get("retrieval_attempts") or 0),
+                "retrieval_query_count": int(final_state.get("retrieval_query_count") or 0),
+                "retrieval_assessment": final_state.get("retrieval_assessment") or {},
+                "retrieval_rewrite_completed": bool(final_state.get("retrieval_rewrite_completed")),
             },
         }
 
@@ -244,7 +269,6 @@ class LangGraphAfterSalesAgent:
         raw = self._native_decision(
             state,
             self._planner_system_prompt(),
-            self._planner_legacy_system_prompt(),
         )
         raw = self._guard_completed_review_claim(state, raw)
 
@@ -282,20 +306,14 @@ class LangGraphAfterSalesAgent:
         self,
         state: AgentGraphState,
         native_system_prompt: str,
-        legacy_system_prompt: str,
     ) -> dict[str, Any]:
         payload = self._planner_payload(state)
         if not self.native_function_calling_enabled:
-            try:
-                return self._legacy_decision(
-                    state,
-                    legacy_system_prompt,
-                    payload,
-                    "legacy_disabled_native",
-                )
-            except (LLMError, FunctionCallingProtocolError) as exc:
-                logger.warning("agent_function_decision protocol=legacy_disabled_native error_category=%s", exc.__class__.__name__)
-                return self._fail_closed_decision(state)
+            self._clear_pending_tool_call(state)
+            logger.warning(
+                "agent_function_decision protocol=native_disabled error_category=configuration_disabled"
+            )
+            return self._fail_closed_decision(state)
         try:
             decision = FunctionCallingAdapter(
                 client=self.llm,
@@ -310,19 +328,7 @@ class LangGraphAfterSalesAgent:
         except (LLMError, FunctionCallingProtocolError) as exc:
             self._clear_pending_tool_call(state)
             logger.warning("agent_function_decision protocol=native error_category=%s", exc.__class__.__name__)
-            if not self.legacy_tool_call_fallback_enabled:
-                return self._fail_closed_decision(state)
-            try:
-                return self._legacy_decision(
-                    state,
-                    legacy_system_prompt,
-                    payload,
-                    "legacy_fallback",
-                )
-            except (LLMError, FunctionCallingProtocolError) as fallback_exc:
-                self._clear_pending_tool_call(state)
-                logger.warning("agent_function_decision protocol=legacy_fallback error_category=%s", fallback_exc.__class__.__name__)
-                return self._fail_closed_decision(state)
+            return self._fail_closed_decision(state)
         action = dict(decision.action)
         action["_function_call_mode"] = "native"
         action["_provider_tool_call_shape"] = decision.provider_tool_call_shape
@@ -333,26 +339,6 @@ class LangGraphAfterSalesAgent:
             "agent_function_decision protocol=native tool=%s call_id=%s",
             action.get("tool_name"),
             state["pending_tool_call_id"],
-        )
-        return action
-
-    def _legacy_decision(self, state: AgentGraphState, system_prompt: str, payload: dict[str, Any], protocol: str) -> dict[str, Any]:
-        self._clear_pending_tool_call(state)
-        raw = self.llm.chat_json(
-            system_prompt=system_prompt,
-            user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            temperature=0.1,
-            max_tokens=700,
-        )
-        action = FunctionCallingAdapter(client=self.llm, registry=self.tools).validate_action(raw)
-        action["_function_call_mode"] = "legacy"
-        action["_provider_tool_call_shape"] = "legacy_json"
-        state["decision_protocol"] = protocol
-        logger.info(
-            "agent_function_decision protocol=%s tool=%s call_id=%s",
-            protocol,
-            action.get("tool_name"),
-            None,
         )
         return action
 
@@ -571,6 +557,23 @@ class LangGraphAfterSalesAgent:
             observation["session_mode"] = "HUMAN" if ok else "AI"
             observation["handoff_succeeded"] = ok
         state["last_observation"] = observation
+        if tool in {"retrieve_knowledge", "retrieve_knowledge_multi"}:
+            state["retrieval_attempts"] = int(state.get("retrieval_attempts") or 0) + 1
+            arguments = latest.get("arguments") if isinstance(latest.get("arguments"), dict) else {}
+            raw_queries = (
+                [arguments.get("query")]
+                if tool == "retrieve_knowledge"
+                else [arguments.get("original_query"), *(arguments.get("queries") or [])]
+            )
+            queries = list(state.get("retrieval_queries") or [])
+            used_queries = {item.casefold() for item in queries}
+            for raw_query in raw_queries:
+                query = self._normalize_retrieval_query(raw_query)
+                if query and query.casefold() not in used_queries:
+                    queries.append(query)
+                    used_queries.add(query.casefold())
+            state["retrieval_queries"] = queries
+            state["retrieval_query_count"] = len(queries)
         logger.info(
             "agent_tool_observation tool=%s call_id=%s error_category=%s",
             tool,
@@ -652,6 +655,16 @@ class LangGraphAfterSalesAgent:
             state["need_human"] = False
             return state
 
+        follow_up_retrieval = self._follow_up_retrieval_action(state)
+        if follow_up_retrieval is not None:
+            logger.info(
+                "agent_rag_follow_up attempt=%s reasons=%s",
+                state.get("retrieval_attempts"),
+                (state.get("retrieval_assessment") or {}).get("reasons"),
+            )
+            self._apply_action(state, follow_up_retrieval)
+            return state
+
         guarded = self._guarded_after_sales_action(state)
         if guarded is not None:
             logger.info("agent_function_guard tool=%s", guarded.get("tool_name"))
@@ -666,7 +679,6 @@ class LangGraphAfterSalesAgent:
         raw = self._native_decision(
             state,
             self._decider_system_prompt(),
-            self._decider_legacy_system_prompt(),
         )
         raw = self._guard_completed_review_claim(state, raw)
         self._apply_action(state, raw)
@@ -682,7 +694,6 @@ class LangGraphAfterSalesAgent:
         raw = self._native_decision(
             state,
             self._decider_system_prompt(),
-            self._decider_legacy_system_prompt(),
         )
         if state.get("decision_protocol") == "fail_closed":
             return raw
@@ -1030,11 +1041,13 @@ class LangGraphAfterSalesAgent:
             "evidence_needed": state.get("evidence_needed") or [],
         }
 
-    @staticmethod
-    def _skill_stage(state: AgentGraphState) -> str:
+    def _skill_stage(self, state: AgentGraphState) -> str:
         if state.get("explicit_human_request") or state.get("need_human"):
             return "human_handoff"
-        knowledge = LangGraphAfterSalesAgent._latest_tool_data(state, "retrieve_knowledge")
+        order = self._selected_order(state)
+        if order is None and isinstance(state.get("ticket"), dict):
+            order = self._order_from_ticket(state["ticket"])
+        knowledge = self._best_knowledge_result(state, order or {})
         if isinstance(knowledge, dict) and knowledge.get("hits"):
             return "policy_explanation"
         return "evidence_collection"
@@ -1063,7 +1076,7 @@ class LangGraphAfterSalesAgent:
                     "has_logistics_label": data.get("has_logistics_label"),
                     "missing_visual_evidence": data.get("missing_visual_evidence"),
                 }
-            elif tool == "retrieve_knowledge" and isinstance(data, dict):
+            elif tool in {"retrieve_knowledge", "retrieve_knowledge_multi"} and isinstance(data, dict):
                 entry["hits_count"] = len(data.get("hits") or [])
                 entry["top_titles"] = [
                     (h.get("title") or "") + (" ✓" if h.get("source_code", "").endswith("_001") else "")
@@ -1123,42 +1136,239 @@ class LangGraphAfterSalesAgent:
             "调用一个提供的 function 完成当前决策。"
         )
 
-    @staticmethod
-    def _planner_legacy_system_prompt() -> str:
-        return (
-            "你是电商售后 Planner，使用 legacy JSON 决策协议。"
-            "没有 ticket_id 时只能咨询、查订单或检索政策，不得创建工单或更新状态；"
-            "携带 ticket_id 时必须先校验已有工单。所有业务事实和状态更新必须以 Java 工具结果为准。\n"
-            "只输出一个完整 JSON 对象，不得输出 Markdown、解释文字或代码块。"
-            "对象必须且只能包含 action, tool_name, tool_arguments, assistant_reply, need_human, evidence_needed "
-            "这六个字段，完整 envelope 为 "
-            '{"action":"tool_call|human_handoff|final_reply","tool_name":null,'
-            '"tool_arguments":{},"assistant_reply":"","need_human":false,"evidence_needed":[]}。\n'
-            "tool_call 时 tool_name 必须是 available_tools 中的名称且 tool_arguments 必须是对象；"
-            "human_handoff 或 final_reply 时 tool_name 必须为 null 且 tool_arguments 必须为 {}。"
-            "不得伪造订单、工单、审核或人工转接成功，不得绕过权限、Kafka 审核来源和 Java 状态机。\n"
-            "assistant_reply 必须是给用户看的简洁自然中文，禁止包含 JSON、工具参数、base64、"
-            "内部标识或长数字 ID；need_human 必须是布尔值，evidence_needed 必须是字符串数组。"
+    def _follow_up_retrieval_action(self, state: AgentGraphState) -> dict[str, Any] | None:
+        last_tool = str(state.get("last_tool_name") or "")
+        if last_tool not in {"retrieve_knowledge", "retrieve_knowledge_multi"} or not state.get("last_tool_ok"):
+            return None
+        latest = self._latest_tool_result(state)
+        if not isinstance(latest, dict) or latest.get("tool") != last_tool:
+            return None
+        result = latest.get("data")
+        arguments = latest.get("arguments")
+        if not isinstance(result, dict) or not isinstance(arguments, dict):
+            return None
+
+        if RagRetrievalPolicy().is_infrastructure_failure(result):
+            state["retrieval_assessment"] = {
+                "sufficient": False,
+                "should_retry": False,
+                "terminal": last_tool == "retrieve_knowledge_multi",
+                "phase": "post_rewrite" if last_tool == "retrieve_knowledge_multi" else "initial",
+                "reasons": ["infrastructure_failure"],
+            }
+            return (
+                self._rag_insufficient_handoff_action(state)
+                if last_tool == "retrieve_knowledge_multi"
+                else None
+            )
+
+        # A linked ticket does not by itself turn a knowledge answer into an
+        # automatic business decision. Only the trusted Kafka review path may
+        # require policy evidence strong enough to authorize AI review. Normal
+        # chat remains answerable from relevant, strictly filtered knowledge;
+        # `_build_ai_review_action` independently keeps the stronger trusted
+        # policy gate for any verdict or state-changing action.
+        require_trusted_policy = bool(state.get("allow_ai_review_submit"))
+        known_facts = self._rag_known_facts(state, arguments)
+        original_query = self._normalize_retrieval_query(
+            arguments.get("original_query")
+            if last_tool == "retrieve_knowledge_multi"
+            else arguments.get("query")
         )
 
+        if last_tool == "retrieve_knowledge_multi":
+            return self._assess_post_rewrite_result(
+                state=state,
+                result=result,
+                arguments=arguments,
+                known_facts=known_facts,
+                original_query=original_query,
+                require_trusted_policy=require_trusted_policy,
+            )
+        if state.get("retrieval_rewrite_completed"):
+            return None
+
+        state["retrieval_rewrite_completed"] = True
+        try:
+            decision = self.rag_rewrite_service.evaluate(  # type: ignore[union-attr]
+                user_question=str(state.get("message") or ""),
+                task="核对售后知识是否足以回答当前问题，并在不足时生成互补检索查询。",
+                known_facts=known_facts,
+                original_query=original_query,
+                previous_queries=list(state.get("retrieval_queries") or []),
+                require_trusted_policy=require_trusted_policy,
+                retrieval_result=result,
+            )
+        except RagRewriteError as exc:
+            state["retrieval_assessment"] = {
+                "sufficient": False,
+                "should_retry": False,
+                "terminal": False,
+                "phase": "initial",
+                "reasons": ["query_rewrite_error"],
+                "error_type": type(exc).__name__,
+            }
+            return None
+
+        sufficient = self._rag_decision_is_sufficient(decision)
+        state["retrieval_assessment"] = {
+            "sufficient": sufficient,
+            "should_retry": not sufficient and bool(decision.queries),
+            "terminal": not sufficient and not bool(decision.queries),
+            "phase": "initial",
+            "confidence": decision.confidence,
+            "covered_aspects": list(decision.covered_aspects),
+            "missing_aspects": list(decision.missing_aspects),
+            "knowledge_missing_aspects": list(decision.missing_aspects),
+            "case_fact_gaps": list(decision.case_fact_gaps),
+            "out_of_scope_aspects": list(decision.out_of_scope_aspects),
+            "candidate_count": len(decision.queries),
+            "reasons": [] if sufficient else ["semantic_coverage_insufficient"],
+        }
+        if sufficient:
+            return None
+        if not decision.queries:
+            return self._rag_insufficient_handoff_action(state)
+        follow_up_arguments = dict(arguments)
+        follow_up_arguments.pop("query", None)
+        follow_up_arguments["original_query"] = original_query
+        follow_up_arguments["queries"] = [candidate.query for candidate in decision.queries]
+        return {
+            "action": "tool_call",
+            "tool_name": "retrieve_knowledge_multi",
+            "tool_arguments": follow_up_arguments,
+            "assistant_reply": "",
+            "need_human": False,
+            "evidence_needed": state.get("evidence_needed") or [],
+        }
+
+    def _assess_post_rewrite_result(
+        self,
+        *,
+        state: AgentGraphState,
+        result: dict[str, Any],
+        arguments: dict[str, Any],
+        known_facts: dict[str, Any],
+        original_query: str,
+        require_trusted_policy: bool,
+    ) -> dict[str, Any] | None:
+        try:
+            decision = self.rag_rewrite_service.evaluate(  # type: ignore[union-attr]
+                user_question=str(state.get("message") or ""),
+                task="评估多路改写检索结果是否完整覆盖当前售后问题；本阶段不得继续扩大检索轮次。",
+                known_facts=known_facts,
+                original_query=original_query,
+                previous_queries=[
+                    self._normalize_retrieval_query(query)
+                    for query in (arguments.get("queries") or [])
+                    if self._normalize_retrieval_query(query)
+                ],
+                require_trusted_policy=require_trusted_policy,
+                retrieval_result=result,
+                allow_rewrite=False,
+            )
+        except RagRewriteError as exc:
+            state["retrieval_assessment"] = {
+                "sufficient": False,
+                "should_retry": False,
+                "terminal": True,
+                "phase": "post_rewrite",
+                "reasons": ["post_rewrite_evaluation_error"],
+                "error_type": type(exc).__name__,
+            }
+            return self._rag_insufficient_handoff_action(state)
+
+        sufficient = self._rag_decision_is_sufficient(decision)
+        state["retrieval_assessment"] = {
+            "sufficient": sufficient,
+            "should_retry": False,
+            "terminal": not sufficient,
+            "phase": "post_rewrite",
+            "confidence": decision.confidence,
+            "covered_aspects": list(decision.covered_aspects),
+            "missing_aspects": list(decision.missing_aspects),
+            "knowledge_missing_aspects": list(decision.missing_aspects),
+            "case_fact_gaps": list(decision.case_fact_gaps),
+            "out_of_scope_aspects": list(decision.out_of_scope_aspects),
+            "candidate_count": 0,
+            "reasons": [] if sufficient else ["post_rewrite_semantic_coverage_insufficient"],
+        }
+        if sufficient:
+            return None
+        return self._rag_insufficient_handoff_action(state)
+
+    def _rag_known_facts(
+        self,
+        state: AgentGraphState,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        order = self._selected_order(state)
+        if order is None and isinstance(state.get("ticket"), dict):
+            order = self._order_from_ticket(state["ticket"])
+        order = order or {}
+        return {
+            "product_name": order.get("product_name"),
+            "product_category": order.get("product_category") or order.get("category"),
+            "issue_type": self._reason_type(state),
+            "after_sales_type": self._after_sales_type(state),
+            "scene": arguments.get("scene"),
+            "intent": arguments.get("intent"),
+        }
+
     @staticmethod
-    def _decider_legacy_system_prompt() -> str:
-        return (
-            "你是售后 Agent 的 Terminal Decider，使用 legacy JSON 决策协议。"
-            "根据 tool_results 和 last_observation 决定继续调用工具、转人工或最终回复；"
-            "不得编造工具未返回的业务事实，AI 初审必须以 submit_ai_review 成功结果为准，"
-            "没有 ticket_id 时不得提交 AI 审核。\n"
-            "只输出一个完整 JSON 对象，不得输出 Markdown、解释文字或代码块。"
-            "对象必须且只能包含 action, tool_name, tool_arguments, assistant_reply, need_human, evidence_needed "
-            "这六个字段，完整 envelope 为 "
-            '{"action":"tool_call|human_handoff|final_reply","tool_name":null,'
-            '"tool_arguments":{},"assistant_reply":"","need_human":false,"evidence_needed":[]}。\n'
-            "tool_call 时 tool_name 必须是 available_tools 中的名称且 tool_arguments 必须是对象；"
-            "human_handoff 或 final_reply 时 tool_name 必须为 null 且 tool_arguments 必须为 {}。"
-            "不得声称未被 Java 确认的状态更新、审核完成或人工接入成功，不得绕过权限和安全门禁。\n"
-            "assistant_reply 必须是给用户看的简洁自然中文，禁止包含 JSON、工具参数、base64、"
-            "内部标识或长数字 ID；need_human 必须是布尔值，evidence_needed 必须是字符串数组。"
-        )
+    def _rag_decision_is_sufficient(decision: RagRewriteDecision) -> bool:
+        try:
+            minimum_confidence = float(os.getenv("RAG_SUFFICIENCY_MIN_CONFIDENCE", "0.70"))
+        except (TypeError, ValueError):
+            minimum_confidence = 0.70
+        minimum_confidence = min(1.0, max(0.0, minimum_confidence))
+        return bool(decision.sufficient and decision.confidence >= minimum_confidence)
+
+    @staticmethod
+    def _rag_insufficient_handoff_action(state: AgentGraphState) -> dict[str, Any]:
+        return {
+            "action": "human_handoff",
+            "tool_name": None,
+            "tool_arguments": {},
+            "assistant_reply": (
+                "我已完成补充检索，但现有知识仍未完整覆盖当前问题的适用条件、必要凭证或处理边界。"
+                "为避免给出不准确的售后承诺，我会为您转接人工客服继续核验。"
+            ),
+            "need_human": True,
+            "evidence_needed": state.get("evidence_needed") or [],
+        }
+
+    def _best_knowledge_result(
+        self,
+        state: AgentGraphState,
+        order: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        candidates: list[tuple[tuple[int, int, int, int, int, int], dict[str, Any]]] = []
+        for index, item in enumerate(state.get("tool_results") or []):
+            if item.get("tool") not in {"retrieve_knowledge", "retrieve_knowledge_multi"} or not item.get("ok"):
+                continue
+            data = item.get("data")
+            if not isinstance(data, dict):
+                continue
+            hits = data.get("hits") if isinstance(data.get("hits"), list) else []
+            mode = str(data.get("mode") or "").lower()
+            trusted = bool(order and self._trusted_policy_hits(data, order, state.get("history_summary")))
+            score = (
+                int(trusted),
+                int("degraded" not in mode and "error" not in mode),
+                int(data.get("reranker_succeeded") is True),
+                int(data.get("no_answer") is not True),
+                len(hits),
+                index,
+            )
+            candidates.append((score, data))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda candidate: candidate[0])[1]
+
+    @staticmethod
+    def _normalize_retrieval_query(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
 
     def _guarded_after_sales_action(self, state: AgentGraphState) -> dict[str, Any] | None:
         """确定性售后路由：无 ticket_id 只咨询；有 ticket_id 才做 AI 初审。"""
@@ -1277,7 +1487,7 @@ class LangGraphAfterSalesAgent:
 
     def _build_ai_review_action(self, state: AgentGraphState, order: dict[str, Any]) -> dict[str, Any]:
         review = self._latest_tool_data(state, "review_images")
-        knowledge = self._latest_tool_data(state, "retrieve_knowledge")
+        knowledge = self._best_knowledge_result(state, order)
         policy_hits = self._policy_hits(knowledge)
         trusted_policy_hits = self._trusted_policy_hits(
             knowledge,
@@ -1440,7 +1650,8 @@ class LangGraphAfterSalesAgent:
     def _retrieve_policy_action(self, state: AgentGraphState, order: dict[str, Any]) -> dict[str, Any]:
         reason = self._reason_type(state)
         after_sales_type = self._after_sales_type(state)
-        category = order.get("category") or order.get("product_category")
+        raw_category = order.get("category") or order.get("product_category")
+        category = self._rag_product_category(order)
         merchant_code = str(order.get("merchant_code") or "").strip()
         as_of_time = order.get("after_sales_applied_at") or order.get("create_time")
         if not merchant_code or not str(as_of_time or "").strip():
@@ -1483,7 +1694,7 @@ class LangGraphAfterSalesAgent:
         query_parts = [
             self._conversation_issue_text(state),
             str(order.get("product_name") or ""),
-            str(category or ""),
+            str(raw_category or category or ""),
             scene,
             after_sales_type,
             self._rag_query_expansion(reason, after_sales_type),
@@ -1512,13 +1723,14 @@ class LangGraphAfterSalesAgent:
         """RAG 检索证据模板 — 提前到决策阶段调用，用语义匹配替代硬编码关键词。"""
         reason = self._reason_type(state)
         product_name = str(order.get("product_name") or "")
-        category = order.get("category") or order.get("product_category") or ""
+        raw_category = order.get("category") or order.get("product_category") or ""
+        category = self._rag_product_category(order)
         merchant_code = str(order.get("merchant_code") or "").strip() or None
         message = self._conversation_issue_text(state)
         query_parts = [
             message,
             product_name,
-            category,
+            str(raw_category or category or ""),
             self._scene_for_reason(reason),
             self._rag_query_expansion(reason, self._after_sales_type(state)),
             "售后证据要求 凭证模板 需要什么照片",
@@ -1527,7 +1739,7 @@ class LangGraphAfterSalesAgent:
             "user_id": state.get("user_id"),
             "query": " ".join(p for p in query_parts if p).strip(),
             "merchant_code": merchant_code,
-            "product_category": category if category else None,
+            "product_category": category,
             "scene": self._scene_for_reason(reason),
             "top_k": 5,
         }
@@ -1547,7 +1759,7 @@ class LangGraphAfterSalesAgent:
 
     def _build_evidence_needed(self, state: AgentGraphState, order: dict[str, Any]) -> list[str]:
         """从 RAG 结果 + 订单上下文动态生成 evidence_needed，替代硬编码 _missing_evidence。"""
-        knowledge = self._latest_tool_data(state, "retrieve_knowledge")
+        knowledge = self._best_knowledge_result(state, order)
         product_name = str(order.get("product_name") or "")
         category = str(order.get("category") or order.get("product_category") or "")
 
@@ -1872,7 +2084,7 @@ class LangGraphAfterSalesAgent:
             observation["existing_ticket_no"] = data.get("existing_ticket_no")
         elif tool == "get_existing_after_sales":
             observation["existing_ticket_found"] = isinstance(data, dict) and bool(data)
-        elif tool == "retrieve_knowledge" and isinstance(data, dict):
+        elif tool in {"retrieve_knowledge", "retrieve_knowledge_multi"} and isinstance(data, dict):
             hits = data.get("hits") if isinstance(data.get("hits"), list) else []
             observation["mode"] = data.get("mode")
             observation["hits_count"] = len(hits)
@@ -2011,6 +2223,36 @@ class LangGraphAfterSalesAgent:
     @staticmethod
     def _order_hint(order: dict[str, Any]) -> str:
         return f"订单号：{order.get('order_no') or ''}；商品：{order.get('product_name') or ''}"
+
+    @staticmethod
+    def _rag_product_category(order: dict[str, Any]) -> str | None:
+        """Map business-facing product labels to the RAG metadata vocabulary."""
+        raw_category = str(
+            order.get("category") or order.get("product_category") or ""
+        ).strip()
+        product_name = str(order.get("product_name") or "").strip()
+        normalized = raw_category.casefold()
+        if "耳机" in product_name or normalized in {"headphone", "耳机", "蓝牙耳机"}:
+            return "headphone"
+        if "手机" in product_name or normalized in {"phone", "手机"}:
+            return "phone"
+        aliases = {
+            "数码": "digital",
+            "digital": "digital",
+            "服装": "apparel",
+            "apparel": "apparel",
+            "鞋靴": "shoes",
+            "shoes": "shoes",
+            "日用": "daily",
+            "daily": "daily",
+            "食品": "food",
+            "food": "food",
+            "家居": "home",
+            "home": "home",
+            "其他": "other",
+            "other": "other",
+        }
+        return aliases.get(normalized) or (raw_category if raw_category else None)
 
     @staticmethod
     def _mentions_visible_damage(state: AgentGraphState) -> bool:
@@ -2409,9 +2651,9 @@ class LangGraphAfterSalesAgent:
     def _rag_query_expansion(reason: str, after_sales_type: str) -> str:
         parts: list[str] = []
         if reason == "DAMAGE":
-            parts.extend(["商品破损", "外壳破裂", "裂纹", "破损照片", "退货退款", "换货"])
+            parts.extend(["商品破损", "问题部位", "问题现象", "售后凭证"])
         elif reason == "QUALITY":
-            parts.extend(["质量问题", "功能故障", "电流声", "异响", "无法正常使用", "故障描述"])
+            parts.extend(["质量问题", "商品异常", "问题现象", "故障描述"])
         if after_sales_type in {"RETURN_REFUND", "REFUND_ONLY"}:
             parts.extend(["退款", "退货退款", "退款规则"])
         elif after_sales_type == "EXCHANGE":

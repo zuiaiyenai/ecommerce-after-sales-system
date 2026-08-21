@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from after_sales_agent.services.pgvector_retrieval import PgVectorKnowledgeRetriever, PgVectorConfig
+from after_sales_agent.retrieval.pgvector_retriever import PgVectorKnowledgeRetriever, PgVectorConfig
 
 
 def pg_rows(dsn: str) -> list[dict[str, Any]]:
@@ -75,6 +75,15 @@ def chunks(text: str, limit: int = 700) -> list[str]:
     return result
 
 
+def _tokenize_chunk(text: str) -> str:
+    """Jieba search-mode tokenisation, space-joined, for lexical_text column."""
+    import jieba
+
+    if not text:
+        return ""
+    return " ".join(word for word, _, _ in jieba.tokenize(text, mode="search"))
+
+
 def reindex() -> dict[str, int]:
     import psycopg
     from psycopg.types.json import Jsonb
@@ -108,11 +117,13 @@ def reindex() -> dict[str, int]:
                 vectors = retriever.embed_many([record["chunk_text"] for record in batch])
                 for record, vector in zip(batch, vectors):
                     embedding = retriever._vector_literal(vector)
+                    lexical = _tokenize_chunk(record["chunk_text"])
                     cur.execute(
                         """
                         INSERT INTO knowledge_chunk
-                          (document_id, document_type, chunk_index, chunk_text, embedding, metadata)
-                        VALUES (%s, %s, %s, %s, %s::vector, %s)
+                          (document_id, document_type, chunk_index, chunk_text, embedding,
+                           metadata, lexical_text, search_vector)
+                        VALUES (%s, %s, %s, %s, %s::vector, %s, %s, to_tsvector('simple', %s))
                         """,
                         (
                             record["document_id"],
@@ -121,6 +132,8 @@ def reindex() -> dict[str, int]:
                             record["chunk_text"],
                             embedding,
                             Jsonb(record["metadata"]),
+                            lexical,
+                            lexical,
                         ),
                     )
         conn.commit()

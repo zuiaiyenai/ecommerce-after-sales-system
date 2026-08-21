@@ -1,6 +1,10 @@
 package com.ecommerce.aftersales.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ecommerce.aftersales.entity.ChatSession;
+import com.ecommerce.aftersales.entity.SysUser;
+import com.ecommerce.aftersales.mapper.ChatSessionMapper;
+import com.ecommerce.aftersales.mapper.SysUserMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -22,9 +26,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private static final Map<String, Long> SESSION_SUBSCRIBED = new ConcurrentHashMap<>();
 
     private final ObjectMapper objectMapper;
+    private final ChatSessionMapper chatSessionMapper;
+    private final SysUserMapper sysUserMapper;
 
-    public ChatWebSocketHandler(ObjectMapper objectMapper) {
+    public ChatWebSocketHandler(ObjectMapper objectMapper,
+                                ChatSessionMapper chatSessionMapper,
+                                SysUserMapper sysUserMapper) {
         this.objectMapper = objectMapper;
+        this.chatSessionMapper = chatSessionMapper;
+        this.sysUserMapper = sysUserMapper;
     }
 
     @Override
@@ -42,6 +52,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
             if ("subscribe".equals(action) && sessionIdObj != null) {
                 Long sessionId = Long.valueOf(sessionIdObj.toString());
+                if (!canSubscribe(session, sessionId)) {
+                    log.warn("Rejected unauthorized WebSocket subscription {} -> {}", session.getId(), sessionId);
+                    session.close(CloseStatus.POLICY_VIOLATION);
+                    return;
+                }
                 subscribe(session, sessionId);
                 log.info("WebSocket session {} subscribed to chat session {}", session.getId(), sessionId);
             } else if ("unsubscribe".equals(action) && sessionIdObj != null) {
@@ -51,6 +66,25 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         } catch (Exception e) {
             log.warn("Failed to parse WebSocket message: {}", payload, e);
         }
+    }
+
+    private boolean canSubscribe(WebSocketSession socketSession, Long chatSessionId) {
+        Object identity = socketSession.getAttributes().get("authenticatedUserId");
+        if (!(identity instanceof Long userId)) {
+            return false;
+        }
+        ChatSession chatSession = chatSessionMapper.selectById(chatSessionId);
+        if (chatSession == null) {
+            return false;
+        }
+        if (userId.equals(chatSession.getUserId())) {
+            return true;
+        }
+        SysUser staff = sysUserMapper.selectById(userId);
+        return staff != null
+                && Integer.valueOf(1).equals(staff.getStatus())
+                && staff.getMerchantCode() != null
+                && staff.getMerchantCode().equals(chatSession.getMerchantCode());
     }
 
     @Override

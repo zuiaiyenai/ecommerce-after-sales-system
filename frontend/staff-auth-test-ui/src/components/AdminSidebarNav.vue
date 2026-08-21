@@ -21,13 +21,15 @@ const route = useRoute();
 const navItems = computed(() => [
   { to: '/admin/dashboard', key: 'adminDashboard', label: '首页', icon: 'home' },
   { to: '/admin/accounts', key: 'adminAccounts', label: '客服账号管理', icon: 'users', count: props.accountTotal },
-  { to: '/admin/knowledge', key: 'adminKnowledge', label: '知识库管理', icon: 'database', count: props.knowledgeTotal }
+  { to: '/admin/knowledge', key: 'adminKnowledge', label: '知识库管理', icon: 'database', count: props.knowledgeTotal },
+  { to: '/admin/agent-operations', key: 'adminAgentOperations', label: 'Agent 运行中心', icon: 'pulse' }
 ]);
 
 const iconPaths = {
   home: ['M3 10.8 12 3l9 7.8', 'M5.5 9.2V20h13V9.2', 'M9.5 20v-6h5v6'],
   users: ['M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z', 'M17 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z', 'M3.8 20a5.2 5.2 0 0 1 10.4 0', 'M14.5 20a4 4 0 0 1 6.5-3.1'],
-  database: ['M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Z', 'M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3', 'M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6']
+  database: ['M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Z', 'M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3', 'M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6'],
+  pulse: ['M3 12h4l2.2-6 4.1 12 2.2-6H21', 'M4 4v16', 'M20 4v16']
 };
 
 function isActive(item) {

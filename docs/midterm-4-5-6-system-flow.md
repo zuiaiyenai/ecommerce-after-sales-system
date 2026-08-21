@@ -17,7 +17,7 @@ flowchart LR
   Spring -->|MyBatis-Plus| DB[(MySQL<br/>订单/售后/会话/评价)]
   Spring -->|HTTP JSON<br/>127.0.0.1:8000/api| PyAgent["python_agent<br/>售后 AI Agent"]
   PyAgent -->|OpenAI-compatible API| LLM["Qwen/Ollama 等模型"]
-  PyAgent -->|MySQLRepository| DB
+  PyAgent -->|Java 内部 Agent API| Spring
 ```
 
 关键代码位置：
@@ -25,7 +25,7 @@ flowchart LR
 - Spring Boot 入口配置：`src/main/resources/application.yml`
 - AI 网关控制器：`src/main/java/com/ecommerce/aftersales/controller/AgentGatewayController.java`
 - Spring 调 Python Agent：`src/main/java/com/ecommerce/aftersales/service/impl/AgentGatewayServiceImpl.java`
-- Python Agent HTTP 服务：`python_agent/api_server.py`
+- Python Agent HTTP 服务：`python_agent/after_sales_agent/interface/http_server.py`
 - 用户端请求封装：`frontend/uniapp/src/utils/request.js`
 - 用户端 AI 请求封装：`frontend/uniapp/src/utils/afterSalesAgent.js`
 - 商家端请求封装：`frontend/staff-auth-test-ui/src/api/merchantCs.js`
@@ -104,7 +104,7 @@ Spring Boot 是主业务后端，负责：
 - `sys_user`：商家客服账号
 - `user`：小程序用户
 
-Spring Boot 通过 MyBatis-Plus Mapper 访问数据库。Python Agent 也会通过 `python_agent/after_sales_agent/infra/db.py` 中的 `MySQLRepository` 写入同一套数据库，因此会话和工单能在用户端、客服端、AI 模块之间共享。
+Spring Boot 通过 MyBatis-Plus Mapper 访问数据库，并是会话、消息和工单的唯一持久化责任方。Python Agent 通过 `integrations/java_tool_client.py` 调用 Java 内部 Agent API，不直接写 MySQL；各端统一从 Java API 读取数据库中的事实状态。
 
 ### 2.4 售后申请后端逻辑
 
@@ -180,8 +180,8 @@ MerchantCsServiceImpl.completeTicket()
 
 - 用户端：`frontend/uniapp/src/pages/chat/consult.vue`
 - 后端：`UserChatController.findExistingSession()`
-- Python Agent 持久化：`ConversationPersistenceService.persist_interaction()`
-- Python 仓储：`MySQLRepository.find_or_create_session()`
+- Agent 工具网关：`python_agent/after_sales_agent/integrations/java_tool_client.py`
+- Java 持久化：会话与消息 Service 在事务内更新 `chat_session` 和 `chat_message`
 
 ### 3.2 用户端咨询数据流
 
@@ -203,9 +203,10 @@ sequenceDiagram
   U->>U: addMessage(user)
   U->>S: POST /api/agent/chat
   S->>P: POST http://127.0.0.1:8000/api/chat
-  P->>P: 图片审核/意图理解/规则决策/LLM回复
-  P->>DB: 写 chat_session/chat_message/ticket/notice
-  P-->>S: assistant_reply + persistence.session_id + ticket
+  P->>P: 图片审核/意图理解/工具规划/LLM回复
+  P->>S: 调用受控 Java 内部 Agent API
+  S->>DB: 事务内写入会话/消息/工单/通知
+  P-->>S: assistant_reply + session_id + ticket
   S-->>U: ApiResponse.data
   U->>S: GET /api/chat/history?sessionId=...
   S->>DB: 读取完整历史消息
@@ -213,7 +214,7 @@ sequenceDiagram
   U->>U: 用数据库历史覆盖本地消息
 ```
 
-这里有一个重要设计：用户端收到 AI 返回后，不只依赖本地追加消息，而是优先回读 `/chat/history`。原因是 Python Agent 可能在数据库里额外写入：
+这里有一个重要设计：用户端收到 AI 返回后，不只依赖本地追加消息，而是优先回读 `/chat/history`。原因是 Agent 调用的 Java 持久化流程可能额外写入：
 
 - 转人工系统消息
 - 售后工单状态消息
@@ -367,7 +368,7 @@ Spring Boot -> POST http://127.0.0.1:8000/api/review-images
 Python Agent 入口是：
 
 ```text
-python_agent/api_server.py
+python -m after_sales_agent.interface.http_server
 ```
 
 启动后监听：
@@ -383,106 +384,55 @@ python_agent/api_server.py
 - `POST /api/chat`：售后智能客服对话
 - `GET /api/traces`：本地调试追踪
 
-`AgentApiHandler._handle_chat()` 是核心入口。它做了这些事：
-
-1. 读取 JSON 请求体。
-2. 解析订单、用户消息、图片附件、历史消息。
-3. 必要时调用图片审核服务。
-4. 如果有 `session_id`，从数据库加载最近历史消息。
-5. 构造 `ConversationContext`。
-6. 调 `QwenReturnService.handle()` 生成回复。
-7. 调 `ConversationPersistenceService.persist_interaction()` 写入数据库。
-8. 返回 `assistant_reply`、`ticket`、`fallback_need_human`、`persistence.session_id` 等给 Spring Boot。
+`interface/http_server.py` 是协议入口。它读取并校验 JSON 请求，交给
+`application/request_payload_adapter.py` 统一载荷，再调用应用层用例；HTTP
+层不承载售后决策，也不直接访问数据库。
 
 ### 4.4 AI 对话内部是怎么跑的
 
 核心类：
 
-- `ReturnConversationService`：规则 Agent 和图片审核的基础编排
-- `QwenReturnService`：对话理解 + 规则兜底 + LLM 回复生成
-- `ReturnAgent`：售后规则决策
+- `ConsultationWorkflow`：可信知识检索、有限查询改写、回复或转人工
+- `LangGraphAfterSalesAgent`：原生 Function Calling、工具规划和失败关闭
+- `AgentToolRegistry`：工具白名单、参数校验和执行门面
 - `VisionReviewService`：凭证图片审核
-- `ConversationPersistenceService`：把 AI 结果落到业务数据库
+- `JavaToolClient`：调用 Java 内部 Agent API，由 Java 完成持久化
 
 AI 对话流程：
 
 ```mermaid
 flowchart TD
-  A["/api/chat 请求"] --> B["构造 ConversationContext"]
-  B --> C["图片审核 review_images<br/>可跳过或使用前端缓存结果"]
-  C --> D["QwenReturnService._build_request_with_conversation_understanding"]
-  D --> E["LLM 做结构化意图理解<br/>intent/scene/confidence/missing_detail"]
-  E --> F["ReturnAgent 规则决策"]
-  F --> G{"是否跳过回复模型"}
-  G -->|"转人工/自动通过/信息不足"| H["直接使用规则回复"]
-  G -->|"可自然语言优化"| I["LLM 生成自然客服话术"]
-  H --> J["ConversationPersistenceService 落库"]
+  A["/api/chat 请求"] --> B["request_payload_adapter<br/>统一可信载荷"]
+  B --> C["ConsultationWorkflow"]
+  C --> D["AgentToolRegistry.retrieve_knowledge"]
+  D --> E["pgvector + pg_trgm + RRF + rerank"]
+  E --> F{"知识可信且覆盖充分？"}
+  F -->|否| G["调用 Java 工具转人工"]
+  F -->|是| H["LLM 生成有引用依据的回复"]
+  H --> I["调用 Java 工具持久化"]
+  G --> J["Java 事务更新业务状态"]
   I --> J
-  J --> K["返回 assistant_reply + 工单 + 会话ID"]
+  J --> K["返回 assistant_reply + session_id"]
 ```
 
 ### 4.5 LLM 具体做了什么
 
-`QwenReturnService.handle()` 分两阶段：
+统一 LLM 客户端位于 `providers/llm_client.py`。对话与正式审核使用
+`generate_structured()` 获取经过 Schema 校验的结构化结果；解析或校验失败只做
+有限修复重试，最终失败进入安全降级或人工转接。
 
-第一阶段：对话理解。
-
-调用：
-
-```text
-OpenAICompatibleClient.chat_json(
-  system_prompt = _conversation_understanding_system_prompt(),
-  user_prompt = _conversation_understanding_user_prompt(...)
-)
-```
-
-要求模型只输出 JSON，字段包括：
-
-- `intent`：申请售后、退款进度、补充凭证、转人工等
-- `scene`：质量问题、商品破损、包装破损、物流异常、进度查询等
-- `confidence`：置信度
-- `quality_description_detailed`：质量问题描述是否足够具体
-- `normalized_issue`：提炼出的具体异常
-- `missing_detail`：还缺什么信息
-- `reason`：判断依据
-
-然后代码会做修复和兜底，例如：
-
-- 用户问“退款什么时候到账”，强制识别为 `refund_progress`
-- 用户说“人工/真人客服”，强制识别为 `human_service`
-- 用户只说“质量问题”但没有具体异常，会要求补充异常描述
-
-第二阶段：生成客服回复。
-
-如果规则结果允许模型润色，调用：
-
-```text
-OpenAICompatibleClient.chat_json(
-  system_prompt = _system_prompt(),
-  user_prompt = _user_prompt(context, fallback_result)
-)
-```
-
-模型只负责把规则结果转成自然、简洁、适合小程序售后场景的回复。它不能改规则结论，不能编造退款时间、审核结果、工单号，也不能暴露“自动审核、风险等级、Agent”等内部词。
-
-如果规则判断必须转人工、必须补充材料或已经自动处理，代码会跳过模型回复，直接使用规则结果，避免模型胡说。
+模型可以做意图理解、知识覆盖评估、查询改写和自然语言回复，但不能修改商家、
+政策版本、业务时间等硬过滤条件，不能绕过工具注册表写业务状态，也不能替代
+正式审核中的确定性 Gate。
 
 ### 4.6 AI 结果怎么同步到客服端
 
-Python Agent 的 `ConversationPersistenceService.persist_interaction()` 会直接写数据库：
-
-- 查找或创建 `chat_session`
-- 写入用户消息 `chat_message`
-- 写入 AI 回复 `chat_message`
-- 如果需要人工，调用 `mark_session_waiting_human()`
-- 如果产生售后工单，写入或复用 `after_sales_ticket`
-- 写入 `ticket_log`
-- 写入 `message_notice`
-
-因此客服端不是从 Python Agent 取数据，而是从 Spring Boot 的 `/merchant-cs/*` 接口读取数据库。也就是说：
+Python Agent 通过 `integrations/java_tool_client.py` 提交回复、转人工或工单动作。
+Java 校验权限、幂等键和业务状态，并在事务内更新会话、消息、工单、日志与通知。
+客服端从 Spring Boot 的 `/merchant-cs/*` 接口读取数据库。也就是说：
 
 ```text
-AI 产生结果 -> Python Agent 落库 -> 客服端通过 Spring Boot 读库展示
+AI 产生建议 -> Java 内部 Agent API 校验并落库 -> 客服端通过 Spring Boot 读库展示
 ```
 
 这也是为什么用户端、客服端必须共享同一个 `chat_session`，否则会出现“用户端一份消息、客服端另一份消息”的问题。
@@ -704,11 +654,10 @@ Authorization: Bearer token
 
 可以说：
 
-> 用户端和客服端不是各自维护数据，而是共享 Spring Boot 和 MySQL。用户端发送售后问题后，Spring Boot 调 Python Agent，Agent 分析后写入会话、工单、通知等数据；客服端从同一张会话表和消息表读取，所以能看到用户与 AI 的完整上下文。客服审核通过、处理完成、邀请评价、用户评价提交、客服端查看评价，形成了一个完整闭环。
+> 用户端和客服端不是各自维护数据，而是共享 Spring Boot 和 MySQL。用户端发送售后问题后，Spring Boot 调 Python Agent，Agent 产生建议并通过 Java 内部工具提交；Java 校验后在事务内写入会话、工单和通知。客服端从同一张会话表和消息表读取，所以能看到用户与 AI 的完整上下文。客服审核通过、处理完成、邀请评价、用户评价提交、客服端查看评价，形成了一个完整闭环。
 
 ### 第 6 点：AI 核心功能完成程度
 
 可以说：
 
-> AI 模块独立在 python_agent 中，通过 HTTP JSON 和 Spring Boot 通信。AI 不是简单问答，而是先做结构化意图理解，再进入售后规则 Agent 判断材料、状态和是否转人工，最后才由大模型生成自然话术。图片凭证也会进入 Agent 分析。AI 输出不会只返回给前端，还会通过持久化服务写入数据库，驱动客服端会话和售后工单变化。
-
+> AI 模块独立在 python_agent 中，通过 HTTP JSON 和 Kafka 与 Spring Boot 协作。普通咨询使用 Agentic RAG 和受控工具规划，正式初审使用 Supervisor、Policy/Evidence Sub-Agent 与确定性 Gate。图片凭证也会进入视觉审核。AI 只提交回复、补证、审核或转人工建议，Java 负责最终校验、事务落库和业务状态流转。

@@ -8,9 +8,18 @@ import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.net.http.HttpClient;
 
 @Configuration
 public class AgentGatewayConfig {
+
+    @Bean
+    public HttpClient agentHttpClient(AgentGatewayProperties properties) {
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(properties.getTimeoutMillis()))
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
+    }
 
     @Bean
     public RestTemplate agentRestTemplate(RestTemplateBuilder builder, AgentGatewayProperties properties) {

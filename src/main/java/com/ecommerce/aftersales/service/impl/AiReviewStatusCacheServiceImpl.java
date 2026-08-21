@@ -77,6 +77,15 @@ public class AiReviewStatusCacheServiceImpl implements AiReviewStatusCacheServic
     }
 
     private String fallbackStatus(AfterSalesTicket ticket) {
+        if (StringUtils.hasText(ticket.getAiReviewStatus())) {
+            return switch (ticket.getAiReviewStatus().trim().toUpperCase()) {
+                case "RUNNING", "RESUME_PENDING" -> "AI_REVIEWING";
+                case "WAITING_EVIDENCE" -> "WAITING_EVIDENCE";
+                case "MANUAL_REQUIRED" -> "MANUAL_REQUIRED";
+                case "COMPLETED" -> "PROCESSING";
+                default -> ticket.getAiReviewStatus();
+            };
+        }
         String verdict = Optional.ofNullable(ticket.getAiReviewResult()).orElse("").trim().toUpperCase();
         if ("MANUAL_REVIEW_REQUIRED".equals(verdict) || "MANUAL_REVIEW".equals(verdict)) {
             return "MANUAL_REQUIRED";
