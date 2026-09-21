@@ -2,7 +2,7 @@
   "description": "微信开发者工具项目配置。导入 frontend/uniapp 时会使用 dist/build/mp-weixin 作为小程序根目录。",
   "miniprogramRoot": "dist/build/mp-weixin/",
   "compileType": "miniprogram",
-  "appid": "wx63e183f04243d3d0",
+  "appid": "touristappid",
   "projectname": "电商售后",
   "setting": {
     "urlCheck": false,

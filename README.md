@@ -502,7 +502,7 @@ stateDiagram-v2
 | --- | --- |
 | 业务后端 | Java 21、Spring Boot、MyBatis-Plus、Spring Security |
 | AI 编排 | Python、LangGraph、LLM Function Calling |
-| 模型能力 | Provider 可替换；本地使用 Ollama `qwen2.5:3b`、Ollama `bge-m3`、TEI `BAAI/bge-reranker-v2-m3` |
+| 模型能力 | Provider 可替换；本地使用 Ollama `qwen2.5:3b`、Ollama `bge-m3`、Ollama `qwen2.5vl:3b`、TEI `BAAI/bge-reranker-v2-m3` |
 | 知识检索 | PostgreSQL、pgvector、pg_trgm、RRF、Reranker |
 | 数据与消息 | MySQL、Redis、Kafka、Transactional Outbox |
 | 用户端 | uni-app、Vue 3、微信小程序 |
@@ -570,6 +570,13 @@ docker compose ps
 - Python Agent：Windows 分进程模式为 `http://127.0.0.1:8000/api`
 - Grafana：按 `compose.yml` 的端口配置访问
 
+本地演示账号：
+
+- 商家客服端：`cs_demo / 123456`
+- 用户端：`13800138000 / 123456`
+
+这些账号来自本地种子数据和开发配置，只用于本机演示。
+
 各服务也可以用 `scripts/start-*.ps1` 分终端启动，详细配置和故障排查见 `docs/LOCAL_DEVELOPMENT.md`。
 
 ## 十、配置安全
@@ -582,3 +589,10 @@ docker compose ps
 - Docker Compose 的本地变量
 
 仓库只保留可公开的示例配置，运行日志、README 和提交记录不得输出真实凭据。
+
+## 十一、版本与许可边界
+
+- 当前 Git 历史包含多位贡献者，接管和改造时保留提交历史，不把他人的既有提交改写成个人独立完成。
+- 当前仓库没有 `LICENSE` 或可确认的上游仓库声明，因此不凭空添加 MIT、Apache-2.0 等许可证，也不宣称已经取得第三方代码的再许可权。
+- 若后续公开发布，由仓库所有者先确认代码来源和贡献授权，再选择许可证并补充对应版权与来源说明。
+- 用户端默认使用微信开发者工具的 `touristappid`。真机调试或发布前必须替换为自己的小程序 AppID；页面不展示未经核验的电话、备案号或协议链接。

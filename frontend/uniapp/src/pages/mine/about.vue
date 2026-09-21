@@ -31,25 +31,8 @@
     </view>
 
     <view class="footer">
-      <view class="link-row">
-        <text class="footer-link" @tap="showComingSoon('软件许可及服务协议')">《软件许可及服务协议》</text>
-      </view>
-      <view class="link-row">
-        <text class="footer-link" @tap="showComingSoon('隐私保护指引摘要')">《隐私保护指引摘要》</text>
-        <text class="separator"> | </text>
-        <text class="footer-link" @tap="showComingSoon('隐私保护指引')">《隐私保护指引》</text>
-      </view>
-      <text class="footer-text">客服电话：400 123 4567</text>
-      <view class="record-row" @tap="showComingSoon('ICP备案信息')">
-        <text class="footer-text">ICP备案信息：粤 B2-20260706-1A</text>
-        <text class="record-arrow">›</text>
-      </view>
-      <view class="record-row" @tap="showComingSoon('算法备案信息')">
-        <text class="footer-text">算法备案信息</text>
-        <text class="record-arrow">›</text>
-      </view>
-      <text class="footer-text">电商售后客服系统 版权所有</text>
-      <text class="copyright">Copyright © 2024-2026 Ecommerce. All Rights Reserved.</text>
+      <text class="footer-text">本地教学与功能演示项目</text>
+      <text class="footer-text">技术说明、运行证据与许可状态见仓库 README</text>
     </view>
   </view>
 </template>
@@ -173,49 +156,14 @@ function showComingSoon(title) {
   align-items: center;
 }
 
-.link-row,
-.record-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-}
-
-.link-row {
-  margin-bottom: 18rpx;
-}
-
-.footer-link {
-  font-size: 25rpx;
-  line-height: 1.35;
-  color: #64728d;
-}
-
-.separator {
-  font-size: 25rpx;
-  color: #a8a8a8;
-}
-
-.footer-text,
-.copyright {
+.footer-text {
   font-size: 25rpx;
   line-height: 1.45;
   color: #9a9a9a;
   text-align: center;
 }
 
-.record-row {
-  margin-top: 12rpx;
-}
-
-.record-arrow {
-  margin-left: 8rpx;
-  font-size: 32rpx;
-  color: #a8a8a8;
-  line-height: 1;
-}
-
-.copyright {
+.footer-text + .footer-text {
   margin-top: 12rpx;
 }
 </style>

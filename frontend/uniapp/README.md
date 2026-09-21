@@ -47,8 +47,9 @@ Tomcat started on port 8080 with context path '/api'
 ## HBuilderX 运行方式
 
 1. 用 HBuilderX 打开 `frontend/uniapp` 目录。
-2. 点击 `运行 -> 运行到小程序模拟器 -> 微信开发者工具`。
-3. 如果请求本地后端失败，在微信开发者工具里勾选：
+2. 仓库默认使用微信开发者工具的 `touristappid`，只用于本地预览；需要真机调试或发布时，把 `src/manifest.json`、`project.config.json` 和 `../project.config.json` 中的 AppID 替换为自己的小程序 AppID。
+3. 点击 `运行 -> 运行到小程序模拟器 -> 微信开发者工具`。
+4. 如果请求本地后端失败，在微信开发者工具里勾选：
 
 ```text
 详情 -> 本地设置 -> 不校验合法域名、web-view、TLS版本以及HTTPS证书
