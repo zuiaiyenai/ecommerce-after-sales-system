@@ -89,10 +89,10 @@ class OpenAICompatibleConfig:
                     or file_values.get("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode")
                 ),
                 api_key=(
-                    os.getenv("LLM_API_KEY")
-                    or file_values.get("LLM_API_KEY")
-                    or os.getenv("DASHSCOPE_API_KEY")
+                    os.getenv("DASHSCOPE_API_KEY")
                     or file_values.get("DASHSCOPE_API_KEY", "")
+                    or os.getenv("LLM_API_KEY")
+                    or file_values.get("LLM_API_KEY")
                 ),
                 model=(os.getenv("LLM_MODEL") or file_values.get("LLM_MODEL", "qwen-plus")),
                 timeout_seconds=int(

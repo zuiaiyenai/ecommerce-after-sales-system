@@ -288,10 +288,19 @@ class FormalReviewWorkflow:
                     review_request_id=review_id,
                     operation=operation,
                 ) as trace_step:
-                    final = self.graph.invoke(
-                        graph_input,
-                        config={"configurable": {"thread_id": review_id}},
-                    )
+                    graph_config = {
+                        "configurable": {"thread_id": review_id}
+                    }
+                    final = self.graph.invoke(graph_input, config=graph_config)
+                    if self.checkpointer is not None:
+                        snapshot = self.graph.get_state(graph_config)
+                        interrupts = tuple(
+                            interrupt_value
+                            for task in snapshot.tasks
+                            for interrupt_value in task.interrupts
+                        )
+                        if interrupts:
+                            final = {**final, "__interrupt__": interrupts}
                     trace_step.details.update(
                         {
                             "gate_action": final.get("gate_action"),

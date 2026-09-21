@@ -97,11 +97,14 @@ VM 地址为 `192.168.100.130`（NAT DHCP，重启后可能变化）。已验证
 - `vector`、`pg_trgm` 扩展存在；
 - `knowledge_chunk.embedding` 为 `vector(1024)`；
 - IVFFlat、全文 GIN 和 trigram GIN 索引存在；
-- 50 条 `knowledge_document` 已导入；
+- 50 条 `knowledge_document` 已导入，其中 42 条为当前有效发布文档；
+- 42 条发布文档已通过本地 `bge-m3` 生成 42 个真实 chunk，`published_revision` 为 42/42；
+- 42 个 `knowledge_chunk.embedding` 均为 1024 维；
+- 查询“七天无理由退货需要满足什么条件”时，商户 `MERCHANT_DEMO` 的 Top-1 为 `return_policy_001`，cosine 分数为 `0.8064`；
 - 事务内写入 1024 维测试向量后，cosine 自相似度为 `1.000000`，随后已回滚；
 - 真实 PostgreSQL 硬过滤集成测试 3/3 通过。
 
-当前 `knowledge_chunk` 和 `knowledge_chunk_draft` 都是 0。原因是尚未配置真实 Embedding 服务，不能据此宣称 RAG 入库已经完成。
+当前 `knowledge_chunk` 为 42，`knowledge_chunk_draft` 为 0。当前批次来自已发布的种子知识，使用安全 reindex 流程生成：先完成全部 Embedding，再锁定并校验源文档版本，最后替换对应 chunk 并更新 `published_revision`。
 
 ## 5. 变更规则
 

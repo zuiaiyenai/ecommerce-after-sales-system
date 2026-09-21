@@ -291,12 +291,12 @@ flowchart TD
     Q0["原始问题 + TrustedCaseContext"] --> Q1["构建自然语言 policy_query"]
     Q1 --> F0["构建结构化过滤计划<br/>merchant / category / scene / intent / source / policy_version / as_of_time"]
 
-    F0 --> E0["DashScope text-embedding-v3"]
+    F0 --> E0["Embedding Provider<br/>本地：Ollama bge-m3"]
     F0 --> K0["PostgreSQL pg_trgm / 关键词召回"]
     E0 --> V0["pgvector Dense Recall"]
     V0 --> R0["RRF 融合候选"]
     K0 --> R0
-    R0 --> RR0["qwen3-rerank 精排"]
+    R0 --> RR0["Reranker Provider<br/>本地：TEI bge-reranker-v2-m3"]
     RR0 --> T0["阈值过滤、引用整理与可信政策判定"]
 
     T0 --> O0["observe_policy_result"]
@@ -502,7 +502,7 @@ stateDiagram-v2
 | --- | --- |
 | 业务后端 | Java 21、Spring Boot、MyBatis-Plus、Spring Security |
 | AI 编排 | Python、LangGraph、LLM Function Calling |
-| 模型能力 | DashScope LLM、text-embedding-v3、qwen3-rerank、视觉模型 |
+| 模型能力 | Provider 可替换；本地使用 Ollama `qwen2.5:3b`、Ollama `bge-m3`、TEI `BAAI/bge-reranker-v2-m3` |
 | 知识检索 | PostgreSQL、pgvector、pg_trgm、RRF、Reranker |
 | 数据与消息 | MySQL、Redis、Kafka、Transactional Outbox |
 | 用户端 | uni-app、Vue 3、微信小程序 |

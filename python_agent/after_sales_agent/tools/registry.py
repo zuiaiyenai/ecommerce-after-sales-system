@@ -268,6 +268,7 @@ class AgentToolRegistry:
             policy_version=args.get("policy_version"),
             as_of_time=self._parse_as_of_time(args.get("as_of_time")),
             top_k=args.get("top_k"),
+            retrieval_mode=str(args.get("retrieval_mode") or "rerank"),
         ))
 
     def retrieve_knowledge_multi(self, args: dict[str, Any]) -> Any:

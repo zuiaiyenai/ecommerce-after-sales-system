@@ -172,6 +172,7 @@ class AgentContractTest(unittest.TestCase):
 
         self.assertEqual([], result["hits"][0]["citations"])
         self.assertEqual([], result["hits"][1]["citations"])
+        self.assertEqual("rerank", retriever.retrieve.call_args.kwargs["retrieval_mode"])
 
     def test_existing_ticket_keeps_ticket_id_separate_from_ticket_number(self) -> None:
         ticket = LangGraphAfterSalesAgent._ticket_from_existing_order(
@@ -345,6 +346,9 @@ class AgentContractTest(unittest.TestCase):
 
         service.retrieve({"query": "faq"})
         self.assertIsNone(retriever.retrieve.call_args.kwargs["as_of_time"])
+
+        service.retrieve({"query": "faq", "retrieval_mode": "keyword"})
+        self.assertEqual("keyword", retriever.retrieve.call_args.kwargs["retrieval_mode"])
 
     def test_retrieve_knowledge_rejects_naive_or_invalid_as_of_time(self) -> None:
         retriever = Mock()

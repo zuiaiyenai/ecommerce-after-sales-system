@@ -95,7 +95,7 @@ def _finalize_reranked_result(
         hit["threshold"] = hit_threshold
         hit["relaxation_level"] = plan.level
         hit["trusted_policy_eligible"] = False
-        if reranked.degraded:
+        if reranked.degraded or plan.level != "strict":
             output_hits.append(hit)
             continue
         score = rerank_score(hit)
@@ -106,6 +106,7 @@ def _finalize_reranked_result(
         output_hits.append(hit)
 
     reranker_succeeded = not reranked.degraded
+    result_mode = "hybrid_rrf_degraded" if plan.level != "strict" else reranked.mode
     trusted_policy_eligible = bool(
         reranker_succeeded
         and plan.level == "strict"
@@ -127,14 +128,14 @@ def _finalize_reranked_result(
     trace["keyword_candidate_count"] = len(keyword_hits)
     trace["rrf_candidate_count"] = len(fused)
     trace["rerank_candidate_count"] = len(reranked.items)
-    trace["retrieval_mode"] = reranked.mode
+    trace["retrieval_mode"] = result_mode
     trace["fallback_reason"] = reranked.failure_reason
     no_answer = bool(reranked.degraded or not output_hits)
     failure_reason = reranked.failure_reason if reranked.degraded else ("NO_MATCH" if no_answer else None)
     from after_sales_agent.retrieval.retrieval_result import finalize_result
     return finalize_result(
         {
-            "mode": reranked.mode,
+            "mode": result_mode,
             "query": query,
             "hits": output_hits,
             "trace": trace,

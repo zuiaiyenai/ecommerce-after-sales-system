@@ -21,11 +21,18 @@ class LocalModelPrewarmService:
             self.status.update({"state": "disabled"})
             return
 
-        base_url = os.getenv("QWEN_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        base_url = os.getenv(
+            "OLLAMA_BASE_URL",
+            os.getenv("QWEN_BASE_URL", "http://127.0.0.1:11434"),
+        ).rstrip("/")
         keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-        models = [
+        text_model = os.getenv(
+            "OLLAMA_MODEL",
             os.getenv("QWEN_MODEL", "qwen2.5:7b"),
-            os.getenv("EMOTION_MODEL", "qwen2.5:1.5b"),
+        )
+        models = [
+            text_model,
+            os.getenv("EMOTION_MODEL", text_model),
         ]
         if os.getenv("AGENT_PREWARM_VISION", "false").strip().lower() in {"1", "true", "yes", "on"}:
             models.append(os.getenv("VISION_MODEL", "qwen2.5vl:7b"))

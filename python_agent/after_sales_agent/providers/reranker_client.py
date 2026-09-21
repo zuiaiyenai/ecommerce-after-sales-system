@@ -104,12 +104,12 @@ class RerankerConfig:
             base_url=(os.getenv("RERANK_BASE_URL") or file_values.get("RERANK_BASE_URL", "")).strip(),
             api_key=(
                 os.getenv("RERANK_API_KEY")
-                or file_values.get("RERANK_API_KEY")
                 or os.getenv("VISION_API_KEY")
+                or file_values.get("RERANK_API_KEY")
                 or file_values.get("VISION_API_KEY")
                 or ""
             ).strip(),
-            model=(os.getenv("RERANK_MODEL") or file_values.get("RERANK_MODEL", "text-rerank-v2")).strip(),
+            model=(os.getenv("RERANK_MODEL") or file_values.get("RERANK_MODEL") or "text-rerank-v2").strip(),
             timeout_seconds=float(numeric["RERANK_TIMEOUT_SECONDS"]),
             max_retries=int(numeric["RERANK_MAX_RETRIES"]),
             max_candidates=int(numeric["RERANK_MAX_CANDIDATES"]),
@@ -203,8 +203,10 @@ class ManagedHTTPRerankTransport:
             data = response.json()
         except ValueError as exc:
             raise RerankError("INVALID_RESPONSE", "reranker response is not JSON") from exc
+        if isinstance(data, list):
+            return {"results": data}
         if not isinstance(data, dict):
-            raise RerankError("INVALID_RESPONSE", "reranker response must be an object")
+            raise RerankError("INVALID_RESPONSE", "reranker response must be an object or array")
         return data
 
     def _post_with_urllib(self, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
@@ -230,8 +232,10 @@ class ManagedHTTPRerankTransport:
             raise RerankError(f"HTTP_{exc.code}", error_body) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RerankError("TIMEOUT", str(exc)) from exc
+        if isinstance(data, list):
+            return {"results": data}
         if not isinstance(data, dict):
-            raise RerankError("INVALID_RESPONSE", "reranker response must be an object")
+            raise RerankError("INVALID_RESPONSE", "reranker response must be an object or array")
         return data
 
 
@@ -396,6 +400,12 @@ class RerankerClient:
                             "return_documents": False,
                         },
                     }
+                elif self.config.provider == "tei":
+                    payload = {
+                        "query": query_text,
+                        "texts": doc_texts,
+                        "truncate": True,
+                    }
                 else:
                     # OpenAI compatibility format (default)
                     payload = {
@@ -422,6 +432,16 @@ class RerankerClient:
                         data = transport.post_json(payload, timeout=remaining)
                         if self._clock() >= deadline:
                             raise RerankError("TIMEOUT")
+                        if self.config.provider == "tei":
+                            raw_results = data.get("results")
+                            if isinstance(raw_results, list):
+                                data = {
+                                    "results": [
+                                        {**item, "relevance_score": item.get("score")}
+                                        for item in raw_results[:bounded_top_n]
+                                        if isinstance(item, dict)
+                                    ]
+                                }
                         items = self._validated_items(data, bounded_candidates, bounded_top_n)
                         self.breaker.record_success()
                         return RerankResult(items, "hybrid_reranked", False, None, self._latency_ms(started))

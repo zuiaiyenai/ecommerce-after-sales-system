@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from after_sales_agent.application.emotion.emotion_service import EmotionAgent
@@ -46,6 +47,14 @@ def build_recent_history_messages(payload_history: list[Any] | tuple[Any, ...] |
 
 def analyze_chat_emotion(data: dict[str, Any]) -> dict[str, Any] | None:
     logger = logging.getLogger("api_server.emotion")
+    if os.getenv("CHAT_EMOTION_ANALYSIS_ENABLED", "true").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        logger.info("chat emotion analysis disabled by local configuration")
+        return None
     try:
         message = str(data.get("message") or "").strip()
         attachments = build_attachments(data.get("attachments"))

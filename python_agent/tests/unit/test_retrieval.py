@@ -452,7 +452,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         self.assertEqual(2, dense_params.count(as_of_time))
         self.assertEqual(2, keyword_params.count(as_of_time))
         self.assertIn("ts_rank_cd", keyword_sql)
-        self.assertIn("plainto_tsquery", keyword_sql)
+        self.assertIn("to_tsquery", keyword_sql)
         self.assertIn("kc.search_vector @@", keyword_sql)
 
     def test_dense_and_keyword_hits_share_citation_rank_and_raw_score_shape(self) -> None:
@@ -546,7 +546,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
         self.assertEqual("hybrid_reranked", result["mode"])
         self.assertEqual("strict", result["filter_level"])
         self.assertTrue(result["reranker_succeeded"])
-        self.assertEqual(0.55, result["threshold"])
+        self.assertEqual(0.35, result["threshold"])
         self.assertFalse(result["no_answer"])
         self.assertTrue(result["trusted_policy_eligible"])
         self.assertTrue(result["hits"][0]["trusted_policy_eligible"])
@@ -808,7 +808,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
 
     def test_successful_rerank_applies_source_threshold_and_sets_no_answer(self) -> None:
         policy_result = _retrieve_with_fake_psycopg(
-            _PipelineRetriever(reranker=_FakeReranker(score=0.54), dense=True, keyword=True),
+            _PipelineRetriever(reranker=_FakeReranker(score=0.34), dense=True, keyword=True),
             source_type="after_sales_policy",
         )
         faq_result = _retrieve_with_fake_psycopg(
@@ -816,10 +816,10 @@ class PgVectorRetrievalTest(unittest.TestCase):
             source_type="faq",
         )
 
-        self.assertEqual(0.55, policy_result["threshold"])
+        self.assertEqual(0.35, policy_result["threshold"])
         self.assertTrue(policy_result["no_answer"])
         self.assertEqual([], policy_result["hits"])
-        self.assertEqual(0.6, faq_result["threshold"])
+        self.assertEqual(0.4, faq_result["threshold"])
         self.assertFalse(faq_result["no_answer"])
         self.assertEqual(1, len(faq_result["hits"]))
 
@@ -915,6 +915,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 product_category="不存在的前端品类",
                 scene="不存在的场景",
                 top_k=5,
+                retrieval_mode="rerank",
             )
         finally:
             if old_psycopg is None:
@@ -977,6 +978,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 merchant_code="MERCHANT_DEMO",
                 product_category="服装",
                 scene="quality_issue",
+                retrieval_mode="rerank",
             )
         finally:
             if old_psycopg is None:
@@ -1020,6 +1022,7 @@ class PgVectorRetrievalTest(unittest.TestCase):
                 product_category="headphone",
                 scene="quality_issue",
                 source_type="faq",
+                retrieval_mode="rerank",
             )
         finally:
             if old_psycopg is None:
@@ -1131,6 +1134,7 @@ def _retrieve_with_fake_psycopg(retriever, **overrides):
         "scene": "quality_issue",
         "source_type": "after_sales_policy",
         "top_k": 5,
+        "retrieval_mode": "rerank",
     }
     arguments.update(overrides)
     try:
@@ -1176,6 +1180,7 @@ class _FakeConnection:
 
 class _RecordingMultiQueryReranker:
     def __init__(self) -> None:
+        self.config = types.SimpleNamespace(configured=True)
         self.calls: list[tuple[str, list[dict[str, object]], int]] = []
 
     def rerank(self, query, candidates, top_n):
@@ -1664,6 +1669,9 @@ def test_hard_filter_sql_enforces_published_revision_merchant_and_half_open_vali
     assert "kd.merchant_code IN (%s, 'GLOBAL')" in sql
     assert "kd.valid_from IS NULL OR kd.valid_from <= %s" in sql
     assert "kd.valid_to IS NULL OR %s < kd.valid_to" in sql
+    assert "COALESCE(kc.product_categories, ARRAY[]::text[])" in sql
+    assert "COALESCE(kc.scenes, ARRAY[]::text[])" in sql
+    assert "COALESCE(kc.intents, ARRAY[]::text[])" in sql
     assert sql.count("%s::text IS NULL") == 5
     assert params.count(as_of_time) == 2
 
@@ -1677,6 +1685,9 @@ def test_layered_rag_rollout_defaults_are_safe(monkeypatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(pgvector_retriever, "_read_local_env", lambda: {})
+    monkeypatch.setattr(
+        "after_sales_agent.providers.reranker_client._read_local_env", lambda: {}
+    )
 
     retrieval = pgvector_retriever.PgVectorConfig.from_env()
     reranker = RerankerConfig.from_env()

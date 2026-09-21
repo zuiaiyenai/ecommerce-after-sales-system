@@ -757,7 +757,7 @@ def payload() -> dict[str, object]:
 
 def test_formal_review_skill_runs_workflows_and_submits_approved_proposal() -> None:
     tools = ReviewTools()
-    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm())
+    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm(), auto_approve_enabled=True)
     trace = TraceRecorder(
         request_type="kafka_review",
         trace_id="1234567890abcdef1234567890abcdef",
@@ -866,7 +866,7 @@ def test_formal_review_fails_fast_when_required_skills_are_missing(
 
 def test_policy_score_above_configured_threshold_can_pass_formal_review() -> None:
     tools = ReviewTools(policy_score=0.57, policy_threshold=0.55)
-    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm())
+    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm(), auto_approve_enabled=True)
 
     result = graph.handle(payload())
 
@@ -951,7 +951,12 @@ def test_graph_requests_evidence_without_submitting_a_review() -> None:
 
 def test_stale_evidence_request_refreshes_same_review_without_manual_handoff() -> None:
     tools = ReviewTools(has_evidence=False, stale_evidence_request_once=True)
-    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm())
+    graph = FormalReviewWorkflow(
+        tools=tools,
+        llm=ReviewLlm(),
+        checkpointer=InMemorySaver(),
+        auto_approve_enabled=True,
+    )
 
     result = graph.handle(payload())
 
@@ -986,6 +991,7 @@ def test_graph_requests_evidence_before_policy_uncertainty_handoff() -> None:
         tools=tools,
         llm=ReviewLlm(),
         checkpointer=InMemorySaver(),
+        auto_approve_enabled=True,
     )
 
     result = graph.handle(payload())
@@ -1002,6 +1008,7 @@ def test_resume_same_review_refreshes_evidence_and_low_confidence_goes_manual() 
         tools=tools,
         llm=ReviewLlm(),
         checkpointer=InMemorySaver(),
+        auto_approve_enabled=True,
     )
 
     waiting = graph.start(payload())
@@ -1041,7 +1048,7 @@ def test_deterministic_gate_overrides_approve_when_policy_is_untrusted() -> None
 
 def test_optional_package_and_waybill_do_not_block_formal_review() -> None:
     tools = ReviewTools(optional_missing_evidence=True)
-    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm())
+    graph = FormalReviewWorkflow(tools=tools, llm=ReviewLlm(), auto_approve_enabled=True)
 
     result = graph.handle({**payload(), "message": ""})
 

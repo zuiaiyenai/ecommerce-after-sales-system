@@ -49,10 +49,12 @@ class SequenceTransport:
         self.outcomes = list(outcomes)
         self.calls = 0
         self.timeouts: list[float] = []
+        self.payloads: list[dict[str, object]] = []
 
-    def post_json(self, _payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+    def post_json(self, payload: dict[str, object], *, timeout: float) -> dict[str, object]:
         self.calls += 1
         self.timeouts.append(timeout)
+        self.payloads.append(payload)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -297,6 +299,34 @@ def test_provider_indexes_align_to_original_candidates_in_provider_order() -> No
     assert [item["rerank_score"] for item in result.items] == [0.95, 0.75]
     assert candidates[2].get("rerank_score") is None
     assert math.isfinite(result.latency_ms)
+
+
+def test_tei_payload_and_score_contract_are_normalized() -> None:
+    candidates = _candidates(2)
+    transport = SequenceTransport(
+        {"results": [{"index": 1, "score": 0.91}, {"index": 0, "score": 0.2}]}
+    )
+    config = _config(
+        provider="tei",
+        base_url="http://127.0.0.1:8081/rerank",
+        api_key="local-tei",
+        model="BAAI/bge-reranker-v2-m3",
+    )
+
+    result = RerankerClient(transport=transport, config=config).rerank(
+        "refund", candidates, top_n=1
+    )
+
+    assert result.degraded is False
+    assert [item["chunk_id"] for item in result.items] == ["B"]
+    assert result.items[0]["rerank_score"] == pytest.approx(0.91)
+    assert transport.payloads == [
+        {
+            "query": "refund",
+            "texts": ["document-0", "document-1"],
+            "truncate": True,
+        }
+    ]
 
 
 def test_unconfigured_provider_degrades_without_transport_call() -> None:
@@ -629,9 +659,9 @@ def test_terminal_non_retryable_provider_failures_also_release_and_open_breaker(
 def test_retrieval_package_exports_rerank_threshold_contract() -> None:
     from after_sales_agent.retrieval import RERANK_THRESHOLDS
 
-    assert RERANK_THRESHOLDS["after_sales_policy"] == 0.55
-    assert RERANK_THRESHOLDS["evidence_requirement"] == 0.65
-    assert RERANK_THRESHOLDS["faq"] == 0.60
+    assert RERANK_THRESHOLDS["after_sales_policy"] == 0.35
+    assert RERANK_THRESHOLDS["evidence_requirement"] == 0.45
+    assert RERANK_THRESHOLDS["faq"] == 0.40
 
 
 @pytest.mark.parametrize(

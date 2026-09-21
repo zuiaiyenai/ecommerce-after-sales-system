@@ -6,7 +6,7 @@ from after_sales_agent.evaluation import evaluate_cases, load_cases, render_mark
 
 
 def test_repository_agent_safety_dataset_passes_quality_gates() -> None:
-    dataset = Path(__file__).resolve().parents[1] / "evaluation" / "agent_safety_cases.jsonl"
+    dataset = Path(__file__).resolve().parents[2] / "evaluation" / "agent_safety_cases.jsonl"
 
     report = evaluate_cases(load_cases(dataset))
 

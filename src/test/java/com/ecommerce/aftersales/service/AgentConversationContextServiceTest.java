@@ -5,8 +5,16 @@ import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
+import com.ecommerce.aftersales.entity.AfterSalesTicket;
+import com.ecommerce.aftersales.entity.OrderInfo;
+import com.ecommerce.aftersales.entity.OrderItem;
+import com.ecommerce.aftersales.entity.ProductInfo;
+import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
+import com.ecommerce.aftersales.mapper.OrderInfoMapper;
+import com.ecommerce.aftersales.mapper.OrderItemMapper;
+import com.ecommerce.aftersales.mapper.ProductInfoMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -29,6 +37,10 @@ class AgentConversationContextServiceTest {
 
     @Mock private ChatSessionMapper chatSessionMapper;
     @Mock private ChatMessageMapper chatMessageMapper;
+    @Mock private OrderInfoMapper orderInfoMapper;
+    @Mock private OrderItemMapper orderItemMapper;
+    @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private AfterSalesTicketMapper afterSalesTicketMapper;
     @InjectMocks private AgentConversationContextService service;
 
     @Test
@@ -48,6 +60,7 @@ class AgentConversationContextServiceTest {
         session.setPolicyCode("REFUND_POLICY");
         session.setPolicyVersion("v2");
         when(chatSessionMapper.selectById(101L)).thenReturn(session);
+        when(orderInfoMapper.selectOne(any(Wrapper.class))).thenReturn(order(9007199254740995L, 11L));
         when(chatMessageMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
                 message(2L, "ASSISTANT", "second", LocalDateTime.now()),
                 message(1L, "USER", "first", LocalDateTime.now().minusMinutes(1))
@@ -66,6 +79,45 @@ class AgentConversationContextServiceTest {
                 .containsEntry("authoritative", true)
                 .containsEntry("message_count", 2)
                 .containsEntry("policy_version", "v2");
+    }
+
+    @Test
+    void rebuildsSelectedOrderFromMysqlAndIgnoresClientFields() {
+        AgentGatewayDtos.ChatRequest request = request("11", null);
+        request.setOrder_id("9001");
+        AgentGatewayDtos.SelectedOrderDto forged = new AgentGatewayDtos.SelectedOrderDto();
+        forged.setMerchant_code("OTHER_MERCHANT");
+        forged.setCategory("forged-category");
+        request.setSelected_order(forged);
+
+        OrderInfo order = order(9001L, 11L);
+        OrderItem item = new OrderItem();
+        item.setId(1L);
+        item.setOrderId(9001L);
+        item.setProductId(7L);
+        ProductInfo product = new ProductInfo();
+        product.setId(7L);
+        product.setProductName("纯棉圆领T恤");
+        product.setCategory("apparel");
+        AfterSalesTicket ticket = new AfterSalesTicket();
+        ticket.setId(88L);
+        ticket.setOrderId(9001L);
+        ticket.setStatus("PENDING_REVIEW");
+        ticket.setPolicyVersion("2026-07-02-v3");
+        ticket.setCreateTime(LocalDateTime.of(2026, 9, 21, 16, 30));
+        when(orderInfoMapper.selectOne(any(Wrapper.class))).thenReturn(order);
+        when(orderItemMapper.selectOne(any(Wrapper.class))).thenReturn(item);
+        when(productInfoMapper.selectById(7L)).thenReturn(product);
+        when(afterSalesTicketMapper.selectOne(any(Wrapper.class))).thenReturn(ticket);
+
+        service.hydrateTrustedContext(request);
+
+        assertThat(request.getSelected_order().getMerchant_code()).isEqualTo("MERCHANT_DEMO");
+        assertThat(request.getSelected_order().getProduct_name()).isEqualTo("纯棉圆领T恤");
+        assertThat(request.getSelected_order().getCategory()).isEqualTo("apparel");
+        assertThat(request.getSelected_order().getPolicy_version()).isEqualTo("2026-07-02-v3");
+        assertThat(request.getSelected_order().getBusiness_time()).isEqualTo("2026-09-21T16:30+08:00");
+        assertThat(request.getTicket_id()).isEqualTo("88");
     }
 
     @Test
@@ -172,5 +224,16 @@ class AgentConversationContextServiceTest {
         message.setContent(content);
         message.setCreateTime(createTime);
         return message;
+    }
+
+    private static OrderInfo order(Long id, Long userId) {
+        OrderInfo order = new OrderInfo();
+        order.setId(id);
+        order.setUserId(userId);
+        order.setMerchantCode("MERCHANT_DEMO");
+        order.setPayAmount(java.math.BigDecimal.valueOf(35));
+        order.setStatus("AFTERSALE");
+        order.setCreateTime(LocalDateTime.of(2026, 9, 21, 16, 29));
+        return order;
     }
 }

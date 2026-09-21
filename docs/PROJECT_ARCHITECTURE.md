@@ -6,7 +6,7 @@
 >
 > 证据范围：当前源码、配置、SQL、自动化测试与本机端口；历史 README 和旧设计文档只作线索。
 
-> 运行状态更新（2026-09-21 16:30）：MySQL、Redis、Java、Python Agent 和 Vue 已在 Windows 运行；PostgreSQL/pgvector 与 Kafka 已在专用 Ubuntu VMware VM 运行。Java Actuator 为 `UP`，pgvector 真实集成测试 3/3 通过，Java Outbox → Kafka → Python → Java → MySQL 业务链路已验证。完整 Embedding、RAG 和 LLM 仍受模型服务未配置限制。后续证据见 `DATABASE_DESIGN.md` 与 `KAFKA_DESIGN.md`。
+> 运行状态更新（2026-09-21 23:53）：MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue 在 Windows 运行；PostgreSQL/pgvector、Kafka、Ollama 与 TEI Reranker 在专用 Ubuntu VMware VM 运行。Java Actuator 为 `UP`，Java Outbox → Kafka → Python → Java → MySQL 与 Java → Agent → pgvector/Reranker/LLM → Java → MySQL 聊天链路均已验证。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
 
 ## 1. 审计结论
 
@@ -20,7 +20,7 @@
 - Kafka 承载售后审核请求，Java 通过 Transactional Outbox 发布，Python 消费。
 - 管理/客服端是 Vue 3 + Vite；用户端是 Vue 3 + uni-app。
 
-源码覆盖完整，但当前运行环境没有启动任何目标服务。本机未发现 Docker CLI，WSL 也未安装；本地 LLM、Embedding、Vision 密钥均未配置。因此 Java 核心可编译和通过单元测试，完整 AI/RAG 与 Kafka 链路当前不可用。
+当前采用混合本地运行：Windows 运行 Java、Python、Vue、MySQL 与 Redis，专用 VMware 运行需要 Linux 容器的 pgvector、Kafka 和本地模型。知识库已生成 42 个真实向量 chunk；指定业务商户的 Top-K 检索已命中正确政策。Vision 仍需要单独的视觉模型或远程 Key，不影响文本 AI/RAG 链路。
 
 ## 2. 真实目录结构
 
@@ -57,7 +57,10 @@ flowchart LR
     C -->|LangGraph checkpoint / RAG| P
     A -->|Java Internal API + shared token| J
     C -->|Java Internal API + shared token| J
-    A -->|LLM / Embedding / Vision| X[模型服务]
+    A -->|文本生成 / Tool Calling| O[Ollama qwen2.5:3b]
+    A -->|1024 维 Embedding| E[Ollama bge-m3]
+    A -->|精排| T[TEI bge-reranker-v2-m3]
+    A -.->|可选 Vision| X[视觉模型服务]
     J --> PR[Prometheus :9090]
     A --> PR
     C --> PR
@@ -182,28 +185,28 @@ POST /api/aftersales
 | 客户 | 会话/订单内客户信息 | 无独立客户 CRUD | 工具上下文读取 | MySQL | PARTIAL | NOT_VERIFIED |
 | 商品 | 列表、详情、编辑 | 商品查询与客服管理接口 | 商品查询工具 | MySQL | IMPLEMENTED | NOT_VERIFIED |
 | 订单 | 用户与客服两套页面 | 查询、创建、发货、详情 | 订单查询工具 | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| 会话 | 列表、详情、用户咨询 | 会话生命周期 | 对话编排 | MySQL + WebSocket | IMPLEMENTED | NOT_VERIFIED |
-| 消息 | 历史与实时展示 | 落库、广播、顺序查询 | append message 工具 | MySQL + WebSocket | IMPLEMENTED | NOT_VERIFIED |
+| 会话 | 列表、详情、用户咨询 | 会话生命周期 | 对话编排 | MySQL + WebSocket | IMPLEMENTED | Agent 回答关联真实 MySQL session 已验证 |
+| 消息 | 历史与实时展示 | 落库、广播、顺序查询 | append message 工具 | MySQL + WebSocket | IMPLEMENTED | 助手消息 `2102063467434463234` 已通过历史 API 回读 |
 | 工单/售后 | 用户申请、客服审核 | 事务、补证、状态机 | 正式审核 Workflow | MySQL + Kafka | IMPLEMENTED | NOT_VERIFIED |
-| AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + LLM + 工具 | MySQL/Redis/PostgreSQL | BROKEN | 否：Agent 停止且无 LLM Key |
-| RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | BROKEN | 否：PostgreSQL 停止且测试失败 |
-| 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | NOT_VERIFIED |
+| AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + 本地 LLM + 工具 | MySQL/Redis/PostgreSQL | IMPLEMENTED | 141.35 秒返回 AI 模式、1 条可信引用并落库；Vision 另行配置 |
+| RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | IMPLEMENTED | 42 个真实 chunk，Top-K 已命中正确政策 |
+| 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | reindex 42 文档/42 chunk 已通过 |
 | 文档上传 | 文件导入 UI | multipart 校验与异步任务 | PDF/文本解析 | PostgreSQL + 文件系统 | IMPLEMENTED | NOT_VERIFIED |
 | 文档解析/Chunk | 状态展示 | 调用 Python 并保存草稿 | 解析、分块、分类 | PostgreSQL | IMPLEMENTED | NOT_VERIFIED |
-| Embedding | 发布流程触发 | 维度与数量校验 | DashScope/OpenAI compatible | vector(1024) | BROKEN | 否：密钥为空 |
-| Vector Search | 检索结果展示 | 网关 | cosine Top-K + 硬过滤 | IVFFlat | BROKEN | 否：数据库停止 |
-| Agent Tool Calling | 会话 UI | Internal Agent Tools | Native function calling | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| Session/Memory | 会话 UI | 消息历史 | LangGraph checkpoint | MySQL + PostgreSQL | IMPLEMENTED | NOT_VERIFIED |
-| Kafka | 无 | Outbox producer | Consumer、幂等、DLQ | Kafka + Redis | BROKEN | 否：broker 未安装/启动 |
-| Redis | 无 | 限流与状态缓存 | Consumer 幂等 | Redis | BROKEN | 否：当前未监听 6380 |
-| MySQL | 无 | 主业务库 | 只经 Java 工具访问 | MySQL | BROKEN | 否：当前未监听 3307 |
-| PostgreSQL/pgvector | 管理 UI | 独立 JdbcTemplate | RAG/checkpoint | PostgreSQL | BROKEN | 否：当前未监听 5432 |
+| Embedding | 发布流程触发 | 维度与数量校验 | Ollama OpenAI compatible `bge-m3` | vector(1024) | IMPLEMENTED | 42/42 向量维度已实查 |
+| Vector Search | 检索结果展示 | 网关 | cosine Top-K + 硬过滤 | IVFFlat | IMPLEMENTED | Top-1 `return_policy_001`，分数 0.8064 |
+| Agent Tool Calling | 会话 UI | Internal Agent Tools | Native function calling | MySQL | IMPLEMENTED | Ollama 原生工具调用已验证 |
+| Session/Memory | 会话 UI | 消息历史 | LangGraph checkpoint | MySQL + PostgreSQL | IMPLEMENTED | MySQL 会话/消息已验证；跨轮 checkpoint 仍待单独验收 |
+| Kafka | 无 | Outbox producer | Consumer、幂等、DLQ | Kafka + Redis | IMPLEMENTED | Broker 与完整审核消息链路已验证 |
+| Redis | 无 | 限流与状态缓存 | Consumer 幂等 | Redis | IMPLEMENTED | 本机 6380 已验证 |
+| MySQL | 无 | 主业务库 | 只经 Java 工具访问 | MySQL | IMPLEMENTED | 本机 3307 与 15 张业务表已验证 |
+| PostgreSQL/pgvector | 管理 UI | 独立 JdbcTemplate | RAG/checkpoint | PostgreSQL | IMPLEMENTED | VM 5432、扩展、索引和查询已验证 |
 | WebSocket | 用户端、客服端 | `/api/ws/chat` + JWT handshake | 无 | 内存订阅表 | IMPLEMENTED | NOT_VERIFIED |
 | SSE | 用户端可调用流式聊天 | `/api/agent/chat/stream` | SSE 流输出 | HTTP | IMPLEMENTED | NOT_VERIFIED |
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | NOT_VERIFIED |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 14 个契约通过 | 147 总计，119 通过、28 跳过 | 579 通过、29 失败、4 跳过、4 deselected | Testcontainers 依赖 Docker | PARTIAL | 否：Python 非全绿且集成测试跳过 |
+| 自动化测试 | 14 个契约通过 | 147 总计，119 通过、28 跳过 | 非集成集 609 通过、8 deselected | Testcontainers 依赖 Docker | PARTIAL | 当前可运行测试全绿；跳过项单列 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态
@@ -212,13 +215,16 @@ POST /api/aftersales
 
 | 服务 | 目标端口 | 现场状态 | 主要原因 |
 | --- | ---: | --- | --- |
-| MySQL | 3307 | STOPPED | 项目本地进程未启动 |
-| Redis | 6380 | STOPPED | 项目本地进程未启动；Compose 默认仍映射 6379 |
-| PostgreSQL/pgvector | 5432 | STOPPED | Docker/WSL 不可用 |
-| Kafka | 9092 | STOPPED | Docker/WSL 不可用 |
-| Java | 8080 | STOPPED | 未启动 |
-| Python Agent | 8000 | STOPPED | 未启动；LLM/Embedding Key 缺失 |
-| Vue 客服端 | 5173 | STOPPED | 未启动 |
+| MySQL | 3307 | RUNNING | Windows 项目专用数据目录 |
+| Redis | 6380 | RUNNING | Windows 项目专用配置 |
+| PostgreSQL/pgvector | 5432 | RUNNING | Ubuntu VMware Compose，health 为 healthy |
+| Kafka | 9092 | RUNNING | Ubuntu VMware KRaft broker |
+| Ollama | 11434 | RUNNING | `qwen2.5:3b` 与 `bge-m3` |
+| TEI Reranker | 8081 | RUNNING | `BAAI/bge-reranker-v2-m3` |
+| Java | 8080 | RUNNING | Actuator 200 / `UP` |
+| Python Agent | 8000 | RUNNING | `/api/health` 返回 `ok=true` |
+| Python Review Consumer | 8001 | RUNNING | Prometheus metrics 200 |
+| Vue 客服端 | 5173 | RUNNING | Vite real mode 200 |
 | Prometheus | 9090 | STOPPED | Docker/WSL 不可用 |
 | Grafana | 3000 | STOPPED | Docker/WSL 不可用 |
 
@@ -229,23 +235,35 @@ POST /api/aftersales
 | `mvn -DskipTests compile` | PASS | Java 21 编译通过 |
 | `mvn test` | PARTIAL | 147 总计，119 通过，28 个 Docker/Testcontainers 集成测试跳过 |
 | Python `pip check` | PASS | 当前虚拟环境依赖一致 |
-| Python 全量测试 | FAIL | 579 passed，29 failed，4 skipped，4 deselected；集中在阈值、Embedding/Rerank 配置、检索契约和正式审核状态机 |
+| Python 非集成测试 | PASS | 609 passed，8 deselected；排除显式标记的 integration 与 real_llm |
 | 客服前端契约测试 | PASS | 14/14 |
 | 客服前端生产构建 | PASS | 显式设置 `VITE_API_BASE_URL=http://127.0.0.1:8080/api` 后通过 |
 | uni-app 微信小程序构建 | PASS | 构建完成 |
+
+### 7.1 本地文本 AI/RAG 实机证据
+
+2026-09-21 使用小程序演示用户、真实订单 `2101951877910061058` 和问题“七天无理由退货需要满足什么条件？”调用 `POST /api/agent/chat`：
+
+- Java 从 MySQL 按登录用户和订单号重建商户、商品分类、政策版本与带时区业务时间，未信任客户端自报过滤条件；
+- 首轮严格检索耗时约 25 秒，返回 `hybrid_reranked`、`trusted_hit_count=1`；
+- 引用 `return_policy_001 / 7天无理由退货规则 / 2026-07-02-v3`；
+- 总耗时 141.35 秒，响应为 `need_human=false`、`session_mode=AI`；
+- `append_chat_message` 返回 `message_id=2102063467434463234`，随后由 `/api/chat/history` 回读到相同回答文本。
+
+这是 4 vCPU CPU-only VM 的本地功能证据，不代表生产延迟或吞吐能力。聊天前置情绪 LLM 在这次政策 RAG 验收中通过本机配置关闭；情绪能力的独立验收应单列执行。
 
 这些结果只能证明源码级能力。没有 PostgreSQL、Kafka、模型服务与浏览器 E2E，不能宣称完整系统可用。
 
 ## 8. 已确认的配置问题
 
-1. 本机没有 Docker CLI，WSL 未安装，现有 Compose 不能执行。
-2. Compose Redis 对外端口为 `6379`，用户目标和现有本地 Java 配置为 `6380`。
-3. `application.yml` 的 Redis 默认端口为 `6379`；当前 IDEA 配置依赖进程变量覆盖。
-4. `python_agent/setup_knowledge_base.ps1` 使用旧库名 `ecommerce_rag`、旧用户 `ecommerce` 和硬编码口令，与 Compose 的 `after_sales_rag/postgres` 不一致。
-5. `application.yml` 的 Agent 自动启动模块引用旧入口 `after_sales_agent.api.http_server`，当前真实入口为 `after_sales_agent.interface.http_server`。
-6. 本地 `.env`、`python_agent/.env`、`agent.local.properties` 已被 Git 忽略，共享内部 Token 一致；LLM、Embedding、Vision 可用密钥均为空。
+1. Windows Docker Desktop Engine 当前不可用，Linux 容器改由专用 Ubuntu VMware 承载；VM 地址是 NAT DHCP，变化后需要同步项目本地 `.env`。
+2. Compose 的 MySQL/Redis 本机映射已参数化为 3307/6380；容器网络仍使用标准内部端口。
+3. `application.yml` 保留容器默认端口，项目启动脚本从 `.env` 映射 Windows 本机端口并清理其他项目继承的 Spring 变量。
+4. `python_agent/setup_knowledge_base.ps1` 已改为调用安全 reindex API，不再要求旧 `db.local.env` 或 DashScope Key，也不再先清空 chunk。
+5. Agent 与 Kafka Consumer 的真实入口分别由 `scripts/start-agent.ps1`、`scripts/start-review-consumer.ps1` 调用。
+6. 本地 `.env`、`python_agent/.env`、`application-local.yml` 已被 Git 忽略，共享内部 Token 一致；文本 LLM、Embedding 与 Reranker 使用本地模型，Vision 尚未配置。
 7. 仓库有 SQL migration 文件，但没有 Flyway/Liquibase；已有数据库如何可靠升级尚无统一执行器。
-8. CI 会运行 Python 全量测试，因此以当前源码推送会在 Python job 失败。
+8. Python 非集成测试当前全绿；需要 Docker/Testcontainers 或真实模型的门禁仍需在对应 CI 环境单独运行。
 9. `merchantCs.mock.js` 仍保留显式开发模式；生产构建在缺少 `VITE_API_BASE_URL` 时会主动失败，不会静默回退 mock。
 
 ## 9. 下一阶段验收标准

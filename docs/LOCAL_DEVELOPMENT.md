@@ -10,6 +10,8 @@
 | Redis | 6380 | 6379 |
 | PostgreSQL + pgvector | 5432 | 5432 |
 | Kafka | 9092 | 9092 |
+| Ollama | 11434 | 11434 |
+| TEI Reranker | 8081 | 80 |
 | Java API | 8080 | 8080 |
 | Python Agent | 8000 | 8000 |
 | 客服/管理前端 | 5173 | 5173 |
@@ -27,7 +29,7 @@ http://127.0.0.1:8080/api/actuator/health
 - JDK 21
 - Python 3.11 或 3.12
 - Node.js 20
-- Docker Desktop 与 WSL2，用于 PostgreSQL/pgvector、Kafka 和完整 Compose
+- Docker Desktop 与 WSL2，或专用 Ubuntu VMware，用于 PostgreSQL/pgvector、Kafka 和本地模型
 
 本机 Maven Wrapper 会依次读取：
 
@@ -102,10 +104,34 @@ Python Agent 使用：
 ```powershell
 docker compose config
 docker compose up -d mysql redis postgres kafka
+docker compose --profile local-ai up -d ollama reranker
 docker compose ps
 ```
 
 Compose 从项目根 `.env` 读取本机映射端口。容器之间仍使用 MySQL 3306、Redis 6379、Kafka 29092 和 PostgreSQL 5432。
+
+`local-ai` profile 提供完全本地的模型链路：
+
+- `qwen2.5:3b`：文本生成、结构化输出和原生 Tool Calling；
+- `bge-m3`：OpenAI compatible Embedding，固定输出 1024 维；
+- `BAAI/bge-reranker-v2-m3`：Hugging Face TEI `/rerank` 精排服务。
+
+Ollama 默认允许文本模型与 Embedding 模型同时驻留，避免 RAG 请求在两个模型之间反复换载。当前 4 vCPU 环境使用单并发，并将本地 CPU 推理读取超时设为 240 秒、单次总超时设为 300 秒。TEI 将批处理令牌限制为 4096，Agent 每次精排 5 个 RRF 候选并等待 30 秒，以适配 8 GB 内存的 CPU 虚拟机。
+
+在 4 vCPU 的纯 CPU 验收环境中，Java 网关需要给完整文本链路预留 300 秒：
+
+```dotenv
+# .env
+AGENT_TIMEOUT_MILLIS=300000
+```
+
+聊天入口默认先执行一次 LLM 情绪分类。只验收政策 RAG 时，可在本机 `python_agent/.env` 关闭这次可选的前置调用；独立情绪分析接口和正式环境默认行为不受影响：
+
+```dotenv
+CHAT_EMOTION_ANALYSIS_ENABLED=false
+```
+
+当前机器的真实政策咨询请求耗时 141.35 秒，其中严格 Embedding + pgvector + Reranker 约 25 秒，其余主要为 `qwen2.5:3b` 回答生成。该数字只代表当前 4 vCPU VM，不是生产容量指标。
 
 当前机器还保留了一个被 Git 忽略的本机恢复脚本，可在 Docker 不可用时只启动已有的 MySQL 与 Redis：
 
@@ -151,7 +177,7 @@ Python Kafka Consumer：
 
 ### Docker Desktop 不可用时使用 VMware
 
-当前机器的 Docker Desktop Engine 可能因 Windows 残留 Unix socket 无法启动。此时 PostgreSQL/pgvector 和 Kafka 可运行在专用 Ubuntu 24.04 VMware VM 中，Windows 继续运行 Java、Python、Vue、MySQL 和 Redis。
+当前机器的 Docker Desktop Engine 可能因 Windows 残留 Unix socket 无法启动。此时 PostgreSQL/pgvector、Kafka、Ollama 和 TEI Reranker 可运行在专用 Ubuntu 24.04 VMware VM 中，Windows 继续运行 Java、Python、Vue、MySQL 和 Redis。
 
 当前 VM 名称为 `EcommerceAfterSalesInfra`，配置为 4 vCPU、8 GB 内存、60 GB 磁盘。VM 内 Compose 目录是：
 
@@ -175,10 +201,19 @@ ssh.exe -i .runtime\vm\id_ed25519 `
   -o UserKnownHostsFile=.runtime\vm\known_hosts `
   -o StrictHostKeyChecking=yes `
   codex@192.168.100.130 `
-  "cd /opt/ecommerce-after-sales-system && docker compose up -d postgres kafka && docker compose ps"
+  "cd /opt/ecommerce-after-sales-system && docker compose --profile local-ai up -d postgres kafka ollama reranker && docker compose ps"
 ```
 
 `.runtime/vm` 包含当前电脑的私钥与 known_hosts，已被 Git 忽略，不应提交。
+
+首次下载本地模型后执行：
+
+```powershell
+Invoke-RestMethod http://192.168.100.130:11434/api/tags
+Invoke-WebRequest -UseBasicParsing http://192.168.100.130:8081/health
+```
+
+VM 只有 8 GB 内存时建议配置 4 GB swap，避免三个 CPU 模型首次加载时因瞬时内存不足退出。
 
 ## 7. 基础验证
 
@@ -224,6 +259,16 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/api/actuator/health
 ```
 
 完整依赖启动后，Actuator 应返回 200 与 `UP`。PostgreSQL 未启动时返回 503 是依赖健康检查的真实结果。
+
+### 知识库重建与检索
+
+Agent 健康后运行：
+
+```powershell
+.\python_agent\setup_knowledge_base.ps1
+```
+
+该脚本调用 Agent 的受保护 reindex API。服务会先生成全部 Embedding，再锁定并校验源文档版本，最后替换对应发布 chunk；不会使用旧脚本的“先清空后逐批生成”流程。
 
 ## 8. 构建与测试
 

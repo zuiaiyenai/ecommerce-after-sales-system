@@ -3,20 +3,25 @@ package com.ecommerce.aftersales.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ecommerce.aftersales.common.BizException;
 import com.ecommerce.aftersales.dto.AgentGatewayDtos;
+import com.ecommerce.aftersales.entity.AfterSalesTicket;
 import com.ecommerce.aftersales.entity.ChatMessage;
 import com.ecommerce.aftersales.entity.ChatSession;
+import com.ecommerce.aftersales.entity.OrderInfo;
+import com.ecommerce.aftersales.entity.OrderItem;
+import com.ecommerce.aftersales.entity.ProductInfo;
+import com.ecommerce.aftersales.mapper.AfterSalesTicketMapper;
 import com.ecommerce.aftersales.mapper.ChatMessageMapper;
 import com.ecommerce.aftersales.mapper.ChatSessionMapper;
+import com.ecommerce.aftersales.mapper.OrderInfoMapper;
+import com.ecommerce.aftersales.mapper.OrderItemMapper;
+import com.ecommerce.aftersales.mapper.ProductInfoMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
-
-import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -33,14 +38,21 @@ public class AgentConversationContextService {
     private static final int RECENT_MESSAGE_LIMIT = 10;
     private static final int SUMMARY_MAX_CHARS = 1200;
     private static final int USER_GOAL_MAX_CHARS = 300;
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final ChatSessionMapper chatSessionMapper;
     private final ChatMessageMapper chatMessageMapper;
+    private final OrderInfoMapper orderInfoMapper;
+    private final OrderItemMapper orderItemMapper;
+    private final ProductInfoMapper productInfoMapper;
+    private final AfterSalesTicketMapper afterSalesTicketMapper;
 
     public void hydrateTrustedContext(AgentGatewayDtos.ChatRequest request) {
         request.setRecent_history(List.of());
         request.setHistory_summary(emptySummary());
+        request.setSelected_order(null);
         if (request.getSession_id() == null) {
+            hydrateSelectedOrder(request);
             return;
         }
 
@@ -51,6 +63,7 @@ public class AgentConversationContextService {
 
         request.setOrder_id(stringId(session.getOrderId()));
         request.setTicket_id(stringId(session.getTicketId()));
+        hydrateSelectedOrder(request);
 
         List<ChatMessage> newestFirst = chatMessageMapper.selectList(
                 new LambdaQueryWrapper<ChatMessage>()
@@ -93,6 +106,61 @@ public class AgentConversationContextService {
         summary.put("current_user_goal", currentUserGoal(nonBlankMessages));
         summary.put("user_claims", recentUserClaims(nonBlankMessages));
         request.setHistory_summary(summary);
+    }
+
+    private void hydrateSelectedOrder(AgentGatewayDtos.ChatRequest request) {
+        if (!StringUtils.hasText(request.getOrder_id())) {
+            return;
+        }
+        Long orderId;
+        Long userId;
+        try {
+            orderId = Long.valueOf(request.getOrder_id());
+            userId = Long.valueOf(request.getUser_id());
+        } catch (NumberFormatException exception) {
+            throw new BizException(404, "订单不存在");
+        }
+        OrderInfo order = orderInfoMapper.selectOne(new LambdaQueryWrapper<OrderInfo>()
+                .eq(OrderInfo::getId, orderId)
+                .eq(OrderInfo::getUserId, userId)
+                .last("limit 1"));
+        if (order == null) {
+            throw new BizException(404, "订单不存在");
+        }
+
+        OrderItem item = orderItemMapper.selectOne(new LambdaQueryWrapper<OrderItem>()
+                .eq(OrderItem::getOrderId, orderId)
+                .orderByAsc(OrderItem::getId)
+                .last("limit 1"));
+        ProductInfo product = item == null || item.getProductId() == null
+                ? null
+                : productInfoMapper.selectById(item.getProductId());
+        AfterSalesTicket ticket = afterSalesTicketMapper.selectOne(new LambdaQueryWrapper<AfterSalesTicket>()
+                .eq(AfterSalesTicket::getOrderId, orderId)
+                .orderByDesc(AfterSalesTicket::getCreateTime)
+                .orderByDesc(AfterSalesTicket::getId)
+                .last("limit 1"));
+
+        AgentGatewayDtos.SelectedOrderDto selected = new AgentGatewayDtos.SelectedOrderDto();
+        selected.setOrder_id(order.getId().toString());
+        selected.setUser_id(order.getUserId().toString());
+        selected.setMerchant_code(order.getMerchantCode());
+        selected.setProduct_name(product == null ? null : product.getProductName());
+        selected.setCategory(product == null ? null : product.getCategory());
+        selected.setPolicy_version(ticket == null ? null : ticket.getPolicyVersion());
+        LocalDateTime businessTime = ticket != null && ticket.getCreateTime() != null
+                ? ticket.getCreateTime()
+                : order.getCreateTime();
+        selected.setBusiness_time(businessTime == null
+                ? null
+                : businessTime.atZone(BUSINESS_ZONE).toOffsetDateTime().toString());
+        selected.setStatus(order.getStatus());
+        selected.setAfter_sales_status(ticket == null ? null : ticket.getStatus());
+        selected.setAmount(order.getPayAmount() == null ? null : order.getPayAmount().doubleValue());
+        request.setSelected_order(selected);
+        if (request.getTicket_id() == null && ticket != null) {
+            request.setTicket_id(ticket.getId().toString());
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)

@@ -248,23 +248,23 @@ class TestThresholdForSource(unittest.TestCase):
 
     def test_after_sales_policy_threshold(self):
         threshold = PgVectorKnowledgeRetriever._threshold_for_source("after_sales_policy")
-        self.assertEqual(threshold, 0.55)
+        self.assertEqual(threshold, 0.35)
 
     def test_refund_policy_threshold(self):
         threshold = PgVectorKnowledgeRetriever._threshold_for_source("refund_policy")
-        self.assertEqual(threshold, 0.55)
+        self.assertEqual(threshold, 0.35)
 
     def test_exchange_rule_threshold(self):
         threshold = PgVectorKnowledgeRetriever._threshold_for_source("exchange_rule")
-        self.assertEqual(threshold, 0.55)
+        self.assertEqual(threshold, 0.35)
 
     def test_evidence_requirement_threshold(self):
         threshold = PgVectorKnowledgeRetriever._threshold_for_source("evidence_requirement")
-        self.assertEqual(threshold, 0.65)
+        self.assertEqual(threshold, 0.45)
 
     def test_faq_threshold(self):
         threshold = PgVectorKnowledgeRetriever._threshold_for_source("faq")
-        self.assertEqual(threshold, 0.60)
+        self.assertEqual(threshold, 0.40)
 
     def test_unknown_source_type_returns_default(self):
         # Unknown source types should return the first threshold or a default

@@ -58,6 +58,7 @@ class KnowledgeAdminService:
             policy_version=data.get("policy_version"),
             as_of_time=AgentToolRegistry._parse_as_of_time(data.get("as_of_time")),
             top_k=data.get("top_k"),
+            retrieval_mode=str(data.get("retrieval_mode") or "rerank"),
         ))
         hits = [
             {

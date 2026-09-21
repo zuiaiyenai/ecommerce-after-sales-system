@@ -33,6 +33,8 @@ public class AgentGatewayDtos {
         private String merchant_code;
         private String product_name;
         private String category;
+        private String policy_version;
+        private String business_time;
         private String status;
         private String after_sales_status;
         private Double amount;
