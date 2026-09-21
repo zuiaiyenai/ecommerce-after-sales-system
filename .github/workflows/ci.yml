@@ -19,7 +19,7 @@ jobs:
       - run: python -m pytest tests -q
         working-directory: python_agent
       - name: Layered RAG pure metrics quality gate
-        run: python -m pytest tests/test_rag_metrics.py -q
+        run: python -m pytest tests/unit/test_rag_metrics.py -q
         working-directory: python_agent
       - name: Agent deterministic safety quality gate
         run: python tools/evaluate_agent_safety.py --check

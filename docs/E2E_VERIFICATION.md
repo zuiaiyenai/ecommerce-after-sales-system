@@ -35,6 +35,7 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | 前端契约测试 | PASS | 16/16，包含管理端文本导入正式路由与管理员首页无固定 Mock 数据契约 |
 | 客服前端构建 | PASS | real API base URL 构建 |
 | Compose 本地模型地址 | PASS | Agent/Consumer 解析后使用 `ollama:11434` 与 `reranker:80`，未继承宿主机回环地址 |
+| CI workflow 本地校验 | PASS | 两个 YAML 可解析；RAG 指标门禁同款命令 13/13，通过不代表远端 Runner 已执行 |
 | Spring Security 异步分派回归 | PASS | SSE 的 `ASYNC` 分派可完成；匿名初始请求仍为 401 |
 
 Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API 仅绑定 VM 的 `127.0.0.1:23750`，再经 SSH 映射到 Windows 回环地址；脚本结束后关闭隧道与代理。没有向局域网暴露未加密 Docker API。

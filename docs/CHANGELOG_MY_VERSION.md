@@ -145,6 +145,11 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 待处理数量、账号状态和知识库维护数量只从 Java API 返回数据计算，缺少审计接口的区域显示明确空态；
 - 增加前端契约测试，禁止管理员首页重新引入固定业务数字或虚构商家/操作日志。
 
+## Phase 15：CI 路径一致性
+
+- 修正 GitHub Actions 分层 RAG 指标门禁的测试文件路径，使其指向真实的 `tests/unit/test_rag_metrics.py`；
+- 本地使用 workflow 同款命令执行该门禁，并静态解析 CI 与 nightly workflow；是否在 GitHub Runner 成功仍以远端运行记录为准。
+
 ## 仍需维护的事项
 
 1. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
