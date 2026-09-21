@@ -49,7 +49,7 @@
 
 ```text
 Python: 609 passed, 8 deselected
-Java:   148 run, 0 failures, 0 errors, 28 skipped
+Java（Phase 4 快照）: 148 run, 0 failures, 0 errors, 28 skipped
 E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 ```
 
@@ -64,7 +64,7 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 | 文本 LLM / Embedding / Reranker / RAG | DONE |
 | Vision | NOT_DONE |
 | Prometheus / Grafana 页面 | PARTIAL |
-| Docker/Testcontainers 全量门禁 | PARTIAL |
+| Docker/Testcontainers 全量门禁 | DONE |
 | 生产部署、高可用、压测 | NOT_DONE |
 
 ## Phase 5：一键本地运行编排
@@ -76,10 +76,18 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 实测完成应用全关 → 一键启动 → 应用停止 → VM 容器停止 → 一键恢复；
 - 停止基础设施时只执行 `docker compose stop`，不删除数据卷。
 
+## Phase 6：补齐真实集成门禁
+
+- 新增 `scripts/run-vm-testcontainers.ps1` 与 VM 回环 Docker 代理，通过 SSH 安全运行远端 Testcontainers；
+- 修正 `AfterSalesTicketMapperMySqlTest` 的精简测试表，使其包含当前 `evidence_revision`、`ai_review_status` 与 Java 签发的 `ai_review_request_id` 契约；
+- Python pgvector 集成测试：`3 passed`；
+- Python Redis Testcontainers：`1 passed`；
+- Python Ollama OpenAI compatible 真实模型测试：`4 passed`；
+- Java 全量测试：`148 run, 0 failures, 0 errors, 0 skipped`。
+
 ## 仍需维护的事项
 
 1. 配置视觉模型后单独验收图片审核。
-2. 在可用 Docker Engine 或 CI Runner 上执行被跳过的 Testcontainers 测试。
-3. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
-4. 验证跨轮 LangGraph checkpoint 恢复与 WebSocket/SSE 浏览器场景。
-5. 生产化前补 TLS、密钥管理、监控告警、备份恢复和容量压测。
+2. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
+3. 验证跨轮 LangGraph checkpoint 恢复与 WebSocket/SSE 浏览器场景。
+4. 生产化前补 TLS、密钥管理、监控告警、备份恢复和容量压测。

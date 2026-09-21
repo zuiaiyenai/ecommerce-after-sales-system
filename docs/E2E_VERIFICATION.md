@@ -27,12 +27,15 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | 门禁 | 结果 | 边界 |
 | --- | --- | --- |
 | Python 非集成测试 | `609 passed, 8 deselected` | 排除 `integration` 与 `real_llm` 标记 |
-| Java Maven 测试 | `148 run, 0 failures, 0 errors, 28 skipped` | 28 个 Testcontainers 测试因 Docker Engine 不可用跳过 |
-| `git diff --check` | PASS | Phase 4 提交前通过 |
+| Python pgvector 集成测试 | `3 passed` | 真实连接 VM PostgreSQL，覆盖稠密/关键词检索与可空硬过滤 |
+| Python Redis Testcontainers | `1 passed` | 隔离 Redis 容器，覆盖 SET NX、心跳、过期接管与终态确认 |
+| Python 真实 LLM | `4 passed` | Ollama OpenAI compatible 端点；对话、JSON、Tool Calling、流式协议 |
+| Java Maven 测试 | `148 run, 0 failures, 0 errors, 0 skipped` | pgvector、MySQL、Kafka、Redis Testcontainers 全部实际执行 |
+| `git diff --check` | PASS | Phase 6 提交前通过 |
 | 前端契约测试 | PASS | 14/14，见架构审计记录 |
 | 客服前端构建 | PASS | real API base URL 构建 |
 
-跳过不等于通过。真实 pgvector、Kafka 和聊天链路由 VMware 实机验收补充，但不等同于把所有 Testcontainers 用例重新执行了一遍。
+Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API 仅绑定 VM 的 `127.0.0.1:23750`，再经 SSH 映射到 Windows 回环地址；脚本结束后关闭隧道与代理。没有向局域网暴露未加密 Docker API。
 
 ## 3. PostgreSQL / RAG
 
@@ -123,4 +126,4 @@ Java 创建工单和 Outbox
 - Kafka 正式审核主链：DONE
 - Vision：NOT_DONE
 - 生产容量、高可用、公网 TLS 与容灾：NOT_DONE
-- 完整 Docker/Testcontainers 门禁：PARTIAL
+- 完整 Docker/Testcontainers 门禁：DONE

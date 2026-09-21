@@ -308,7 +308,22 @@ Set-Location ../uniapp
 npm run build:mp-weixin
 ```
 
-Testcontainers 测试需要 Docker。测试被跳过与测试通过是不同证据，验收报告必须分别记录。
+Docker Desktop 不可用且 `.env` 已配置 VM 时，运行完整 Testcontainers 门禁：
+
+```powershell
+.\scripts\run-vm-testcontainers.ps1
+```
+
+只运行 Java 或 Python Redis 门禁：
+
+```powershell
+.\scripts\run-vm-testcontainers.ps1 -Suite Java
+.\scripts\run-vm-testcontainers.ps1 -Suite PythonRedis
+```
+
+脚本把 VM Docker Unix socket 临时代理到 VM 回环地址，再通过 SSH 映射到 Windows `127.0.0.1:23750`。执行结束后会恢复当前进程环境变量，并清理隧道和代理。定向排查单个 Java 测试可增加 `-MavenTest AfterSalesTicketMapperMySqlTest`。
+
+Testcontainers 被跳过与测试通过是不同证据，验收报告必须分别记录。
 
 ## 9. 常见问题
 

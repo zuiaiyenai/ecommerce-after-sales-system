@@ -206,7 +206,7 @@ POST /api/aftersales
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | NOT_VERIFIED |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 14 个契约通过 | 148 总计，120 通过、28 跳过 | 非集成集 609 通过、8 deselected | Testcontainers 依赖 Docker | PARTIAL | 当前可运行测试全绿；跳过项单列 |
+| 自动化测试 | 14 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态
@@ -233,9 +233,12 @@ POST /api/aftersales
 | 检查 | 结果 | 解释 |
 | --- | --- | --- |
 | `mvn -DskipTests compile` | PASS | Java 21 编译通过 |
-| `mvn test` | PARTIAL | 148 总计，120 通过，28 个 Docker/Testcontainers 集成测试跳过 |
+| `mvn test` | PASS | 148 总计，0 failures，0 errors，0 skipped；VM Docker 上的 Testcontainers 全部执行 |
 | Python `pip check` | PASS | 当前虚拟环境依赖一致 |
 | Python 非集成测试 | PASS | 609 passed，8 deselected；排除显式标记的 integration 与 real_llm |
+| Python pgvector 集成测试 | PASS | 3 passed，真实连接 VM PostgreSQL |
+| Python Redis Testcontainers | PASS | 1 passed，临时 Redis 容器由 VM Docker 提供 |
+| Python 真实 LLM | PASS | 4 passed，覆盖对话、JSON、原生 Tool Calling 与流式响应 |
 | 客服前端契约测试 | PASS | 14/14 |
 | 客服前端生产构建 | PASS | 显式设置 `VITE_API_BASE_URL=http://127.0.0.1:8080/api` 后通过 |
 | uni-app 微信小程序构建 | PASS | 构建完成 |
@@ -252,7 +255,7 @@ POST /api/aftersales
 
 这是 4 vCPU CPU-only VM 的本地功能证据，不代表生产延迟或吞吐能力。聊天前置情绪 LLM 在这次政策 RAG 验收中通过本机配置关闭；情绪能力的独立验收应单列执行。
 
-这些结果只能证明源码级能力。没有 PostgreSQL、Kafka、模型服务与浏览器 E2E，不能宣称完整系统可用。
+当前已有 PostgreSQL、Kafka、本地模型、AI/RAG 后端闭环与全量 Testcontainers 证据。浏览器级全功能 E2E、Vision 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
 
 ## 8. 已确认的配置问题
 
@@ -263,7 +266,7 @@ POST /api/aftersales
 5. Agent 与 Kafka Consumer 的真实入口分别由 `scripts/start-agent.ps1`、`scripts/start-review-consumer.ps1` 调用。
 6. 本地 `.env`、`python_agent/.env`、`application-local.yml` 已被 Git 忽略，共享内部 Token 一致；文本 LLM、Embedding 与 Reranker 使用本地模型，Vision 尚未配置。
 7. 仓库有 SQL migration 文件，但没有 Flyway/Liquibase；已有数据库如何可靠升级尚无统一执行器。
-8. Python 非集成测试当前全绿；需要 Docker/Testcontainers 或真实模型的门禁仍需在对应 CI 环境单独运行。
+8. Python 非集成、pgvector、Redis Testcontainers、真实 LLM 与 Java 全量 Testcontainers 当前全绿；CI Runner 仍需配置等价 Docker 与模型环境后才能复现这些门禁。
 9. `merchantCs.mock.js` 仍保留显式开发模式；生产构建在缺少 `VITE_API_BASE_URL` 时会主动失败，不会静默回退 mock。
 
 ## 9. 下一阶段验收标准
