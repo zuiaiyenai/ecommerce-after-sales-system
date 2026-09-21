@@ -267,12 +267,12 @@ POST /api/aftersales
 3. `application.yml` 保留容器默认端口，项目启动脚本从 `.env` 映射 Windows 本机端口并清理其他项目继承的 Spring 变量。
 4. `python_agent/setup_knowledge_base.ps1` 已改为调用安全 reindex API，不再要求旧 `db.local.env` 或 DashScope Key，也不再先清空 chunk。
 5. Agent 与 Kafka Consumer 的真实入口分别由 `scripts/start-agent.ps1`、`scripts/start-review-consumer.ps1` 调用。
-6. 本地 `.env`、`python_agent/.env`、`application-local.yml` 已被 Git 忽略，共享内部 Token 一致；文本 LLM、Embedding 与 Reranker 使用本地模型，Vision 尚未配置。
+6. 本地 `.env`、`python_agent/.env`、`application-local.yml` 已被 Git 忽略，共享内部 Token 一致；文本 LLM、Embedding、Reranker 与 Vision 均使用本地模型。
 7. 仓库有 SQL migration 文件，但没有 Flyway/Liquibase；已有数据库如何可靠升级尚无统一执行器。
 8. Python 非集成、pgvector、Redis Testcontainers、真实 LLM 与 Java 全量 Testcontainers 当前全绿；CI Runner 仍需配置等价 Docker 与模型环境后才能复现这些门禁。
 9. `merchantCs.mock.js` 仍保留显式开发模式；生产构建在缺少 `VITE_API_BASE_URL` 时会主动失败，不会静默回退 mock。
 
-## 9. 下一阶段验收标准
+## 9. 完整环境验收标准（当前均已满足）
 
 1. 项目自身配置能在新 PowerShell 会话中稳定启动，不读取 `fctts-main5` 的全局数据库值。
 2. `docker compose config` 可解析，Redis 明确映射到 6380。

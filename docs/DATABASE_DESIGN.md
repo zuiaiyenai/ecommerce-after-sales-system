@@ -1,6 +1,6 @@
 # 数据库设计
 
-> 验证日期：2026-09-21
+> 验证日期：2026-09-22
 > 依据：当前 SQL、Java/Python 数据访问代码，以及本机 MySQL 与 VMware PostgreSQL 实例。
 
 ## 1. 数据职责
@@ -9,7 +9,7 @@
 
 | 数据库 | 真相范围 | 主要访问方 |
 | --- | --- | --- |
-| MySQL 5.7 | 用户、客服、商品、订单、售后工单、会话、消息、评价、通知、Outbox | Java Spring Boot |
+| MySQL 8.x | 用户、客服、商品、订单、售后工单、会话、消息、评价、通知、Outbox | Java Spring Boot |
 | PostgreSQL 16 + pgvector | 知识文档、草稿、发布版本、向量、全文检索列、LangGraph checkpoint | Java 知识管理、Python Agent/RAG |
 
 Python Agent 不直接修改 MySQL 业务结果。它通过 `/api/internal/agent-tools/**` 调用 Java，由 Java 校验用户、商家、工单状态和审核实例后再写库。
@@ -92,19 +92,20 @@ PostgreSQL 16 的 `tsvector` GIN 索引使用默认 operator class，写法为 `
 
 VM 地址为 `192.168.100.130`（NAT DHCP，重启后可能变化）。已验证：
 
+- Windows MySQL `8.0.41`，业务库有 15 张表；Compose 新建环境使用 MySQL `8.4`；
 - PostgreSQL `16.15`；
 - pgvector `0.8.6`；
 - `vector`、`pg_trgm` 扩展存在；
 - `knowledge_chunk.embedding` 为 `vector(1024)`；
 - IVFFlat、全文 GIN 和 trigram GIN 索引存在；
-- 50 条 `knowledge_document` 已导入，其中 42 条为当前有效发布文档；
-- 42 条发布文档已通过本地 `bge-m3` 生成 42 个真实 chunk，`published_revision` 为 42/42；
-- 42 个 `knowledge_chunk.embedding` 均为 1024 维；
+- 51 条 `knowledge_document` 已导入，其中 43 条有发布版本；
+- 43 条发布文档已通过本地 `bge-m3` 生成 43 个真实 chunk，`published_revision` 为 43/43；
+- 43 个 `knowledge_chunk.embedding` 均为 1024 维；
 - 查询“七天无理由退货需要满足什么条件”时，商户 `MERCHANT_DEMO` 的 Top-1 为 `return_policy_001`，cosine 分数为 `0.8064`；
 - 事务内写入 1024 维测试向量后，cosine 自相似度为 `1.000000`，随后已回滚；
 - 真实 PostgreSQL 硬过滤集成测试 3/3 通过。
 
-当前 `knowledge_chunk` 为 42，`knowledge_chunk_draft` 为 0。当前批次来自已发布的种子知识，使用安全 reindex 流程生成：先完成全部 Embedding，再锁定并校验源文档版本，最后替换对应 chunk 并更新 `published_revision`。
+当前 `knowledge_chunk` 为 43，`knowledge_chunk_draft` 为 1。已发布批次使用安全 reindex 流程生成：先完成全部 Embedding，再锁定并校验源文档版本，最后替换对应 chunk 并更新 `published_revision`；草稿不会进入正式检索。
 
 ## 5. 变更规则
 
@@ -112,3 +113,10 @@ VM 地址为 `192.168.100.130`（NAT DHCP，重启后可能变化）。已验证
 2. 修改 `vector(1024)` 前必须同步模型维度、Java 发布校验、Python Retriever 与索引重建方案。
 3. 修改工单状态机时同时检查 Java 写入条件、Python 回写契约、Outbox/DLQ 和前端状态文案。
 4. 不通过清空数据库修复迁移问题；先备份、核对残留 DDL，再做数据保留式修复。
+
+## 6. 迁移策略边界
+
+- 新建 Compose 数据卷分别通过 `sql/schema.sql` 和 `sql/pgvector_schema.sql` 初始化 MySQL 与 PostgreSQL。
+- 已有数据库目前按文件名日期顺序人工执行 `sql/migrations` 中的增量脚本；执行前必须备份并检查目标列、索引和约束是否已存在。
+- 仓库当前没有 Flyway/Liquibase 版本表，无法自动证明某个已有实例已经执行了哪些历史脚本。这是生产化前仍需解决的维护风险。
+- 后续引入迁移工具时，应为 MySQL 和 PostgreSQL 分别建立 baseline，登记既有脚本校验和，并同时验证“空库初始化”和“当前数据保留升级”两条路径；不能直接把现有 18 个脚本当作全新待执行版本。

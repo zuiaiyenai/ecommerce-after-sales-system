@@ -53,7 +53,7 @@ Java（Phase 4 快照）: 148 run, 0 failures, 0 errors, 28 skipped
 E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 ```
 
-## 当前功能完成度
+## Phase 4 完成时的功能快照
 
 | 领域 | 状态 |
 | --- | --- |
@@ -125,6 +125,12 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 微信小程序默认改用 `touristappid`，发布前需替换为项目所有者自己的 AppID；
 - README 补充本地演示账号、当前本地 Vision 模型以及 Git 贡献和许可证边界；
 - 保留现有 Java 包名、Maven 坐标和产品名称，避免没有业务收益的大规模重命名。
+
+## Phase 12：最终运行与文档一致性验收
+
+- 复核 Vue、Java、Agent、Review Consumer、MySQL、Redis、PostgreSQL、Kafka、Ollama、TEI、Prometheus 和 Grafana 当前均可用；
+- PostgreSQL 当前有 51 条知识文档、43 个发布版本、43 个 1024 维 chunk 和 1 个草稿，文档已同步为当前实例数据；
+- 明确现有数据库尚无迁移版本表；Flyway/Liquibase 需要分别建立 MySQL/PostgreSQL baseline 后再引入，不能在当前数据实例上直接执行全部历史脚本。
 
 ## 仍需维护的事项
 
