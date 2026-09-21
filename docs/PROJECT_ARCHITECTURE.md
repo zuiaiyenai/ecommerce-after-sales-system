@@ -206,7 +206,7 @@ POST /api/aftersales
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | NOT_VERIFIED |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 14 个契约通过 | 147 总计，119 通过、28 跳过 | 非集成集 609 通过、8 deselected | Testcontainers 依赖 Docker | PARTIAL | 当前可运行测试全绿；跳过项单列 |
+| 自动化测试 | 14 个契约通过 | 148 总计，120 通过、28 跳过 | 非集成集 609 通过、8 deselected | Testcontainers 依赖 Docker | PARTIAL | 当前可运行测试全绿；跳过项单列 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态
@@ -233,7 +233,7 @@ POST /api/aftersales
 | 检查 | 结果 | 解释 |
 | --- | --- | --- |
 | `mvn -DskipTests compile` | PASS | Java 21 编译通过 |
-| `mvn test` | PARTIAL | 147 总计，119 通过，28 个 Docker/Testcontainers 集成测试跳过 |
+| `mvn test` | PARTIAL | 148 总计，120 通过，28 个 Docker/Testcontainers 集成测试跳过 |
 | Python `pip check` | PASS | 当前虚拟环境依赖一致 |
 | Python 非集成测试 | PASS | 609 passed，8 deselected；排除显式标记的 integration 与 real_llm |
 | 客服前端契约测试 | PASS | 14/14 |
