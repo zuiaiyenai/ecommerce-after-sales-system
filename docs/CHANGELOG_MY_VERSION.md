@@ -139,6 +139,12 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - Compose 内的文本 LLM、Embedding、Reranker 和 Vision 均使用容器服务名，不再继承容器内不可用的宿主机回环地址；
 - `dev-start.ps1` 可检查并拉取缺失的文本、Embedding 和 Vision 模型，首次启动不再依赖预先手工准备模型。
 
+## Phase 14：管理员首页真实数据边界
+
+- 删除真实 API 模式下管理员首页固定的账号、商家、知识库进度、任务和操作日志 Mock；
+- 待处理数量、账号状态和知识库维护数量只从 Java API 返回数据计算，缺少审计接口的区域显示明确空态；
+- 增加前端契约测试，禁止管理员首页重新引入固定业务数字或虚构商家/操作日志。
+
 ## 仍需维护的事项
 
 1. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。

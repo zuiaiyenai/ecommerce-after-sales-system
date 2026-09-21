@@ -207,7 +207,7 @@ POST /api/aftersales
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | 三个 target UP、4 条规则健康、Grafana dashboard 已加载 |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | Java/Agent E2E 响应和运行证据已回读 Trace ID |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 15 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
+| 自动化测试 | 16 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态

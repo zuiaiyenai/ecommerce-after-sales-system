@@ -41,3 +41,12 @@ test('session UI trusts backend ordering and reloads database history', async ()
   assert.match(detail, /const raw = msg\?\.fileUrl \|\| ''/);
   assert.doesNotMatch(detail, /fileUrl\s*\|\|\s*[^\n]*content/);
 });
+
+test('real admin dashboard does not render fixed mock business data', async () => {
+  const dashboard = await source('src/views/AdminDashboardView.vue');
+  assert.match(dashboard, /getAdminOverview\(\)/);
+  assert.match(dashboard, /getAgentAccounts\(\)/);
+  assert.match(dashboard, /getKnowledgeLibraries\(\)/);
+  assert.doesNotMatch(dashboard, /adminDashboardMock|fallbackPendingAccounts|fallbackKnowledgeMaintenance/);
+  assert.doesNotMatch(dashboard, /星选旗舰店|Knowledge Admin|Security Bot|<strong>6<\/strong>/);
+});

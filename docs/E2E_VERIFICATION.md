@@ -32,7 +32,7 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | Python 真实 LLM | `4 passed` | Ollama OpenAI compatible 端点；对话、JSON、Tool Calling、流式协议 |
 | Java Maven 测试 | `148 run, 0 failures, 0 errors, 0 skipped` | pgvector、MySQL、Kafka、Redis Testcontainers 全部实际执行 |
 | `git diff --check` | PASS | Phase 6 提交前通过 |
-| 前端契约测试 | PASS | 15/15，包含管理端文本导入正式路由契约 |
+| 前端契约测试 | PASS | 16/16，包含管理端文本导入正式路由与管理员首页无固定 Mock 数据契约 |
 | 客服前端构建 | PASS | real API base URL 构建 |
 | Compose 本地模型地址 | PASS | Agent/Consumer 解析后使用 `ollama:11434` 与 `reranker:80`，未继承宿主机回环地址 |
 | Spring Security 异步分派回归 | PASS | SSE 的 `ASYNC` 分派可完成；匿名初始请求仍为 401 |
@@ -126,6 +126,8 @@ Java 创建工单和 Outbox
 ## 7. 核心 API、浏览器与知识库生命周期
 
 2026-09-22 使用 `cs_demo` 完成核心业务 API 验收：登录、当前用户、工作台、商品、订单、会话、消息、工单、评价及详情接口均成功；匿名请求返回 401，客服访问管理员接口返回 403。随后使用隔离 Microsoft Edge 完成 13 个页面和路由守卫检查，共观察 155 个资源/API 响应，失败 API 为 0。
+
+最终真实性复核又使用 `admin_demo` JWT 读取管理员 overview、客服账号和知识库接口：当前为 1 个启用客服、0 个待审批/未分配账号、51 条知识记录和 0 条需维护记录。管理员首页已删除固定商家、任务、治理进度和操作日志数据；无法从 API 取得的操作记录显示空态。前端契约测试和 real API 生产构建均通过。
 
 管理端知识库验收创建了唯一标记文档 `PHASE7-RAG-20260922025158-ZEPHYR-ORANGE-7319`，完整经过：
 

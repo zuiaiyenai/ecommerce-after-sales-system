@@ -11,94 +11,30 @@ const knowledge = ref([]);
 const loading = ref(true);
 const activeTaskTab = ref('accounts');
 
-const adminDashboardMock = {
-  merchantPending: 3,
-  todayOperations: 18,
-  fallbackPendingAccounts: 6,
-  fallbackKnowledgeMaintenance: 30,
-  governanceProgress: [
-    { label: '账号治理完成度', value: 75 },
-    { label: '商家绑定完成度', value: 60 },
-    { label: '知识库配置完成度', value: 45 },
-    { label: '权限配置完成度', value: 80 }
-  ],
-  taskTabs: [
-    { key: 'accounts', label: '账号审核' },
-    { key: 'merchants', label: '商家绑定' },
-    { key: 'security', label: '权限异常' },
-    { key: 'knowledge', label: '知识库变更' }
-  ],
-  tasks: [
-    {
-      tab: 'accounts',
-      title: '客服账号注册申请待审核',
-      desc: '6 个注册申请需要核对资料与商家归属',
-      status: '高优先级',
-      action: '去审核',
-      route: '/admin/accounts',
-      tone: 'danger'
-    },
-    {
-      tab: 'merchants',
-      title: '商家“星选旗舰店”尚未绑定客服',
-      desc: '新商家已完成入驻，需要分配负责客服与知识范围',
-      status: '待配置',
-      action: '去分配',
-      route: '/admin/accounts',
-      tone: 'warning'
-    },
-    {
-      tab: 'knowledge',
-      title: '知识库新增 30 条待审核内容',
-      desc: 'FAQ 与售后政策词条等待管理员确认后启用',
-      status: '待处理',
-      action: '去维护',
-      route: '/admin/knowledge',
-      tone: 'info'
-    },
-    {
-      tab: 'security',
-      title: '管理员密码策略仍为默认配置',
-      desc: '建议开启强密码规则与登录安全校验',
-      status: '安全提醒',
-      action: '去设置',
-      route: '/admin/dashboard',
-      tone: 'secure'
-    }
-  ],
-  operations: [
-    { type: '新增客服账号', operator: 'Platform Admin', time: '10:42', tag: '已记录' },
-    { type: '修改商家绑定关系', operator: 'Platform Admin', time: '09:58', tag: '配置变更' },
-    { type: '更新知识库分类', operator: 'Knowledge Admin', time: '09:24', tag: '待同步' },
-    { type: '调整账号权限', operator: 'Platform Admin', time: '昨天 18:16', tag: '权限审计' },
-    { type: '登录安全校验', operator: 'Security Bot', time: '昨天 17:48', tag: '正常' }
-  ]
-};
+const taskTabs = [
+  { key: 'accounts', label: '账号审核' },
+  { key: 'merchants', label: '商家绑定' },
+  { key: 'knowledge', label: '知识库变更' }
+];
 
-const pendingAccountCount = computed(() => {
-  if (!accounts.value.length) {
-    return adminDashboardMock.fallbackPendingAccounts;
-  }
-  return accounts.value.filter((item) => item.status === 'PENDING_APPROVAL').length;
-});
+const pendingAccountCount = computed(() => accounts.value.filter((item) => item.status === 'PENDING_APPROVAL').length);
 
 const adminDisplayName = computed(() => {
-  return shell?.admin?.value?.realName || overview.value?.adminName || 'Platform Admin';
+  return shell?.admin?.value?.realName || overview.value?.greeting?.replace(/^您好，/, '') || '管理员';
 });
 
 const activeAccountCount = computed(() => accounts.value.filter((item) => item.status === 'ACTIVE').length);
 const disabledAccountCount = computed(() => accounts.value.filter((item) => item.status === 'DISABLED').length);
-const abnormalLoginCount = computed(() => accounts.value.filter((item) => item.onlineStatus === 'BUSY').length || 2);
+const busyAccountCount = computed(() => accounts.value.filter((item) => item.onlineStatus === 'BUSY').length);
+const unassignedMerchantCount = computed(() => accounts.value.filter((item) => !item.merchantCode).length);
 
 const knowledgeMaintenanceCount = computed(() => {
-  if (!knowledge.value.length) {
-    return adminDashboardMock.fallbackKnowledgeMaintenance;
-  }
-  const attentionCount = knowledge.value.filter((item) => {
+  return knowledge.value.filter((item) => {
     return item.ingestionStatus === 'FAILED' || item.ingestionStatus === 'PROCESSING' || item.status === 'DISABLED';
   }).length;
-  return attentionCount || adminDashboardMock.fallbackKnowledgeMaintenance;
 });
+
+const pendingTotal = computed(() => pendingAccountCount.value + unassignedMerchantCount.value + knowledgeMaintenanceCount.value);
 
 const kpiCards = computed(() => [
   {
@@ -110,7 +46,7 @@ const kpiCards = computed(() => [
   {
     icon: '商',
     label: '商家待分配',
-    value: adminDashboardMock.merchantPending,
+    value: unassignedMerchantCount.value,
     desc: '需要绑定负责客服'
   },
   {
@@ -120,22 +56,38 @@ const kpiCards = computed(() => [
     desc: '待审核词条 / 待更新 FAQ'
   },
   {
-    icon: '记',
-    label: '今日治理操作',
-    value: adminDashboardMock.todayOperations,
-    desc: '账号、权限、配置变更记录'
+    icon: '库',
+    label: '知识文档总量',
+    value: knowledge.value.length,
+    desc: '当前知识库记录'
   }
 ]);
 
-const visibleTasks = computed(() => {
-  return adminDashboardMock.tasks.filter((item) => item.tab === activeTaskTab.value);
+const actionTasks = computed(() => {
+  const tasks = [];
+  if (pendingAccountCount.value > 0) {
+    tasks.push({ tab: 'accounts', title: '客服账号注册申请待审核', desc: `${pendingAccountCount.value} 个申请需要核对资料与商家归属`, status: '待审核', action: '去审核', route: '/admin/accounts', tone: 'danger' });
+  }
+  if (unassignedMerchantCount.value > 0) {
+    tasks.push({ tab: 'merchants', title: '客服账号尚未绑定商家', desc: `${unassignedMerchantCount.value} 个账号需要补充商家归属`, status: '待配置', action: '去分配', route: '/admin/accounts', tone: 'warning' });
+  }
+  if (knowledgeMaintenanceCount.value > 0) {
+    tasks.push({ tab: 'knowledge', title: '知识库记录需要处理', desc: `${knowledgeMaintenanceCount.value} 条记录处于处理中、失败或停用状态`, status: '待处理', action: '去维护', route: '/admin/knowledge', tone: 'info' });
+  }
+  return tasks;
 });
 
+const visibleTasks = computed(() => {
+  return actionTasks.value.filter((item) => item.tab === activeTaskTab.value);
+});
+
+const governanceFocus = computed(() => overview.value?.focus || []);
+
 const accountStatusCards = computed(() => [
-  { label: '已启用客服', value: activeAccountCount.value || 12, desc: '可正常登录接待' },
+  { label: '已启用客服', value: activeAccountCount.value, desc: '可正常登录接待' },
   { label: '待审核客服', value: pendingAccountCount.value, desc: '注册资料待确认' },
-  { label: '已停用客服', value: disabledAccountCount.value || 1, desc: '权限已冻结' },
-  { label: '异常登录提醒', value: abnormalLoginCount.value, desc: '需复核登录状态' }
+  { label: '已停用客服', value: disabledAccountCount.value, desc: '权限已冻结' },
+  { label: '忙碌客服', value: busyAccountCount.value, desc: '当前接待状态为忙碌' }
 ]);
 
 async function loadPage() {
@@ -175,7 +127,7 @@ onMounted(loadPage);
         <button type="button" class="ghost-mini" @click="goTo('/admin/knowledge')">进入治理面板</button>
         <div class="admin-pending-pill">
           <span>待处理</span>
-          <strong>6</strong>
+          <strong>{{ pendingTotal }}</strong>
         </div>
       </div>
     </article>
@@ -198,12 +150,12 @@ onMounted(loadPage);
             <span class="eyebrow">Action Queue</span>
             <h2>待处理事项</h2>
           </div>
-          <span class="admin-panel-count">{{ adminDashboardMock.tasks.length }} 项</span>
+          <span class="admin-panel-count">{{ actionTasks.length }} 项</span>
         </header>
 
         <div class="admin-task-tabs" aria-label="待处理事项分类">
           <button
-            v-for="tab in adminDashboardMock.taskTabs"
+            v-for="tab in taskTabs"
             :key="tab.key"
             type="button"
             :class="{ active: activeTaskTab === tab.key }"
@@ -223,6 +175,7 @@ onMounted(loadPage);
             <span :class="['admin-status-tag', item.tone]">{{ item.status }}</span>
             <button type="button" class="ghost-mini" @click="goTo(item.route)">{{ item.action }}</button>
           </article>
+          <p v-if="!visibleTasks.length">当前分类暂无待处理事项</p>
         </div>
       </article>
 
@@ -235,14 +188,10 @@ onMounted(loadPage);
         </header>
 
         <div class="admin-progress-list">
-          <div v-for="item in adminDashboardMock.governanceProgress" :key="item.label" class="admin-progress-item">
+          <div v-for="item in governanceFocus" :key="item" class="admin-progress-item">
             <div>
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}%</strong>
+              <span>{{ item }}</span>
             </div>
-            <span class="admin-progress-track">
-              <i :style="{ width: `${item.value}%` }"></i>
-            </span>
           </div>
         </div>
 
@@ -277,14 +226,7 @@ onMounted(loadPage);
           </div>
         </header>
         <div class="admin-log-list">
-          <article v-for="item in adminDashboardMock.operations" :key="`${item.type}-${item.time}`" class="admin-log-row">
-            <span class="admin-log-dot"></span>
-            <div>
-              <strong>{{ item.type }}</strong>
-              <p>{{ item.operator }} · {{ item.time }}</p>
-            </div>
-            <span class="admin-status-tag info">{{ item.tag }}</span>
-          </article>
+          <p>暂无可用的管理操作记录</p>
         </div>
       </article>
     </section>
