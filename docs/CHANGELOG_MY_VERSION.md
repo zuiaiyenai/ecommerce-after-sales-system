@@ -130,6 +130,7 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 
 - 复核 Vue、Java、Agent、Review Consumer、MySQL、Redis、PostgreSQL、Kafka、Ollama、TEI、Prometheus 和 Grafana 当前均可用；
 - PostgreSQL 当前有 51 条知识文档、43 个发布版本、43 个 1024 维 chunk 和 1 个草稿，文档已同步为当前实例数据；
+- 将功能矩阵中的登录、RBAC、工作台、商品、订单、工单、文档生命周期、Embedding 和 Trace 更新为已完成的真实验收证据；
 - 明确现有数据库尚无迁移版本表；Flyway/Liquibase 需要分别建立 MySQL/PostgreSQL baseline 后再引入，不能在当前数据实例上直接执行全部历史脚本。
 
 ## 仍需维护的事项

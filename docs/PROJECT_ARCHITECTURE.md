@@ -178,23 +178,23 @@ POST /api/aftersales
 
 | 模块 | 前端 | Java | Python | DB/中间件 | 当前状态 | 是否真正可用 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 用户登录 | uni-app 登录页 | 用户 JWT 登录/注册/重置 | 无 | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| 客服/管理员登录 | Vue 登录页 | JWT、角色与账号状态 | 无 | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| RBAC | 路由守卫 | Spring Security + JWT 角色规则 | 内部 Token | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| 客服工作台 | Dashboard | 概览、待办、绩效 | 无 | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| 客户 | 会话/订单内客户信息 | 无独立客户 CRUD | 工具上下文读取 | MySQL | PARTIAL | NOT_VERIFIED |
-| 商品 | 列表、详情、编辑 | 商品查询与客服管理接口 | 商品查询工具 | MySQL | IMPLEMENTED | NOT_VERIFIED |
-| 订单 | 用户与客服两套页面 | 查询、创建、发货、详情 | 订单查询工具 | MySQL | IMPLEMENTED | NOT_VERIFIED |
+| 用户登录 | uni-app 登录页 | 用户 JWT 登录/注册/重置 | 无 | MySQL | IMPLEMENTED | 演示用户 JWT 已用于真实 Vision 网关请求 |
+| 客服/管理员登录 | Vue 登录页 | JWT、角色与账号状态 | 无 | MySQL | IMPLEMENTED | `cs_demo` 登录、当前用户和页面守卫已验证 |
+| RBAC | 路由守卫 | Spring Security + JWT 角色规则 | 内部 Token | MySQL | IMPLEMENTED | 匿名 401、客服访问管理员接口 403 已验证 |
+| 客服工作台 | Dashboard | 概览、待办、绩效 | 无 | MySQL | IMPLEMENTED | 工作台 API 与页面已验证 |
+| 客户 | 会话/订单内客户信息 | 无独立客户 CRUD | 工具上下文读取 | MySQL | PARTIAL | 会话/订单中的客户上下文可用；独立客户管理未实现 |
+| 商品 | 列表、详情、编辑 | 商品查询与客服管理接口 | 商品查询工具 | MySQL | IMPLEMENTED | 商品 API 与页面已验证 |
+| 订单 | 用户与客服两套页面 | 查询、创建、发货、详情 | 订单查询工具 | MySQL | IMPLEMENTED | 订单 API、页面和 Agent 查询已验证 |
 | 会话 | 列表、详情、用户咨询 | 会话生命周期 | 对话编排 | MySQL + WebSocket | IMPLEMENTED | Agent 回答关联真实 MySQL session 已验证 |
 | 消息 | 历史与实时展示 | 落库、广播、顺序查询 | append message 工具 | MySQL + WebSocket | IMPLEMENTED | 助手消息 `2102063467434463234` 已通过历史 API 回读 |
-| 工单/售后 | 用户申请、客服审核 | 事务、补证、状态机 | 正式审核 Workflow | MySQL + Kafka | IMPLEMENTED | NOT_VERIFIED |
+| 工单/售后 | 用户申请、客服审核 | 事务、补证、状态机 | 正式审核 Workflow | MySQL + Kafka | IMPLEMENTED | API、页面和 Kafka 补证分支已验证 |
 | AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + 本地 LLM + 工具 | MySQL/Redis/PostgreSQL | IMPLEMENTED | 141.35 秒返回 AI 模式、1 条可信引用并落库 |
 | Vision | 图片上传与审核入口 | JWT 网关与超时/fallback | `qwen2.5vl:3b` 多模态审核 | Ollama | IMPLEMENTED | 正常图与破损图各 1 张真实 E2E；约 248–256 秒/张 |
 | RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | IMPLEMENTED | 43 个发布 chunk；新导入文档经管理 API 命中 |
 | 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | TXT 上传、草稿确认、发布、1024 维向量与页面展示已通过 |
-| 文档上传 | 文件导入 UI | multipart 校验与异步任务 | PDF/文本解析 | PostgreSQL + 文件系统 | IMPLEMENTED | NOT_VERIFIED |
-| 文档解析/Chunk | 状态展示 | 调用 Python 并保存草稿 | 解析、分块、分类 | PostgreSQL | IMPLEMENTED | NOT_VERIFIED |
-| Embedding | 发布流程触发 | 维度与数量校验 | Ollama OpenAI compatible `bge-m3` | vector(1024) | IMPLEMENTED | 42/42 向量维度已实查 |
+| 文档上传 | 文件导入 UI | multipart 校验与异步任务 | PDF/文本解析 | PostgreSQL + 文件系统 | IMPLEMENTED | 唯一标记 TXT 上传和页面展示已验证 |
+| 文档解析/Chunk | 状态展示 | 调用 Python 并保存草稿 | 解析、分块、分类 | PostgreSQL | IMPLEMENTED | 解析、分类草稿、确认和发布已验证 |
+| Embedding | 发布流程触发 | 维度与数量校验 | Ollama OpenAI compatible `bge-m3` | vector(1024) | IMPLEMENTED | 43/43 发布 chunk 向量维度已实查 |
 | Vector Search | 检索结果展示 | 网关 | cosine Top-K + 硬过滤 | IVFFlat | IMPLEMENTED | Top-1 `return_policy_001`，分数 0.8064 |
 | Agent Tool Calling | 会话 UI | Internal Agent Tools | Native function calling | MySQL | IMPLEMENTED | Ollama 原生工具调用已验证 |
 | Session/Memory | 会话 UI | 从消息/摘要重建上下文 | 普通聊天不使用 checkpoint | MySQL | IMPLEMENTED | 同一会话追问已正确继承上一轮政策语境 |
@@ -205,14 +205,14 @@ POST /api/aftersales
 | WebSocket | 用户端、客服端 | `/api/ws/chat` + JWT handshake | 无 | 内存订阅表 | IMPLEMENTED | JWT 订阅、广播、历史回读与匿名 401 已验证 |
 | SSE | 用户端可调用流式聊天 | `/api/agent/chat/stream` | SSE 流输出 | HTTP | IMPLEMENTED | `start → token → finish → done` 已验证；当前为整段单 token 事件 |
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | 三个 target UP、4 条规则健康、Grafana dashboard 已加载 |
-| 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
+| 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | Java/Agent E2E 响应和运行证据已回读 Trace ID |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 14 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
+| 自动化测试 | 15 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态
 
-2026-09-21 本次检查：
+2026-09-22 本次检查：
 
 | 服务 | 目标端口 | 现场状态 | 主要原因 |
 | --- | ---: | --- | --- |
