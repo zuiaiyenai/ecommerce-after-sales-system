@@ -6,6 +6,8 @@
 >
 > 证据范围：当前源码、配置、SQL、自动化测试与本机端口；历史 README 和旧设计文档只作线索。
 
+> 运行状态更新（2026-09-21 16:30）：MySQL、Redis、Java、Python Agent 和 Vue 已在 Windows 运行；PostgreSQL/pgvector 与 Kafka 已在专用 Ubuntu VMware VM 运行。Java Actuator 为 `UP`，pgvector 真实集成测试 3/3 通过，Java Outbox → Kafka → Python → Java → MySQL 业务链路已验证。完整 Embedding、RAG 和 LLM 仍受模型服务未配置限制。后续证据见 `DATABASE_DESIGN.md` 与 `KAFKA_DESIGN.md`。
+
 ## 1. 审计结论
 
 这是一个多进程的 Java 业务系统与 Python AI 应用，不是微服务集合。

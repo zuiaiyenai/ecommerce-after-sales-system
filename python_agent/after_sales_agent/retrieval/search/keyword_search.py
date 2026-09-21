@@ -8,7 +8,7 @@ Database schema requirements (see migration 20260819_add_lexical_fts_columns.sql
     lexical_text   TEXT  NOT NULL DEFAULT ''
     search_vector  tsvector NOT NULL DEFAULT ''::tsvector
     GIN index:     idx_kc_search_vector_fts ON knowledge_chunk
-                    USING GIN (search_vector gin_tsvector_ops)
+                    USING GIN (search_vector)
 """
 from __future__ import annotations
 
@@ -76,8 +76,8 @@ def _expand_query_tokens(query: str) -> list[str]:
     import re
 
     raw_tokens = [
-        w for w, _, _ in jieba.tokenize(query, mode="search")
-        if len(w) >= 2 and re.match(r"^[一-鿿]+$", w)
+        w.lower() for w, _, _ in jieba.tokenize(query, mode="search")
+        if len(w) >= 2 and re.fullmatch(r"(?:[一-鿿]+|[a-zA-Z0-9_]+)", w)
     ]
 
     expanded: set[str] = set()

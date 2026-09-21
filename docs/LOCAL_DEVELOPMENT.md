@@ -144,9 +144,41 @@ npm run dev:real
 Python Kafka Consumer：
 
 ```powershell
-Set-Location python_agent
-..\.venv\Scripts\python.exe -m after_sales_agent.interface.kafka_adapter
+.\scripts\start-review-consumer.ps1
 ```
+
+该脚本与 Agent 启动脚本使用相同的项目配置隔离：先加载根 `.env`，再加载 `python_agent/.env`，最后使用项目 `.venv` 启动。
+
+### Docker Desktop 不可用时使用 VMware
+
+当前机器的 Docker Desktop Engine 可能因 Windows 残留 Unix socket 无法启动。此时 PostgreSQL/pgvector 和 Kafka 可运行在专用 Ubuntu 24.04 VMware VM 中，Windows 继续运行 Java、Python、Vue、MySQL 和 Redis。
+
+当前 VM 名称为 `EcommerceAfterSalesInfra`，配置为 4 vCPU、8 GB 内存、60 GB 磁盘。VM 内 Compose 目录是：
+
+```text
+/opt/ecommerce-after-sales-system
+```
+
+VM 使用 NAT DHCP。每次启动后先确认地址：
+
+```powershell
+ssh.exe -i .runtime\vm\id_ed25519 `
+  -o UserKnownHostsFile=.runtime\vm\known_hosts `
+  -o StrictHostKeyChecking=yes `
+  codex@192.168.100.130 "hostname -I"
+```
+
+如果地址变化，同时更新项目根 `.env` 和 `python_agent/.env` 中的 PostgreSQL、Kafka DSN/Host；不要修改系统全局环境变量。VM 内启动和检查：
+
+```powershell
+ssh.exe -i .runtime\vm\id_ed25519 `
+  -o UserKnownHostsFile=.runtime\vm\known_hosts `
+  -o StrictHostKeyChecking=yes `
+  codex@192.168.100.130 `
+  "cd /opt/ecommerce-after-sales-system && docker compose up -d postgres kafka && docker compose ps"
+```
+
+`.runtime/vm` 包含当前电脑的私钥与 known_hosts，已被 Git 忽略，不应提交。
 
 ## 7. 基础验证
 

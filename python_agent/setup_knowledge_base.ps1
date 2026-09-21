@@ -4,16 +4,28 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "售后知识库初始化" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
+$pgHost = $env:PGVECTOR_HOST
+if ([string]::IsNullOrWhiteSpace($pgHost)) { $pgHost = "127.0.0.1" }
+$pgPort = $env:PGVECTOR_PORT
+if ([string]::IsNullOrWhiteSpace($pgPort)) { $pgPort = "5432" }
+$pgDatabase = $env:PGVECTOR_DATABASE
+if ([string]::IsNullOrWhiteSpace($pgDatabase)) { $pgDatabase = "after_sales_rag" }
+$pgUser = $env:PGVECTOR_USERNAME
+if ([string]::IsNullOrWhiteSpace($pgUser)) { $pgUser = "postgres" }
+$pgPassword = $env:PGVECTOR_PASSWORD
+if ([string]::IsNullOrWhiteSpace($pgPassword)) { $pgPassword = "local-dev-password" }
+$psqlConnectionArgs = @("-h", $pgHost, "-p", $pgPort, "-U", $pgUser, "-d", $pgDatabase)
+$env:PGPASSWORD = $pgPassword
+
 # 检查PostgreSQL连接
 Write-Host ""
 Write-Host "检查PostgreSQL连接..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-$testConnection = & psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "SELECT 1;" 2>&1
+$testConnection = & psql @psqlConnectionArgs -c "SELECT 1;" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ 无法连接到PostgreSQL，请检查：" -ForegroundColor Red
     Write-Host "  1. PostgreSQL服务是否启动" -ForegroundColor Red
-    Write-Host "  2. 数据库ecommerce_rag是否存在" -ForegroundColor Red
-    Write-Host "  3. 用户ecommerce权限是否正确" -ForegroundColor Red
+    Write-Host "  2. 数据库$pgDatabase是否存在" -ForegroundColor Red
+    Write-Host "  3. 用户$pgUser权限是否正确" -ForegroundColor Red
     exit 1
 }
 Write-Host "✓ PostgreSQL连接正常" -ForegroundColor Green
@@ -21,8 +33,7 @@ Write-Host "✓ PostgreSQL连接正常" -ForegroundColor Green
 # 步骤1: 导入知识库数据
 Write-Host ""
 Write-Host "步骤1: 导入知识库文档..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-& psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -f ..\sql\seed_knowledge_base.sql
+& psql @psqlConnectionArgs -f ..\sql\seed_knowledge_base.sql
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✓ 知识库文档导入完成" -ForegroundColor Green
 } else {
@@ -73,11 +84,9 @@ if (-not $skipEmbedding) {
 # 步骤4: 查看结果
 Write-Host ""
 Write-Host "步骤4: 查看知识库统计..." -ForegroundColor Yellow
-$env:PGPASSWORD = "ecommerce_pgvector"
-
 Write-Host ""
 Write-Host "知识库文档统计：" -ForegroundColor Cyan
-& psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "
+& psql @psqlConnectionArgs -c "
 SELECT
     source_type as 类型,
     COUNT(*) as 文档数
@@ -90,7 +99,7 @@ ORDER BY source_type;
 if (-not $skipEmbedding) {
     Write-Host ""
     Write-Host "向量chunk统计：" -ForegroundColor Cyan
-    & psql -h localhost -p 5432 -U ecommerce -d ecommerce_rag -c "
+    & psql @psqlConnectionArgs -c "
     SELECT COUNT(*) as 总chunk数 FROM knowledge_chunk;
     "
 }

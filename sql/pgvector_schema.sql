@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_kc_scenes ON knowledge_chunk USING GIN (scenes);
 CREATE INDEX IF NOT EXISTS idx_kc_intents ON knowledge_chunk USING GIN (intents);
 CREATE INDEX IF NOT EXISTS idx_kc_search_text_trgm ON knowledge_chunk USING GIN (search_text gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_kc_search_vector_fts
-    ON knowledge_chunk USING GIN (search_vector gin_tsvector_ops);
+    ON knowledge_chunk USING GIN (search_vector);
 
 CREATE INDEX IF NOT EXISTS idx_kc_embedding ON knowledge_chunk
     USING ivfflat (embedding vector_cosine_ops)
