@@ -67,6 +67,15 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 | Docker/Testcontainers 全量门禁 | PARTIAL |
 | 生产部署、高可用、压测 | NOT_DONE |
 
+## Phase 5：一键本地运行编排
+
+- 新增 `scripts/dev-start.ps1`，支持 Docker、VMware、现有基础设施三种模式；
+- 新增 `scripts/dev-stop.ps1`，按受管 PID 和项目命令行安全停止进程树；
+- 新增 Vue、Windows MySQL/Redis 的独立启动脚本；
+- PID 和日志统一写入被 Git 忽略的 `.runtime/dev`；
+- 实测完成应用全关 → 一键启动 → 应用停止 → VM 容器停止 → 一键恢复；
+- 停止基础设施时只执行 `docker compose stop`，不删除数据卷。
+
 ## 仍需维护的事项
 
 1. 配置视觉模型后单独验收图片审核。

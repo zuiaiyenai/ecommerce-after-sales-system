@@ -102,17 +102,19 @@ Java 创建工单和 Outbox
 ## 6. 启动复现
 
 ```powershell
-.\.runtime\start-local-infra.ps1
-.\scripts\start-agent.ps1
-.\scripts\start-backend.ps1
-.\scripts\start-review-consumer.ps1
-
-Set-Location frontend\staff-auth-test-ui
-$env:VITE_API_BASE_URL='http://127.0.0.1:8080/api'
-npm run dev:real
+.\scripts\dev-start.ps1
 ```
 
-VM 侧先执行 `docker compose --profile local-ai up -d postgres kafka ollama reranker`。本机 `.env`、`python_agent/.env`、私钥和日志均被 Git 忽略。
+停止应用和基础设施时运行 `.\scripts\dev-stop.ps1`；只停应用时增加 `-KeepInfrastructure`。本机 `.env`、`python_agent/.env`、私钥、PID 和日志均被 Git 忽略。
+
+2026-09-22 已完成一次真实停启验收：
+
+1. 从四个应用端口全部关闭的状态运行 `dev-start.ps1`，Agent、Java、Vue、Consumer 依次恢复并通过健康检查；
+2. `dev-stop.ps1 -KeepInfrastructure` 关闭四个受管进程树，MySQL/Redis 保持在线；
+3. 默认 `dev-stop.ps1` 通过 SSH 停止 VM 的 PostgreSQL、Kafka、Ollama、Reranker，四个端口均不可达；
+4. 再次运行 `dev-start.ps1`，脚本通过 SSH 拉起四个 VM 容器，等待 TEI 模型加载，再恢复全部 Windows 应用。
+
+停止过程没有执行 `docker compose down -v`，数据库与模型卷均保留。
 
 ## 7. 当前结论
 

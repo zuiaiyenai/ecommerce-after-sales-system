@@ -133,13 +133,13 @@ CHAT_EMOTION_ANALYSIS_ENABLED=false
 
 当前机器的真实政策咨询请求耗时 141.35 秒，其中严格 Embedding + pgvector + Reranker 约 25 秒，其余主要为 `qwen2.5:3b` 回答生成。该数字只代表当前 4 vCPU VM，不是生产容量指标。
 
-当前机器还保留了一个被 Git 忽略的本机恢复脚本，可在 Docker 不可用时只启动已有的 MySQL 与 Redis：
+Windows 原生 MySQL/Redis 使用被 Git 忽略的 `.runtime` 数据与配置，二进制路径只写入项目 `.env`：
 
 ```powershell
-.\.runtime\start-local-infra.ps1
+.\scripts\start-windows-infra.ps1
 ```
 
-这个脚本属于当前电脑，不能作为团队可复现方案。完整 AI/RAG 验收必须使用 PostgreSQL/pgvector 和 Kafka。
+新电脑优先使用 Docker Compose；原生 Windows 模式要求先准备 `.runtime/mysql-local.ini`、`.runtime/redis-local.conf` 与已有数据目录。完整 AI/RAG 验收仍必须同时提供 PostgreSQL/pgvector、Kafka、Ollama 和 Reranker。
 
 ## 6. 应用启动顺序
 
@@ -152,6 +152,30 @@ MySQL / Redis / PostgreSQL / Kafka
 → Prometheus / Grafana
 ```
 
+### 一键启动与停止
+
+根 `.env` 设置 `LOCAL_INFRA_MODE=Auto|Docker|Vm|Existing`。当前机器使用 `Vm`，并配置 VM 地址、SSH key 和 Windows MySQL/Redis 可执行文件路径。然后运行：
+
+```powershell
+.\scripts\dev-start.ps1
+```
+
+脚本会启动或检查 Windows MySQL/Redis，通过 SSH 启动 VM 容器，等待六个基础设施端点，再依次启动 Agent、Java、Vue 和 Review Consumer。PID 与日志写入 `.runtime/dev`。
+
+默认停止应用与本次环境的 Docker/VM 基础设施，但不删除数据卷：
+
+```powershell
+.\scripts\dev-stop.ps1
+```
+
+只停止应用并保留基础设施：
+
+```powershell
+.\scripts\dev-stop.ps1 -KeepInfrastructure
+```
+
+停止脚本只处理 `.runtime/dev/*.pid` 记录且命令行属于当前项目的进程树。已经由其他方式启动的 Windows MySQL/Redis 不会被接管或误停。原生数据库只通过 `mysqladmin` / `redis-cli` 正常关闭，失败时不会强杀。VM 启停必须使用拥有 `.runtime/vm/id_ed25519` 的同一 Windows 用户。
+
 分进程启动示例：
 
 ```powershell
@@ -162,9 +186,7 @@ MySQL / Redis / PostgreSQL / Kafka
 .\scripts\start-backend.ps1
 
 # Terminal 3
-Set-Location frontend/staff-auth-test-ui
-$env:VITE_API_BASE_URL='http://127.0.0.1:8080/api'
-npm run dev:real
+.\scripts\start-frontend.ps1
 ```
 
 Python Kafka Consumer：

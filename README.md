@@ -536,10 +536,30 @@ stateDiagram-v2
 
 ## 九、快速启动
 
-准备本地配置后，在仓库根目录运行：
+复制并填写根 `.env` 与 `python_agent/.env` 后，在仓库根目录运行：
 
 ```powershell
-docker compose up -d --build
+.\scripts\dev-start.ps1
+```
+
+脚本按 MySQL/Redis/PostgreSQL/Kafka/本地模型 → Python Agent → Java → Vue → Review Consumer 的顺序检查或启动服务，并等待健康端点。Docker Engine 可用时可以使用完整 Compose；当前 Windows + VMware 混合环境在被 Git 忽略的 `.env` 中设置 `LOCAL_INFRA_MODE=Vm`。
+
+停止本次脚本管理的应用与 Docker/VM 基础设施：
+
+```powershell
+.\scripts\dev-stop.ps1
+```
+
+只停止应用并保留基础设施：
+
+```powershell
+.\scripts\dev-stop.ps1 -KeepInfrastructure
+```
+
+完整容器模式仍可直接运行：
+
+```powershell
+docker compose --profile local-ai up -d --build
 docker compose ps
 ```
 
@@ -547,10 +567,10 @@ docker compose ps
 
 - Java API：`http://127.0.0.1:8080/api`
 - Java 健康检查：`http://127.0.0.1:8080/api/actuator/health`
-- Python Agent：仅在 Compose 容器网络暴露 `8000`
+- Python Agent：Windows 分进程模式为 `http://127.0.0.1:8000/api`
 - Grafana：按 `compose.yml` 的端口配置访问
 
-用户端和商家端分别进入 `frontend/uniapp` 与 `frontend/staff-auth-test-ui` 安装依赖并启动。
+各服务也可以用 `scripts/start-*.ps1` 分终端启动，详细配置和故障排查见 `docs/LOCAL_DEVELOPMENT.md`。
 
 ## 十、配置安全
 
