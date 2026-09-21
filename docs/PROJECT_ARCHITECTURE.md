@@ -6,7 +6,7 @@
 >
 > 证据范围：当前源码、配置、SQL、自动化测试与本机端口；历史 README 和旧设计文档只作线索。
 
-> 运行状态更新（2026-09-22）：Windows 承载 MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue；专用 Ubuntu VMware 承载 PostgreSQL/pgvector、Kafka、Ollama 与 TEI Reranker。Java Outbox 审核、AI/RAG 聊天、SSE、WebSocket、跨轮对话和知识库生命周期均已有实机证据。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
+> 运行状态更新（2026-09-22）：Windows 承载 MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue；专用 Ubuntu VMware 承载 PostgreSQL/pgvector、Kafka、Ollama、TEI Reranker、Prometheus 与 Grafana。Java Outbox 审核、AI/RAG 聊天、SSE、WebSocket、跨轮对话、知识库生命周期和三个应用指标采集目标均已有实机证据。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
 
 ## 1. 审计结论
 
@@ -203,7 +203,7 @@ POST /api/aftersales
 | PostgreSQL/pgvector | 管理 UI | 独立 JdbcTemplate | RAG/checkpoint | PostgreSQL | IMPLEMENTED | VM 5432、扩展、索引和查询已验证 |
 | WebSocket | 用户端、客服端 | `/api/ws/chat` + JWT handshake | 无 | 内存订阅表 | IMPLEMENTED | JWT 订阅、广播、历史回读与匿名 401 已验证 |
 | SSE | 用户端可调用流式聊天 | `/api/agent/chat/stream` | SSE 流输出 | HTTP | IMPLEMENTED | `start → token → finish → done` 已验证；当前为整段单 token 事件 |
-| 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | NOT_VERIFIED |
+| 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | 三个 target UP、4 条规则健康、Grafana dashboard 已加载 |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
 | 自动化测试 | 14 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
@@ -225,8 +225,8 @@ POST /api/aftersales
 | Python Agent | 8000 | RUNNING | `/api/health` 返回 `ok=true` |
 | Python Review Consumer | 8001 | RUNNING | Prometheus metrics 200 |
 | Vue 客服端 | 5173 | RUNNING | Vite real mode 200 |
-| Prometheus | 9090 | STOPPED | Docker/WSL 不可用 |
-| Grafana | 3000 | STOPPED | Docker/WSL 不可用 |
+| Prometheus | 9090 | RUNNING | Ubuntu VMware 抓取 Windows 三个应用目标 |
+| Grafana | 3000 | RUNNING | Ubuntu VMware，dashboard 自动加载 |
 
 ## 7. 自动化证据
 
@@ -257,7 +257,7 @@ POST /api/aftersales
 
 2026-09-22 又完成 SSE、WebSocket 与跨轮对话验收。SSE 用时 188.358 秒并按 `start → token → finish → done` 结束；当前 `token` 事件携带整段回答。追问用时 196.578 秒，并从 MySQL 历史继承上一轮政策语境。WebSocket 完成 JWT 订阅、客服发信、匹配广播和历史回读；匿名握手返回 401。
 
-普通聊天使用不带 checkpointer 的 LangGraph；PostgreSQL checkpoint 只用于正式审核。实查已有 1 个审核 thread、5 个 checkpoint，聊天 session checkpoint 为 0。Vision 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
+普通聊天使用不带 checkpointer 的 LangGraph；PostgreSQL checkpoint 只用于正式审核。实查已有 1 个审核 thread、5 个 checkpoint，聊天 session checkpoint 为 0。Prometheus 三个 target、告警规则和 Grafana dashboard 也已通过运行验收。Vision 仍待单独配置和验收，因此完整系统可用性尚未完成最终签收。
 
 ## 8. 已确认的配置问题
 

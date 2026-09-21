@@ -103,9 +103,16 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 明确 PostgreSQL LangGraph checkpoint 只服务正式审核暂停、补证和恢复；
 - 将 Java Agent 超时设为 300 秒，前端超时设为 330 秒，适配本地 CPU 模型约 188–244 秒的链路耗时。
 
+## Phase 9：VM 监控闭环
+
+- 增加 VM 混合拓扑专用 Prometheus 配置，通过 VMware NAT 地址抓取 Windows 应用；
+- 增加 `start-vm-observability.ps1`，同步配置和忽略的共享 Token，只启动 Prometheus/Grafana；
+- 接入 `dev-start.ps1` 与 `dev-stop.ps1`，并在启动成功前校验三个 target；
+- 验证 Java、Python Agent、Review Consumer target 全部 `UP`；
+- 验证 4 条告警规则健康，Grafana 数据库正常并自动加载 Agent Overview dashboard。
+
 ## 仍需维护的事项
 
 1. 配置视觉模型后单独验收图片审核。
 2. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
-3. 启动 Prometheus/Grafana 并验证指标页面与告警链路。
-4. 生产化前补 TLS、密钥管理、备份恢复和容量压测。
+3. 生产化前补 TLS、密钥管理、备份恢复和容量压测。

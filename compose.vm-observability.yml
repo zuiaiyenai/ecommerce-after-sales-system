@@ -1,0 +1,6 @@
+services:
+  prometheus:
+    extra_hosts:
+      - "windows-host:${VM_WINDOWS_HOST_IP:-192.168.100.1}"
+    volumes:
+      - ./observability/prometheus/prometheus-vm.yml:/etc/prometheus/prometheus.yml:ro

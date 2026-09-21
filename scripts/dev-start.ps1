@@ -86,4 +86,8 @@ Start-ManagedScript -Name 'frontend' -ScriptPath (Join-Path $PSScriptRoot 'start
 Start-ManagedScript -Name 'review-consumer' -ScriptPath (Join-Path $PSScriptRoot 'start-review-consumer.ps1') `
     -ReadyUri 'http://127.0.0.1:8001/metrics' -ProjectRoot $projectRoot -TimeoutSeconds $TimeoutSeconds
 
+if ($selectedMode -eq 'Vm' -and $env:VM_OBSERVABILITY_ENABLED -eq 'true') {
+    & (Join-Path $PSScriptRoot 'start-vm-observability.ps1')
+}
+
 Write-Host "Development stack is ready (infrastructure mode: $selectedMode)."

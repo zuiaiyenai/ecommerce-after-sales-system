@@ -28,7 +28,7 @@ if (-not $KeepInfrastructure) {
         $vmKey = if ([string]::IsNullOrWhiteSpace($env:VM_INFRA_SSH_KEY)) { Join-Path $projectRoot '.runtime\vm\id_ed25519' } else { Join-Path $projectRoot $env:VM_INFRA_SSH_KEY }
         $knownHosts = if ([string]::IsNullOrWhiteSpace($env:VM_INFRA_KNOWN_HOSTS)) { Join-Path $projectRoot '.runtime\vm\known_hosts' } else { Join-Path $projectRoot $env:VM_INFRA_KNOWN_HOSTS }
         & ssh.exe -i $vmKey -o "UserKnownHostsFile=$knownHosts" -o StrictHostKeyChecking=yes `
-            "$vmUser@$vmHost" "cd $vmComposeDir && docker compose --profile local-ai stop reranker ollama kafka postgres"
+            "$vmUser@$vmHost" "cd $vmComposeDir && docker compose --profile local-ai stop grafana prometheus reranker ollama kafka postgres"
         if ($LASTEXITCODE -ne 0) { throw 'VM infrastructure stop failed.' }
         & (Join-Path $PSScriptRoot 'stop-windows-infra.ps1')
     }

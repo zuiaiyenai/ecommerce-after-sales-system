@@ -44,16 +44,29 @@ flowchart LR
 
 ## 启动与访问
 
-默认开发令牌保存在 `observability/prometheus/agent-token.txt`，必须与 Compose 中的 `AGENT_INTERNAL_TOKEN` 一致。生产环境必须同时替换两处，不能继续使用仓库内的开发值。
+`observability/prometheus/agent-token.txt` 被 Git 忽略，必须与当前 `AGENT_INTERNAL_TOKEN` 一致。`start-vm-observability.ps1` 会从项目本地配置生成该文件并通过 SSH 同步到专用 VM，不会把令牌提交到 Git。
 
 ```powershell
 docker compose up -d --build
 ```
 
+Windows 应用 + Ubuntu VMware 的混合拓扑使用：
+
+```dotenv
+# .env
+VM_OBSERVABILITY_ENABLED=true
+VM_WINDOWS_HOST_IP=192.168.100.1
+
+# python_agent/.env
+AGENT_HOST=0.0.0.0
+```
+
+然后运行 `scripts/dev-start.ps1 -InfraMode Vm`。脚本会同步 `compose.vm-observability.yml` 和监控配置，只在 VM 启动 Prometheus/Grafana，并确认 Java、Python Agent、Review Consumer 三个采集目标全部为 `UP`。Agent 的 health 路由可匿名访问，其余 GET/POST 路由仍要求内部 Token。
+
 启动后可访问：
 
-- Grafana：`http://localhost:3000`，默认用户 `admin`，默认密码 `local-dev-grafana`。
-- Prometheus：`http://localhost:9090`，`Status -> Targets` 应看到 Java 和 Python 两个目标为 `UP`。
+- 单机 Compose 的 Grafana：`http://localhost:3000`；VM 模式使用 `http://<VM_IP>:3000`。默认用户 `admin`，默认密码 `local-dev-grafana`。
+- 单机 Compose 的 Prometheus：`http://localhost:9090`；VM 模式使用 `http://<VM_IP>:9090`，三个应用目标应为 `UP`。
 - Java 健康检查：`http://localhost:8080/api/actuator/health`。
 
 可以通过 `GRAFANA_ADMIN_USER` 和 `GRAFANA_ADMIN_PASSWORD` 覆盖 Grafana 默认凭证。
@@ -105,7 +118,7 @@ JSON 指标和最近 trace 保存在应用进程内，重启后清空，只用�
 
 `observability/prometheus/alerts.yml` 已包含以下演示规则：
 
-- Java 或 Python 采集目标持续不可用。
+- Java、Python Agent 或 Review Consumer 采集目标持续不可用。
 - Java Agent 网关五分钟失败率高于 10%。
 - Python Agent 工具五分钟失败率高于 20%。
 - 十分钟内出现 DLQ 事件。

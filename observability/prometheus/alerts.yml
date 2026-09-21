@@ -2,7 +2,7 @@ groups:
   - name: ecommerce-agent-observability
     rules:
       - alert: AgentObservabilityTargetDown
-        expr: up{job=~"ecommerce-java|ecommerce-python-agent"} == 0
+        expr: up{job=~"ecommerce-java|ecommerce-python-agent|ecommerce-review-consumer"} == 0
         for: 1m
         labels:
           severity: critical

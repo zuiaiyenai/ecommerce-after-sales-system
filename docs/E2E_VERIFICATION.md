@@ -18,7 +18,7 @@
 | Ollama | VMware | 11434 | DONE | `qwen2.5:3b`、`bge-m3` |
 | TEI Reranker | VMware | 8081 | DONE | health 与真实 rerank 通过 |
 | Vision | 未配置 | - | NOT_DONE | 无模型/Key |
-| Prometheus / Grafana | 未启动 | 9090/3000 | PARTIAL | 应用指标端点可用 |
+| Prometheus / Grafana | VMware | 9090/3000 | DONE | 三个 target UP、规则健康、dashboard 已加载 |
 
 VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `192.168.100.130` 来自 NAT DHCP，变化后需更新本机忽略配置。
 
@@ -158,12 +158,27 @@ TXT 上传 → 异步解析 → AI 分类草稿 → 政策版本/有效期确认
 
 运行证据保存在被 Git 忽略的 `.runtime/evidence/phase8-sse.json`、`phase8-sse-followup.json`、`phase8-websocket.json` 与 `phase8-checkpoint.json`。
 
-## 9. 当前结论
+## 9. Prometheus / Grafana
+
+2026-09-22 在现有 Ubuntu VMware 上通过 `compose.vm-observability.yml` 启动 Prometheus 3.5.3 与 Grafana 12.4.3。Prometheus 从 VM 容器网络抓取 Windows 宿主机上的三个进程：
+
+| Job | 指标入口 | 结果 |
+| --- | --- | --- |
+| `ecommerce-java` | `/api/actuator/prometheus` | UP |
+| `ecommerce-python-agent` | `/api/metrics/prometheus` | UP |
+| `ecommerce-review-consumer` | `/metrics` | UP |
+
+4 条规则均为 `health=ok` 且当前未触发。Grafana `/api/health` 返回 `database=ok`，自动加载 UID 为 `ecommerce-agent-overview` 的 `Ecommerce After-sales Agent Overview` 仪表盘。共享指标 Token 从本地忽略配置生成并经 SSH 同步，没有进入 Git。
+
+结构化运行证据保存在被 Git 忽略的 `.runtime/evidence/phase9-observability.json`。从 VM 匿名访问 Agent health 返回 200，匿名访问指标入口返回 401。
+
+## 10. 当前结论
 
 - Java 核心业务：DONE
 - 文本 AI / RAG：DONE（本地 CPU 功能闭环）
 - Kafka 正式审核主链：DONE
 - SSE / WebSocket / 跨轮聊天：DONE（SSE 当前为整段单事件）
+- Prometheus / Grafana：DONE（本地混合拓扑）
 - Vision：NOT_DONE
 - 生产容量、高可用、公网 TLS 与容灾：NOT_DONE
 - 完整 Docker/Testcontainers 门禁：DONE

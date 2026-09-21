@@ -128,6 +128,19 @@ MINIAPP_AGENT_REQUEST_TIMEOUT_MILLIS=330000
 
 客户端超时比 Java 网关多 30 秒，用于接收网关的终态或错误事件；不要把客户端超时设得比网关更短。
 
+在 Ubuntu VMware 运行 Prometheus/Grafana 时，增加：
+
+```dotenv
+# .env
+VM_OBSERVABILITY_ENABLED=true
+VM_WINDOWS_HOST_IP=192.168.100.1
+
+# python_agent/.env
+AGENT_HOST=0.0.0.0
+```
+
+`dev-start.ps1 -InfraMode Vm` 会调用 `start-vm-observability.ps1`，通过 SSH 同步监控配置，并在返回成功前确认 Java、Agent、Review Consumer 三个 Prometheus target 全部为 `UP`。`VM_WINDOWS_HOST_IP` 是 VMware VMnet8 的 Windows 宿主地址，网段变化后需要同步更新。
+
 聊天入口默认先执行一次 LLM 情绪分类。只验收政策 RAG 时，可在本机 `python_agent/.env` 关闭这次可选的前置调用；独立情绪分析接口和正式环境默认行为不受影响：
 
 ```dotenv
