@@ -2,6 +2,7 @@ package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.ApiResponse;
 import com.ecommerce.aftersales.common.BizException;
+import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportCommand;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
@@ -10,6 +11,7 @@ import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import com.ecommerce.aftersales.service.KnowledgeDraftService;
 import com.ecommerce.aftersales.service.KnowledgePublishService;
+import com.ecommerce.aftersales.service.KnowledgeRetrievalService;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -37,17 +39,20 @@ public class KnowledgeManagementController {
     private final KnowledgeService knowledgeService;
     private final KnowledgeDraftService draftService;
     private final KnowledgePublishService publishService;
+    private final KnowledgeRetrievalService retrievalService;
 
     @Autowired
     public KnowledgeManagementController(KnowledgeService knowledgeService, KnowledgeDraftService draftService,
-                                         KnowledgePublishService publishService) {
+                                         KnowledgePublishService publishService,
+                                         KnowledgeRetrievalService retrievalService) {
         this.knowledgeService = knowledgeService;
         this.draftService = draftService;
         this.publishService = publishService;
+        this.retrievalService = retrievalService;
     }
 
     public KnowledgeManagementController(KnowledgeService knowledgeService) {
-        this(knowledgeService, null, null);
+        this(knowledgeService, null, null, null);
     }
 
     @PostMapping(value = "/file-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -150,11 +155,16 @@ public class KnowledgeManagementController {
     }
 
     @GetMapping("/test-retrieval")
-    public ApiResponse<List<Map<String, Object>>> testRetrieval(
+    public ApiResponse<List<AgentGatewayDtos.KnowledgeHitDto>> testRetrieval(
             @RequestParam String query, @RequestParam(required = false) String merchantCode,
             @RequestParam(defaultValue = "5") Integer topK
     ) {
-        return ApiResponse.success("Retrieved", knowledgeService.testRetrieval(query, merchantCode, topK));
+        AgentGatewayDtos.KnowledgeRetrieveRequest request = new AgentGatewayDtos.KnowledgeRetrieveRequest();
+        request.setQuery(query);
+        request.setMerchantCode(merchantCode);
+        request.setTopK(topK);
+        AgentGatewayDtos.KnowledgeRetrieveResponse response = retrievalService.retrieve(request);
+        return ApiResponse.success("Retrieved", response.getHits() == null ? List.of() : response.getHits());
     }
 
     private static long longValue(Map<String, Object> request, String field) {

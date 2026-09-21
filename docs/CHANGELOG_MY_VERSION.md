@@ -85,6 +85,15 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - Python Ollama OpenAI compatible 真实模型测试：`4 passed`；
 - Java 全量测试：`148 run, 0 failures, 0 errors, 0 skipped`。
 
+## Phase 7：核心业务与知识库真实 E2E
+
+- 核心业务 API 覆盖登录、工作台、商品、订单、会话、消息、工单、评价、401 与 403 权限边界；
+- 隔离 Edge 覆盖客服端 13 个页面/守卫检查，155 个资源/API 响应无失败；
+- 修正管理端文本导入 URL，前端契约测试从 14 条增至 15 条；
+- 将管理端测试检索从固定空列表接到现有 Java → Python Agent → pgvector 真实链路；
+- 上传并发布唯一标记 TXT，确认草稿分类、1024 维 Embedding、revision 一致和 RAG 命中；
+- 管理端知识库页面显示已发布文档，浏览器过程 27 个 API 响应无失败。
+
 ## 仍需维护的事项
 
 1. 配置视觉模型后单独验收图片审核。

@@ -122,7 +122,7 @@ export async function getKnowledgeLibrary(libraryId) {
 }
 
 export async function createKnowledgeTextImport(payload) {
-  return request('/api/admin/knowledge/import/text', {
+  return request('/api/admin/knowledge/text-import', {
     method: 'POST',
     body: JSON.stringify(payload)
   });

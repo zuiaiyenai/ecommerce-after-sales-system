@@ -1,278 +1,194 @@
-# 知识库管理系统使用指南
+# 知识库管理 API
 
-## 概述
+## 1. 运行边界
 
-已实现完整的知识库管理系统，管理员可以通过API上传、编辑、删除售后政策，系统自动完成文本切片和向量化。
+- Java 上下文路径为 `/api`，本文使用浏览器实际调用的完整路径。
+- 所有接口都要求管理员 Bearer Token；登录入口为 `POST /api/admin/auth/login`。
+- Java 管理文档、草稿、版本和发布状态；Python Agent 负责解析、分类、Embedding 与检索。
+- 业务库使用 PostgreSQL/pgvector，Embedding 维度为 1024。
 
-## API接口
+## 2. 导入文档
 
-### 1. 上传知识库
+### 2.1 文件导入
 
-**接口**: `POST /admin/knowledge/upload`
+`POST /api/admin/knowledge/file-import`
 
-**请求体**:
+请求类型为 `multipart/form-data`：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `knowledgeType` | 是 | 例如 `after_sales_policy`、`faq` |
+| `scope` | 否 | 默认 `MERCHANT` |
+| `merchantCode` | 按范围 | 指定商户时传入，例如 `MERCHANT_DEMO` |
+| `title` | 否 | 留空时使用文件信息生成标题 |
+| `file` | 是 | 仅支持 `.pdf`、`.md`、`.txt` |
+
+成功响应只表示异步处理已创建：
+
 ```json
 {
-  "sourceType": "after_sales_policy",
-  "sourceCode": "damage_policy_001",
-  "merchantCode": "MERCHANT_DEMO",
-  "title": "商品破损售后政策",
-  "content": "商品破损售后处理规则：\n1. 适用范围：收到商品后发现外观破损、裂纹、碎裂、断裂等物理损坏\n2. 时效要求：签收后7天内提出申请，超过7天不予受理\n...",
-  "productCategory": "digital",
-  "scene": "damage",
-  "intent": "refund",
-  "policyVersion": "v1.0",
-  "tags": ["破损", "退款", "7天"],
-  "metadata": {}
-}
-```
-
-**响应**:
-```json
-{
+  "success": true,
   "code": 200,
-  "message": "知识库上传成功",
+  "message": "File import created",
   "data": {
-    "documentId": 1,
-    "title": "商品破损售后政策",
-    "chunkCount": 3
+    "documentId": "74",
+    "reviewStatus": "PROCESSING",
+    "duplicate": false
   }
 }
 ```
 
-### 2. 批量上传
+### 2.2 文本导入
 
-**接口**: `POST /admin/knowledge/batch-upload`
+`POST /api/admin/knowledge/text-import`
 
-**请求体**: 数组格式
-```json
-[
-  {
-    "sourceType": "after_sales_policy",
-    "sourceCode": "damage_policy_001",
-    "title": "商品破损售后政策",
-    "content": "..."
-  },
-  {
-    "sourceType": "faq",
-    "sourceCode": "faq_damage_evidence",
-    "title": "破损商品需要提供什么证据？",
-    "content": "..."
-  }
-]
-```
-
-### 3. 查询知识库列表
-
-**接口**: `GET /admin/knowledge/list`
-
-**参数**:
-- `sourceType` (可选): 类型过滤
-- `merchantCode` (可选): 商户过滤
-- `page` (默认1): 页码
-- `pageSize` (默认20): 每页数量
-
-**响应**:
 ```json
 {
+  "title": "服装退货规则",
+  "knowledgeType": "after_sales_policy",
+  "sourceCode": "apparel_return_001",
+  "scope": "MERCHANT",
+  "merchantCode": "MERCHANT_DEMO",
+  "content": "# 服装退货规则\n正文",
+  "productCategory": "apparel",
+  "scene": "return",
+  "intent": "refund"
+}
+```
+
+旧的 `/api/admin/knowledge/import/text`、`/upload` 和 `/batch-upload` 没有映射，调用时返回 404。
+
+## 3. 草稿审核与发布
+
+### 3.1 查询处理状态
+
+`GET /api/admin/knowledge/{id}/ingestion-status`
+
+常见状态：
+
+```text
+PROCESSING → REVIEW_REQUIRED → PUBLISHING → PUBLISHED
+```
+
+解析、分类或向量化失败时会进入对应的失败状态，并返回 `errorCode`、`errorMessage`。
+
+### 3.2 查询草稿切片
+
+`GET /api/admin/knowledge/{id}/draft`
+
+每个切片包含正文、页码/标题路径、`productCategories`、`scenes`、`intents`、分类来源、置信度、原因和 revision。发布前必须明确确认三组检索标签；空数组表示管理员确认该切片为通用知识，`null` 表示尚未确认。
+
+### 3.3 保存政策版本和有效期
+
+`PUT /api/admin/knowledge/{id}/draft`
+
+```json
+{
+  "expectedRevision": 1,
+  "policyVersion": "v2026.09",
+  "validFrom": "2026-09-21T00:00:00",
+  "validTo": "2027-09-21T00:00:00"
+}
+```
+
+接口使用 revision 做并发更新检查。`after_sales_policy` 等版本化知识必须提供非空版本号和合法的生效区间。
+
+### 3.4 保存单个切片
+
+`PUT /api/admin/knowledge/{id}/draft/chunks/{chunkId}`
+
+请求应携带当前 `expectedRevision` 和管理员确认后的标签。冲突返回 409，客户端应重新加载最新草稿。
+
+### 3.5 发布
+
+`POST /api/admin/knowledge/{id}/publish`
+
+```json
+{
+  "expectedRevision": 2
+}
+```
+
+发布是异步操作。收到 `Publishing started` 后继续轮询 ingestion status，直到 `PUBLISHED` 或失败终态。
+
+### 3.6 失败重试
+
+`POST /api/admin/knowledge/{id}/retry`
+
+仅用于重新执行失败的解析/入库流程。
+
+## 4. 查询和维护
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/api/admin/knowledge/list` | 按 `sourceType`、`merchantCode` 查询列表 |
+| GET | `/api/admin/knowledge/{id}` | 查询单个知识文档 |
+| PUT | `/api/admin/knowledge/{id}` | 更新文档内容或状态；内容变化会重新入库 |
+| DELETE | `/api/admin/knowledge/{id}` | 逻辑删除知识文档 |
+| GET | `/api/admin/knowledge/metadata-options` | 获取商户和标签选项 |
+| POST | `/api/admin/knowledge/{id}/sync` | 触发单文档同步 |
+| POST | `/api/admin/knowledge/reindex` | 触发全量安全重建 |
+
+## 5. 测试真实检索
+
+`GET /api/admin/knowledge/test-retrieval?query=...&merchantCode=MERCHANT_DEMO&topK=5`
+
+该接口经过：
+
+```text
+Java KnowledgeRetrievalService
+→ Python /api/knowledge/retrieve
+→ Query Embedding
+→ pgvector + 关键词召回
+→ RRF / Reranker
+→ 命中列表
+```
+
+响应示例：
+
+```json
+{
+  "success": true,
   "code": 200,
-  "message": "查询成功",
+  "message": "Retrieved",
   "data": [
     {
-      "id": 1,
-      "sourceType": "after_sales_policy",
-      "sourceCode": "damage_policy_001",
-      "title": "商品破损售后政策",
-      "content": "...",
-      "chunkCount": 3,
-      "createdAt": "2026-07-07T10:00:00",
-      "updatedAt": "2026-07-07T10:00:00"
+      "source_type": "after_sales_policy",
+      "source_code": "apparel_return_001",
+      "title": "服装退货规则",
+      "snippet": "...",
+      "score": 0.73,
+      "tags": [],
+      "metadata": {
+        "document_id": 74,
+        "revision": 3,
+        "policy_version": "v2026.09"
+      }
     }
   ]
 }
 ```
 
-### 4. 更新知识库
+## 6. 当前本地配置
 
-**接口**: `PUT /admin/knowledge/{id}`
+共享配置示例位于根 `.env.example` 和 `python_agent/.env.example`。当前可复现本地链路使用：
 
-**请求体**:
-```json
-{
-  "title": "更新后的标题",
-  "content": "更新后的内容",
-  "status": 1
-}
+```text
+Java API:          127.0.0.1:8080/api
+Python Agent:      127.0.0.1:8000/api
+PostgreSQL:        127.0.0.1:5432/after_sales_rag
+Embedding:         Ollama bge-m3
+Reranker:          TEI BAAI/bge-reranker-v2-m3
+Embedding 维度:    1024
 ```
 
-### 5. 删除知识库
+本地模型链路不要求 DashScope Key。若切换远程模型，应通过被 Git 忽略的本地 `.env` 配置凭据。
 
-**接口**: `DELETE /admin/knowledge/{id}`
+## 7. 验收与排查
 
-**响应**:
-```json
-{
-  "code": 200,
-  "message": "删除成功",
-  "data": null
-}
-```
+1. 上传后一直 `PROCESSING`：检查 Java 异步日志、Python `/api/health` 与 Ollama 状态。
+2. `REVIEW_REQUIRED` 不能发布：确认三组标签、政策版本和有效期均已保存，并使用最新 revision。
+3. 已发布但无检索结果：确认 `published_revision` 与 chunk revision 一致、向量维度为 1024、有效期覆盖检索时间、商户和标签过滤条件匹配。
+4. 管理页面请求 404：确认前端调用的是 `text-import` 或 `file-import` 正式路径。
 
-### 6. 测试知识库检索
-
-**接口**: `GET /admin/knowledge/test-retrieval`
-
-**参数**:
-- `query`: 查询文本
-- `merchantCode` (可选): 商户代码
-- `topK` (默认5): 返回数量
-
-**响应**:
-```json
-{
-  "code": 200,
-  "message": "检索成功",
-  "data": [
-    {
-      "title": "商品破损售后政策",
-      "snippet": "商品破损售后处理规则：1. 适用范围...",
-      "score": 0.85
-    }
-  ]
-}
-```
-
-### 7. 重建向量索引
-
-**接口**: `POST /admin/knowledge/reindex`
-
-**说明**: 当更换embedding模型或需要全量重建时使用
-
-## 工作流程
-
-### 管理员上传知识库
-
-1. **前端调用上传接口**，传递标题和内容
-2. **Java后端**:
-   - 将文档插入PostgreSQL `knowledge_document`表
-   - 调用文本切片算法，将长文本切分为多个chunks（每个700字符，20%重叠）
-   - 调用Python Agent的`/api/embeddings`接口生成向量
-   - 将chunks和向量批量插入`knowledge_chunk`表
-3. **Python Agent**:
-   - 接收chunks数组
-   - 调用DashScope/Bailian的text-embedding-v3模型生成1024维向量
-   - 返回向量数组给Java后端
-
-### AI检索知识库
-
-1. 用户发送售后咨询消息（如"耳机外壳破了"）
-2. Python Agent调用`PgVectorKnowledgeRetriever.retrieve()`
-3. 将query文本向量化
-4. 在PostgreSQL中执行向量相似度搜索（余弦距离）
-5. 返回Top-K最相关的知识库chunks
-6. AI基于检索结果判断是否满足售后政策
-
-## 知识库类型
-
-- **after_sales_policy**: 售后政策（退货、换货、破损、质量问题等）
-- **faq**: 常见问题解答
-- **product_knowledge**: 商品知识（用于辅助判断）
-- **guideline**: 操作指南（拍照规范、流程说明等）
-
-## 配置要求
-
-### Java后端配置
-
-在`application.yml`中配置PostgreSQL数据源：
-
-```yaml
-spring:
-  datasource:
-    pgvector:
-      url: jdbc:postgresql://localhost:5432/ecommerce_rag
-      username: ecommerce
-      password: ecommerce_pgvector
-      driver-class-name: org.postgresql.Driver
-
-python:
-  agent:
-    url: http://localhost:8765
-```
-
-### Python Agent配置
-
-在`python_agent/db.local.env`中配置：
-
-```
-PGVECTOR_DSN=postgresql://ecommerce:ecommerce_pgvector@127.0.0.1:5432/ecommerce_rag
-PGVECTOR_DIMENSIONS=1024
-EMBEDDING_MODEL=text-embedding-v3
-EMBEDDING_PROVIDER=dashscope
-DASHSCOPE_API_KEY=<your-api-key>
-```
-
-## 注意事项
-
-1. **API Key必须配置**: 没有DASHSCOPE_API_KEY将无法生成向量
-2. **文本切片**: 每个chunk最多700字符，重叠20%确保语义完整
-3. **向量维度**: 固定1024维（text-embedding-v3模型）
-4. **PostgreSQL扩展**: 需要安装pgvector扩展
-5. **批量上传**: 建议每次不超过50条，避免超时
-
-## 初始化示例数据
-
-使用API批量上传初始政策：
-
-```bash
-curl -X POST http://localhost:8080/admin/knowledge/batch-upload \
-  -H "Content-Type: application/json" \
-  -d '[
-    {
-      "sourceType": "after_sales_policy",
-      "sourceCode": "damage_policy_001",
-      "title": "商品破损售后政策",
-      "content": "商品破损售后处理规则：...",
-      "productCategory": "digital",
-      "scene": "damage",
-      "intent": "refund",
-      "policyVersion": "v1.0"
-    }
-  ]'
-```
-
-## 故障排查
-
-### 问题1: embedding生成失败
-
-**症状**: 日志显示"Failed to generate embeddings via Python Agent"
-
-**解决**:
-1. 检查Python Agent是否启动（http://localhost:8765/health）
-2. 检查DASHSCOPE_API_KEY是否配置正确
-3. 检查账户余额是否充足
-
-### 问题2: PostgreSQL连接失败
-
-**症状**: "Connection refused"
-
-**解决**:
-1. 检查Docker容器是否运行：`docker ps | grep pgvector`
-2. 检查端口5432是否被占用
-3. 检查用户名密码是否正确
-
-### 问题3: 向量检索无结果
-
-**症状**: AI回复"policy_hits数量: 0"
-
-**解决**:
-1. 确认knowledge_chunk表中有数据
-2. 检查query文本是否与知识库内容相关
-3. 调整topK参数（默认5，可增加到10）
-
-## 下一步优化
-
-1. ✅ 管理后台UI界面（表格+表单）
-2. ✅ 知识库版本管理（支持回滚）
-3. ✅ 知识库生效时间设置
-4. ✅ 知识库A/B测试
-5. ✅ 检索效果评估（展示召回率、准确率）
+2026-09-22 实机验收记录见 `E2E_VERIFICATION.md`：TXT 文档经上传、解析、草稿确认、发布后生成 1024 维向量，并由管理检索接口命中文档 ID `74`。

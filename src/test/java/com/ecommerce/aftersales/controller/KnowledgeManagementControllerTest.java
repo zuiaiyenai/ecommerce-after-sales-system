@@ -2,6 +2,7 @@ package com.ecommerce.aftersales.controller;
 
 import com.ecommerce.aftersales.common.GlobalExceptionHandler;
 import com.ecommerce.aftersales.common.KnowledgeRevisionConflictException;
+import com.ecommerce.aftersales.dto.AgentGatewayDtos;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.DraftChunkResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.FileImportResponse;
 import com.ecommerce.aftersales.dto.KnowledgeDraftDtos.IngestionStatusResponse;
@@ -9,6 +10,7 @@ import com.ecommerce.aftersales.dto.KnowledgeUploadDto;
 import com.ecommerce.aftersales.service.KnowledgeService;
 import com.ecommerce.aftersales.service.KnowledgeDraftService;
 import com.ecommerce.aftersales.service.KnowledgePublishService;
+import com.ecommerce.aftersales.service.KnowledgeRetrievalService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +26,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -35,13 +38,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class KnowledgeManagementControllerTest {
     private KnowledgeService knowledgeService;
     private KnowledgePublishService publishService;
+    private KnowledgeRetrievalService retrievalService;
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
         knowledgeService = mock(KnowledgeService.class);
         publishService = mock(KnowledgePublishService.class);
-        mockMvc = MockMvcBuilders.standaloneSetup(new KnowledgeManagementController(knowledgeService, mock(KnowledgeDraftService.class), publishService))
+        retrievalService = mock(KnowledgeRetrievalService.class);
+        mockMvc = MockMvcBuilders.standaloneSetup(new KnowledgeManagementController(
+                        knowledgeService, mock(KnowledgeDraftService.class), publishService, retrievalService))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 
@@ -100,6 +106,29 @@ class KnowledgeManagementControllerTest {
                     .andExpect(status().isNotFound());
         }
         verifyNoInteractions(knowledgeService);
+    }
+
+    @Test
+    void testRetrievalDelegatesToThePythonAgentGateway() throws Exception {
+        AgentGatewayDtos.KnowledgeHitDto hit = new AgentGatewayDtos.KnowledgeHitDto();
+        hit.setSource_code("phase7-policy");
+        hit.setSnippet("ZEPHYR ORANGE 7319");
+        AgentGatewayDtos.KnowledgeRetrieveResponse response = new AgentGatewayDtos.KnowledgeRetrieveResponse();
+        response.setHits(List.of(hit));
+        when(retrievalService.retrieve(any())).thenReturn(response);
+
+        mockMvc.perform(get("/admin/knowledge/test-retrieval")
+                        .param("query", "ZEPHYR ORANGE 7319")
+                        .param("merchantCode", "MERCHANT_DEMO")
+                        .param("topK", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].source_code").value("phase7-policy"))
+                .andExpect(jsonPath("$.data[0].snippet").value("ZEPHYR ORANGE 7319"));
+
+        verify(retrievalService).retrieve(org.mockito.ArgumentMatchers.argThat(request ->
+                "ZEPHYR ORANGE 7319".equals(request.getQuery())
+                        && "MERCHANT_DEMO".equals(request.getMerchantCode())
+                        && Integer.valueOf(3).equals(request.getTopK())));
     }
 
     @Test

@@ -9,7 +9,7 @@
     "dev:real": "vite --host 127.0.0.1 --port 5173 --mode real",
     "build": "vite build",
     "build:mock": "vite build --mode mock",
-    "test:contracts": "node --test tests/merchantCsAdapterContract.test.mjs tests/knowledgeId.test.mjs tests/knowledgeDraft.test.mjs tests/knowledgeRecord.test.mjs",
+    "test:contracts": "node --test tests/merchantCsAdapterContract.test.mjs tests/knowledgeApiContract.test.mjs tests/knowledgeId.test.mjs tests/knowledgeDraft.test.mjs tests/knowledgeRecord.test.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {

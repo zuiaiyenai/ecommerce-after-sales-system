@@ -20,7 +20,7 @@
 - Kafka 承载售后审核请求，Java 通过 Transactional Outbox 发布，Python 消费。
 - 管理/客服端是 Vue 3 + Vite；用户端是 Vue 3 + uni-app。
 
-当前采用混合本地运行：Windows 运行 Java、Python、Vue、MySQL 与 Redis，专用 VMware 运行需要 Linux 容器的 pgvector、Kafka 和本地模型。知识库已生成 42 个真实向量 chunk；指定业务商户的 Top-K 检索已命中正确政策。Vision 仍需要单独的视觉模型或远程 Key，不影响文本 AI/RAG 链路。
+当前采用混合本地运行：Windows 运行 Java、Python、Vue、MySQL 与 Redis，专用 VMware 运行需要 Linux 容器的 pgvector、Kafka 和本地模型。知识库已生成 43 个当前发布的真实向量 chunk；指定业务商户的 Top-K 检索已命中正确政策。Vision 仍需要单独的视觉模型或远程 Key，不影响文本 AI/RAG 链路。
 
 ## 2. 真实目录结构
 
@@ -189,8 +189,8 @@ POST /api/aftersales
 | 消息 | 历史与实时展示 | 落库、广播、顺序查询 | append message 工具 | MySQL + WebSocket | IMPLEMENTED | 助手消息 `2102063467434463234` 已通过历史 API 回读 |
 | 工单/售后 | 用户申请、客服审核 | 事务、补证、状态机 | 正式审核 Workflow | MySQL + Kafka | IMPLEMENTED | NOT_VERIFIED |
 | AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + 本地 LLM + 工具 | MySQL/Redis/PostgreSQL | IMPLEMENTED | 141.35 秒返回 AI 模式、1 条可信引用并落库；Vision 另行配置 |
-| RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | IMPLEMENTED | 42 个真实 chunk，Top-K 已命中正确政策 |
-| 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | reindex 42 文档/42 chunk 已通过 |
+| RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | IMPLEMENTED | 43 个发布 chunk；新导入文档经管理 API 命中 |
+| 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | TXT 上传、草稿确认、发布、1024 维向量与页面展示已通过 |
 | 文档上传 | 文件导入 UI | multipart 校验与异步任务 | PDF/文本解析 | PostgreSQL + 文件系统 | IMPLEMENTED | NOT_VERIFIED |
 | 文档解析/Chunk | 状态展示 | 调用 Python 并保存草稿 | 解析、分块、分类 | PostgreSQL | IMPLEMENTED | NOT_VERIFIED |
 | Embedding | 发布流程触发 | 维度与数量校验 | Ollama OpenAI compatible `bge-m3` | vector(1024) | IMPLEMENTED | 42/42 向量维度已实查 |
@@ -239,7 +239,7 @@ POST /api/aftersales
 | Python pgvector 集成测试 | PASS | 3 passed，真实连接 VM PostgreSQL |
 | Python Redis Testcontainers | PASS | 1 passed，临时 Redis 容器由 VM Docker 提供 |
 | Python 真实 LLM | PASS | 4 passed，覆盖对话、JSON、原生 Tool Calling 与流式响应 |
-| 客服前端契约测试 | PASS | 14/14 |
+| 客服前端契约测试 | PASS | 15/15 |
 | 客服前端生产构建 | PASS | 显式设置 `VITE_API_BASE_URL=http://127.0.0.1:8080/api` 后通过 |
 | uni-app 微信小程序构建 | PASS | 构建完成 |
 
@@ -255,7 +255,7 @@ POST /api/aftersales
 
 这是 4 vCPU CPU-only VM 的本地功能证据，不代表生产延迟或吞吐能力。聊天前置情绪 LLM 在这次政策 RAG 验收中通过本机配置关闭；情绪能力的独立验收应单列执行。
 
-当前已有 PostgreSQL、Kafka、本地模型、AI/RAG 后端闭环与全量 Testcontainers 证据。浏览器级全功能 E2E、Vision 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
+当前已有 PostgreSQL、Kafka、本地模型、AI/RAG 后端闭环、全量 Testcontainers、核心业务浏览器 E2E 和管理端知识库生命周期证据。Vision、SSE/跨轮 checkpoint 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
 
 ## 8. 已确认的配置问题
 

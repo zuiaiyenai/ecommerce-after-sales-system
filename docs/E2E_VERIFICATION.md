@@ -32,7 +32,7 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | Python 真实 LLM | `4 passed` | Ollama OpenAI compatible 端点；对话、JSON、Tool Calling、流式协议 |
 | Java Maven 测试 | `148 run, 0 failures, 0 errors, 0 skipped` | pgvector、MySQL、Kafka、Redis Testcontainers 全部实际执行 |
 | `git diff --check` | PASS | Phase 6 提交前通过 |
-| 前端契约测试 | PASS | 14/14，见架构审计记录 |
+| 前端契约测试 | PASS | 15/15，包含管理端文本导入正式路由契约 |
 | 客服前端构建 | PASS | real API base URL 构建 |
 
 Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API 仅绑定 VM 的 `127.0.0.1:23750`，再经 SSH 映射到 Windows 回环地址；脚本结束后关闭隧道与代理。没有向局域网暴露未加密 Docker API。
@@ -43,7 +43,7 @@ Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API
 
 - PostgreSQL `16.15`、pgvector `0.8.6`；
 - `vector` 与 `pg_trgm` 扩展；
-- 42 个当前发布文档对应 42 个真实 chunk；
+- 43 个当前发布文档对应 43 个真实 chunk；
 - 所有 Embedding 为 1024 维；
 - 查询“七天无理由退货需要满足什么条件”时，Top-1 为 `return_policy_001`，cosine `0.8064`；
 - 严格过滤命中为可信；放宽分类/场景的命中保持不可信并返回降级模式。
@@ -119,7 +119,29 @@ Java 创建工单和 Outbox
 
 停止过程没有执行 `docker compose down -v`，数据库与模型卷均保留。
 
-## 7. 当前结论
+## 7. 核心 API、浏览器与知识库生命周期
+
+2026-09-22 使用 `cs_demo` 完成核心业务 API 验收：登录、当前用户、工作台、商品、订单、会话、消息、工单、评价及详情接口均成功；匿名请求返回 401，客服访问管理员接口返回 403。随后使用隔离 Microsoft Edge 完成 13 个页面和路由守卫检查，共观察 155 个资源/API 响应，失败 API 为 0。
+
+管理端知识库验收创建了唯一标记文档 `PHASE7-RAG-20260922025158-ZEPHYR-ORANGE-7319`，完整经过：
+
+```text
+TXT 上传 → 异步解析 → AI 分类草稿 → 政策版本/有效期确认
+→ 发布 → 1024 维 Embedding → Java 管理接口 → Python RAG → pgvector 命中 → 管理页面展示
+```
+
+验收结果：
+
+- 文档 ID `74`，草稿分类为 `apparel / return / refund`，模型置信度 `0.9`；
+- 发布后 `revision=3`、`publishedRevision=3`，正式 chunk 为 1 条且向量维度为 1024；
+- 查询“ZEPHYR ORANGE 7319 专属商品超过七日后应该如何处理”命中文档 `74`，rerank 分数 `0.7326`；
+- 管理端页面显示“已发布”、`1 chunks` 与政策版本 `phase7-v1`；浏览器过程中 27 个 API 响应无失败；
+- 修复前端文本导入仍调用旧 `/api/admin/knowledge/import/text` 的路由漂移，改为正式 `/api/admin/knowledge/text-import`；
+- 修复 `/api/admin/knowledge/test-retrieval` 固定返回空列表的问题，现复用 Java `KnowledgeRetrievalService` 调用 Python `/knowledge/retrieve`。
+
+浏览器使用 Playwright 驱动的隔离 Edge，不共享日常浏览器的 Cookie、扩展或登录状态。截图与 JSON 运行证据保存在被 Git 忽略的 `.runtime/evidence/phase7-*`。
+
+## 8. 当前结论
 
 - Java 核心业务：DONE
 - 文本 AI / RAG：DONE（本地 CPU 功能闭环）

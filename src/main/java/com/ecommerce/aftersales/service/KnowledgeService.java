@@ -561,11 +561,6 @@ public class KnowledgeService {
         runAfterCommit(() -> asyncService.reprocessDocument(documentId, targetRevision));
     }
 
-    public List<Map<String, Object>> testRetrieval(String query, String merchantCode, Integer topK) {
-        log.info("Test retrieval: query={}, merchantCode={}, topK={}", query, merchantCode, topK);
-        return List.of();
-    }
-
     private Long insertKnowledgeDocument(
             String sourceType,
             String sourceCode,
