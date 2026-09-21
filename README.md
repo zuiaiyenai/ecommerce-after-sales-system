@@ -560,6 +560,7 @@ stateDiagram-v2
 
 ```powershell
 docker compose --profile local-ai up -d --build
+.\scripts\ensure-ollama-models.ps1
 docker compose ps
 ```
 

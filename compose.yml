@@ -99,17 +99,24 @@ services:
     command: ["python", "-m", "after_sales_agent.interface.http_server"]
     env_file: ./python_agent/.env
     environment:
+      LLM_PROVIDER: ollama
       LLM_NATIVE_FUNCTION_CALLING_ENABLED: ${LLM_NATIVE_FUNCTION_CALLING_ENABLED:-true}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      EMBEDDING_PROVIDER: openai_compatible
+      EMBEDDING_BASE_URL: http://ollama:11434/v1
+      EMBEDDING_API_KEY: local-ollama
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       AFTERSALES_JAVA_TOOL_BASE_URL: http://java:8080/api/internal/agent-tools
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       AFTER_SALES_REVIEW_IDEMPOTENCY_REDIS_URL: redis://redis:6379/0
       PGVECTOR_DSN: postgresql://postgres:${PGVECTOR_PASSWORD:-local-dev-password}@postgres:5432/after_sales_rag
       RAG_LAYERED_RETRIEVAL_ENABLED: ${RAG_LAYERED_RETRIEVAL_ENABLED:-false}
       RAG_SUFFICIENCY_MIN_CONFIDENCE: ${RAG_SUFFICIENCY_MIN_CONFIDENCE:-0.70}
-      RERANK_PROVIDER: ${RERANK_PROVIDER:-}
-      RERANK_BASE_URL: ${RERANK_BASE_URL:-}
-      RERANK_API_KEY: ${RERANK_API_KEY:-}
-      RERANK_MODEL: ${RERANK_MODEL:-}
+      RERANK_PROVIDER: tei
+      RERANK_BASE_URL: http://reranker:80/rerank
+      RERANK_API_KEY: local-tei
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       RERANK_TIMEOUT_SECONDS: ${RERANK_TIMEOUT_SECONDS:-3}
       RERANK_MAX_RETRIES: ${RERANK_MAX_RETRIES:-1}
       RERANK_MAX_CANDIDATES: ${RERANK_MAX_CANDIDATES:-20}
@@ -143,7 +150,14 @@ services:
     command: ["python", "-m", "after_sales_agent.interface.kafka_adapter"]
     env_file: ./python_agent/.env
     environment:
+      LLM_PROVIDER: ollama
       LLM_NATIVE_FUNCTION_CALLING_ENABLED: ${LLM_NATIVE_FUNCTION_CALLING_ENABLED:-true}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      EMBEDDING_PROVIDER: openai_compatible
+      EMBEDDING_BASE_URL: http://ollama:11434/v1
+      EMBEDDING_API_KEY: local-ollama
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
       AFTERSALES_JAVA_TOOL_BASE_URL: http://java:8080/api/internal/agent-tools
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       AFTER_SALES_REVIEW_IDEMPOTENCY_REDIS_URL: redis://redis:6379/0
@@ -154,10 +168,10 @@ services:
       LANGGRAPH_CHECKPOINT_SCHEMA: agent_runtime
       RAG_LAYERED_RETRIEVAL_ENABLED: ${RAG_LAYERED_RETRIEVAL_ENABLED:-false}
       RAG_SUFFICIENCY_MIN_CONFIDENCE: ${RAG_SUFFICIENCY_MIN_CONFIDENCE:-0.70}
-      RERANK_PROVIDER: ${RERANK_PROVIDER:-}
-      RERANK_BASE_URL: ${RERANK_BASE_URL:-}
-      RERANK_API_KEY: ${RERANK_API_KEY:-}
-      RERANK_MODEL: ${RERANK_MODEL:-}
+      RERANK_PROVIDER: tei
+      RERANK_BASE_URL: http://reranker:80/rerank
+      RERANK_API_KEY: local-tei
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       RERANK_TIMEOUT_SECONDS: ${RERANK_TIMEOUT_SECONDS:-3}
       RERANK_MAX_RETRIES: ${RERANK_MAX_RETRIES:-1}
       RERANK_MAX_CANDIDATES: ${RERANK_MAX_CANDIDATES:-20}

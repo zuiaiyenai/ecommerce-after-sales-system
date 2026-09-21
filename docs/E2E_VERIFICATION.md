@@ -34,6 +34,7 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | `git diff --check` | PASS | Phase 6 提交前通过 |
 | 前端契约测试 | PASS | 15/15，包含管理端文本导入正式路由契约 |
 | 客服前端构建 | PASS | real API base URL 构建 |
+| Compose 本地模型地址 | PASS | Agent/Consumer 解析后使用 `ollama:11434` 与 `reranker:80`，未继承宿主机回环地址 |
 | Spring Security 异步分派回归 | PASS | SSE 的 `ASYNC` 分派可完成；匿名初始请求仍为 401 |
 
 Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API 仅绑定 VM 的 `127.0.0.1:23750`，再经 SSH 映射到 Windows 回环地址；脚本结束后关闭隧道与代理。没有向局域网暴露未加密 Docker API。
@@ -117,6 +118,8 @@ Java 创建工单和 Outbox
 2. `dev-stop.ps1 -KeepInfrastructure` 关闭四个受管进程树，MySQL/Redis 保持在线；
 3. 默认 `dev-stop.ps1` 通过 SSH 停止 VM 的 PostgreSQL、Kafka、Ollama、Reranker，四个端口均不可达；
 4. 再次运行 `dev-start.ps1`，脚本通过 SSH 拉起四个 VM 容器，等待 TEI 模型加载，再恢复全部 Windows 应用。
+
+启动脚本在 `OLLAMA_AUTO_PULL_MODELS=true` 时还会调用 `ensure-ollama-models.ps1`，已验证三个已缓存模型可被识别且不会重复下载；缺失模型会在应用进程启动前拉取。
 
 停止过程没有执行 `docker compose down -v`，数据库与模型卷均保留。
 

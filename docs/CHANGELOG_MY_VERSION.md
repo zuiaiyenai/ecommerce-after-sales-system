@@ -133,6 +133,12 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 将功能矩阵中的登录、RBAC、工作台、商品、订单、工单、文档生命周期、Embedding 和 Trace 更新为已完成的真实验收证据；
 - 明确现有数据库尚无迁移版本表；Flyway/Liquibase 需要分别建立 MySQL/PostgreSQL baseline 后再引入，不能在当前数据实例上直接执行全部历史脚本。
 
+## Phase 13：新环境本地模型配置复核
+
+- 修正 Agent 示例配置中本地 Ollama provider 与远程地址/模型混写的问题；
+- Compose 内的文本 LLM、Embedding、Reranker 和 Vision 均使用容器服务名，不再继承容器内不可用的宿主机回环地址；
+- `dev-start.ps1` 可检查并拉取缺失的文本、Embedding 和 Vision 模型，首次启动不再依赖预先手工准备模型。
+
 ## 仍需维护的事项
 
 1. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。

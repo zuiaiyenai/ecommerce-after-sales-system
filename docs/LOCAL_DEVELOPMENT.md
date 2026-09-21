@@ -117,7 +117,7 @@ Compose 从项目根 `.env` 读取本机映射端口。容器之间仍使用 MyS
 - `qwen2.5vl:3b`：售后图片审核；
 - `BAAI/bge-reranker-v2-m3`：Hugging Face TEI `/rerank` 精排服务。
 
-首次配置 VM 时，在 Ubuntu 项目目录拉取 Ollama 模型：
+`dev-start.ps1` 在 `OLLAMA_AUTO_PULL_MODELS=true` 时会检查文本、Embedding 和 Vision 三个模型，只拉取缺失项。首次下载可能需要较长时间；以下命令可用于手工准备或排查 VM：
 
 ```bash
 docker compose --profile local-ai up -d ollama

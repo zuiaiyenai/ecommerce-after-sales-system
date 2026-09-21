@@ -77,6 +77,10 @@ foreach ($check in $checks) {
     Write-Host "$($check.Name) is reachable at $($check.Host):$($check.Port)."
 }
 
+if ($env:OLLAMA_AUTO_PULL_MODELS -eq 'true') {
+    & (Join-Path $PSScriptRoot 'ensure-ollama-models.ps1') -TimeoutSeconds ([Math]::Max($TimeoutSeconds, 3600))
+}
+
 Start-ManagedScript -Name 'agent' -ScriptPath (Join-Path $PSScriptRoot 'start-agent.ps1') `
     -ReadyUri 'http://127.0.0.1:8000/api/health' -ProjectRoot $projectRoot -TimeoutSeconds $TimeoutSeconds
 Start-ManagedScript -Name 'backend' -ScriptPath (Join-Path $PSScriptRoot 'start-backend.ps1') `
