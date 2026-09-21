@@ -94,9 +94,18 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 上传并发布唯一标记 TXT，确认草稿分类、1024 维 Embedding、revision 一致和 RAG 命中；
 - 管理端知识库页面显示已发布文档，浏览器过程 27 个 API 响应无失败。
 
+## Phase 8：认证实时聊天链路
+
+- 修复 Spring Security 拒绝 SSE 完成后的 `ASYNC` 再分派问题，并保留初始请求的认证边界；
+- SSE 实机返回 `start → token → finish → done`，无流错误；当前为整段回答的单个 `token` 事件；
+- 同一 MySQL 会话完成跨轮追问，确认聊天记忆来自消息历史和摘要；
+- WebSocket 完成 JWT 握手、订阅、客服消息广播与历史回读，无 Token 握手返回 401；
+- 明确 PostgreSQL LangGraph checkpoint 只服务正式审核暂停、补证和恢复；
+- 将 Java Agent 超时设为 300 秒，前端超时设为 330 秒，适配本地 CPU 模型约 188–244 秒的链路耗时。
+
 ## 仍需维护的事项
 
 1. 配置视觉模型后单独验收图片审核。
 2. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
-3. 验证跨轮 LangGraph checkpoint 恢复与 WebSocket/SSE 浏览器场景。
-4. 生产化前补 TLS、密钥管理、监控告警、备份恢复和容量压测。
+3. 启动 Prometheus/Grafana 并验证指标页面与告警链路。
+4. 生产化前补 TLS、密钥管理、备份恢复和容量压测。

@@ -34,6 +34,7 @@ VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `1
 | `git diff --check` | PASS | Phase 6 提交前通过 |
 | 前端契约测试 | PASS | 15/15，包含管理端文本导入正式路由契约 |
 | 客服前端构建 | PASS | real API base URL 构建 |
+| Spring Security 异步分派回归 | PASS | SSE 的 `ASYNC` 分派可完成；匿名初始请求仍为 401 |
 
 Windows 通过 `scripts/run-vm-testcontainers.ps1` 使用 VM Docker。Docker API 仅绑定 VM 的 `127.0.0.1:23750`，再经 SSH 映射到 Windows 回环地址；脚本结束后关闭隧道与代理。没有向局域网暴露未加密 Docker API。
 
@@ -141,11 +142,28 @@ TXT 上传 → 异步解析 → AI 分类草稿 → 政策版本/有效期确认
 
 浏览器使用 Playwright 驱动的隔离 Edge，不共享日常浏览器的 Cookie、扩展或登录状态。截图与 JSON 运行证据保存在被 Git 忽略的 `.runtime/evidence/phase7-*`。
 
-## 8. 当前结论
+## 8. SSE、WebSocket 与跨轮对话
+
+2026-09-22 使用 `cs_demo` 和真实会话 `2101952086903840769` 完成实时通道验收：
+
+- `POST /api/agent/chat/stream` 返回 HTTP 200，事件顺序为 `start → token → finish → done`，无流错误，耗时 188.358 秒；
+- 当前 Python Agent 会在完整工作流结束后发送一个包含整段回答的 `token` 事件，已使用 SSE 协议，但不是模型逐 token 输出；
+- 追问“那运费由谁承担？”耗时 196.578 秒，正确继承上一轮“七天无理由退货”语境；
+- `/api/ws/chat` 使用 `cs_demo` JWT 完成订阅，客服发送消息后收到匹配广播，并由 HTTP 历史接口回读到相同消息；无 Token 握手返回 401；
+- SSE 初次失败的根因是响应完成后的 Spring Security `ASYNC` 再分派被拒绝。现仅放行 `ASYNC`/`ERROR` 分派，普通初始请求仍要求认证。
+
+跨轮聊天上下文由 Java 从 MySQL 最近消息和摘要重建。普通聊天工作流使用不带 checkpointer 的 `graph.compile()`；PostgreSQL `agent_runtime` checkpoint 只用于正式审核暂停、补证和恢复。实查 PostgreSQL 有 1 个正式审核 thread、5 个 checkpoint，聊天 session 对应 checkpoint 为 0。
+
+本地 4 vCPU CPU 模型单次链路已观察到约 188–244 秒。Java Agent 超时为 300 秒，前端为 330 秒，以便前端接收 Java 网关的终态或错误事件。
+
+运行证据保存在被 Git 忽略的 `.runtime/evidence/phase8-sse.json`、`phase8-sse-followup.json`、`phase8-websocket.json` 与 `phase8-checkpoint.json`。
+
+## 9. 当前结论
 
 - Java 核心业务：DONE
 - 文本 AI / RAG：DONE（本地 CPU 功能闭环）
 - Kafka 正式审核主链：DONE
+- SSE / WebSocket / 跨轮聊天：DONE（SSE 当前为整段单事件）
 - Vision：NOT_DONE
 - 生产容量、高可用、公网 TLS 与容灾：NOT_DONE
 - 完整 Docker/Testcontainers 门禁：DONE

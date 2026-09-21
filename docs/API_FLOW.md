@@ -37,6 +37,8 @@ sequenceDiagram
 
 流式入口为 `POST /api/agent/chat/stream`。历史回读使用 `GET /api/chat/history?sessionId=...`。64 位 ID 在跨 JavaScript/Python 边界时按字符串传输。
 
+跨轮聊天由 Java 从 MySQL 最近消息和摘要重建上下文。普通聊天不写 LangGraph checkpoint；PostgreSQL checkpoint 只用于正式审核暂停、补证和恢复。
+
 ## 3. 售后工单与异步审核
 
 ```text
@@ -85,8 +87,9 @@ Java 管理接口负责文件类型、大小、状态与版本校验；Python �
 
 ## 6. 实时通道
 
-- WebSocket：`/api/ws/chat`，用于会话消息广播；握手需要 JWT。
-- SSE：聊天流式输出；连接中断不代表 Java 已回滚之前完成的持久化。
+- WebSocket：`/api/ws/chat`，用于会话消息广播；握手需要 JWT。真实验收已完成 JWT 订阅、客服发信、广播接收和历史回读，无 Token 握手返回 401。
+- SSE：`/api/agent/chat/stream` 返回 `start → token → finish → done`。当前完整 Agent 工作流结束后只发送一个包含整段回答的 `token` 事件，不是模型逐 token 输出。
+- Spring Security 允许已认证请求的 `ASYNC`/`ERROR` 再分派，避免 SSE 完成后被二次拒绝；初始请求仍需正常认证。
 - Kafka：正式审核异步事件；消费提交与业务落库结果绑定。
 
 ## 7. 错误处理

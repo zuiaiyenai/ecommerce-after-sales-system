@@ -150,7 +150,7 @@ app:
       environment-label: ${MINIAPP_ENV_LABEL:本机开发环境}
       api-path: /api
       request-timeout-millis: 15000
-      agent-request-timeout-millis: 90000
+      agent-request-timeout-millis: ${MINIAPP_AGENT_REQUEST_TIMEOUT_MILLIS:330000}
       presets:
         - code: lan
           label: 当前局域网调试

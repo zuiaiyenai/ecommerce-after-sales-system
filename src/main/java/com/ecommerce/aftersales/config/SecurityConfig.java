@@ -1,6 +1,7 @@
 package com.ecommerce.aftersales.config;
 
 import com.ecommerce.aftersales.util.JwtTokenUtil;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.beans.factory.annotation.Value;
@@ -40,6 +41,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(registry -> registry
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers("/miniapp/auth/**").permitAll()
                         .requestMatchers("/miniapp/public/**").permitAll()
                         .requestMatchers("/products/**").permitAll()

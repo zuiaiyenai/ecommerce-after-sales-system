@@ -1,7 +1,7 @@
 # AI / RAG 架构
 
-> 验证日期：2026-09-21
-> 证据范围：当前 Java/Python 源码、PostgreSQL 数据、自动化测试和一次真实聊天链路。
+> 验证日期：2026-09-22
+> 证据范围：当前 Java/Python 源码、MySQL/PostgreSQL 数据、自动化测试、真实跨轮聊天与实时通道。
 
 ## 1. 系统边界
 
@@ -67,6 +67,12 @@ Reranker 是否成功与过滤是否严格分别记录。即使 Reranker 成功�
 
 Agent 使用 LangGraph 组织咨询和正式审核。模型可调用订单、工单、政策、消息写入、补证和转人工工具。涉及最终业务状态的工具全部回到 Java，由 Java 再校验用户、商家、工单状态、审核实例和证据版本。
 
+### 3.4 会话记忆与 checkpoint
+
+聊天跨轮上下文由 Java 从 MySQL 最近消息和摘要重建，再随请求传给 Python。普通咨询工作流使用 `graph.compile()`，没有 PostgreSQL checkpointer。
+
+正式审核工作流使用 `graph.compile(checkpointer=self.checkpointer)`。Review Consumer 注入 PostgreSQL `ReviewCheckpointRuntime`，用于审核暂停、补证和恢复。2026-09-22 实查 `agent_runtime` 有 1 个正式审核 thread、5 个 checkpoint，而聊天 session `2101952086903840769` 对应 checkpoint 为 0。
+
 ## 4. 本地模型配置
 
 | 能力 | 服务 | 模型 | 地址 |
@@ -76,7 +82,7 @@ Agent 使用 LangGraph 组织咨询和正式审核。模型可调用订单、工
 | Rerank | Hugging Face TEI | `BAAI/bge-reranker-v2-m3` | VM `8081/rerank` |
 | Vision | 未配置 | 无 | NOT_DONE |
 
-CPU 验收环境会把 Java Agent 超时设为 300 秒。政策聊天可通过本机忽略配置关闭可选的前置情绪 LLM 调用，主链的 Embedding、pgvector、Reranker 和回答 LLM 仍真实执行。
+CPU 验收环境会把 Java Agent 超时设为 300 秒，前端 Agent 请求超时设为 330 秒，以便接收 Java 网关终态或错误事件。政策聊天可通过本机忽略配置关闭可选的前置情绪 LLM 调用，主链的 Embedding、pgvector、Reranker 和回答 LLM 仍真实执行。
 
 ## 5. 失败与安全边界
 
@@ -90,11 +96,13 @@ CPU 验收环境会把 Java Agent 超时设为 300 秒。政策聊天可通过�
 
 ## 6. 已验证结果与限制
 
-- 42 条有效文档生成 42 个真实 1024 维 chunk；
+- 43 条已发布文档生成 43 个真实 1024 维 chunk；
 - “七天无理由退货”Top-1 为 `return_policy_001`，cosine 分数 `0.8064`；
 - 真实聊天返回 `knowledge_mode=hybrid_reranked`、1 条可信政策引用，并由 Java 写入 MySQL；
-- 单次 CPU 链路耗时 141.35 秒，仅证明功能闭环；
-- Vision、生产并发、跨轮 checkpoint 恢复和公网部署尚未完成验收。
+- 同一 MySQL 会话的追问正确继承上一轮政策语境；
+- SSE 返回 `start → token → finish → done`，当前 `token` 是工作流完成后的整段回答，不是模型逐 token 输出；
+- 本地 CPU 链路观察到约 141–244 秒，仅证明功能闭环；
+- Vision、生产并发和公网部署尚未完成验收。
 
 ## 7. 代码入口
 

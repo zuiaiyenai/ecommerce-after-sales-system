@@ -6,7 +6,7 @@
 >
 > 证据范围：当前源码、配置、SQL、自动化测试与本机端口；历史 README 和旧设计文档只作线索。
 
-> 运行状态更新（2026-09-21 23:53）：MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue 在 Windows 运行；PostgreSQL/pgvector、Kafka、Ollama 与 TEI Reranker 在专用 Ubuntu VMware VM 运行。Java Actuator 为 `UP`，Java Outbox → Kafka → Python → Java → MySQL 与 Java → Agent → pgvector/Reranker/LLM → Java → MySQL 聊天链路均已验证。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
+> 运行状态更新（2026-09-22）：Windows 承载 MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue；专用 Ubuntu VMware 承载 PostgreSQL/pgvector、Kafka、Ollama 与 TEI Reranker。Java Outbox 审核、AI/RAG 聊天、SSE、WebSocket、跨轮对话和知识库生命周期均已有实机证据。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
 
 ## 1. 审计结论
 
@@ -15,7 +15,7 @@
 - Java Spring Boot 保存业务事实、执行权限校验、事务写入和最终状态变更。
 - Python Agent 负责 LLM、RAG、工具编排、图片审核建议和 Kafka 售后审核。
 - MySQL 保存用户、商品、订单、工单、会话、消息和 Outbox。
-- PostgreSQL + pgvector 保存知识文档、草稿、1024 维向量和 LangGraph checkpoint。
+- PostgreSQL + pgvector 保存知识文档、草稿、1024 维向量，以及正式审核使用的 LangGraph checkpoint。
 - Redis 用于限流、缓存和 Kafka Consumer 幂等状态。
 - Kafka 承载售后审核请求，Java 通过 Transactional Outbox 发布，Python 消费。
 - 管理/客服端是 Vue 3 + Vite；用户端是 Vue 3 + uni-app。
@@ -72,7 +72,7 @@ flowchart LR
 1. Python 不直接修改 MySQL 业务结果。
 2. Python 通过 `/api/internal/agent-tools/**` 请求 Java 执行订单查询、工单审核、消息落库和转人工。
 3. Java 内部工具接口使用共享 Token；用户与客服接口使用 JWT。
-4. MySQL 是业务真相源，PostgreSQL 是知识与 Agent 运行态存储。
+4. MySQL 是业务真相源，也保存聊天消息和摘要；PostgreSQL 保存知识数据与正式审核 checkpoint。
 
 ## 4. 核心调用链
 
@@ -196,13 +196,13 @@ POST /api/aftersales
 | Embedding | 发布流程触发 | 维度与数量校验 | Ollama OpenAI compatible `bge-m3` | vector(1024) | IMPLEMENTED | 42/42 向量维度已实查 |
 | Vector Search | 检索结果展示 | 网关 | cosine Top-K + 硬过滤 | IVFFlat | IMPLEMENTED | Top-1 `return_policy_001`，分数 0.8064 |
 | Agent Tool Calling | 会话 UI | Internal Agent Tools | Native function calling | MySQL | IMPLEMENTED | Ollama 原生工具调用已验证 |
-| Session/Memory | 会话 UI | 消息历史 | LangGraph checkpoint | MySQL + PostgreSQL | IMPLEMENTED | MySQL 会话/消息已验证；跨轮 checkpoint 仍待单独验收 |
+| Session/Memory | 会话 UI | 从消息/摘要重建上下文 | 普通聊天不使用 checkpoint | MySQL | IMPLEMENTED | 同一会话追问已正确继承上一轮政策语境 |
 | Kafka | 无 | Outbox producer | Consumer、幂等、DLQ | Kafka + Redis | IMPLEMENTED | Broker 与完整审核消息链路已验证 |
 | Redis | 无 | 限流与状态缓存 | Consumer 幂等 | Redis | IMPLEMENTED | 本机 6380 已验证 |
 | MySQL | 无 | 主业务库 | 只经 Java 工具访问 | MySQL | IMPLEMENTED | 本机 3307 与 15 张业务表已验证 |
 | PostgreSQL/pgvector | 管理 UI | 独立 JdbcTemplate | RAG/checkpoint | PostgreSQL | IMPLEMENTED | VM 5432、扩展、索引和查询已验证 |
-| WebSocket | 用户端、客服端 | `/api/ws/chat` + JWT handshake | 无 | 内存订阅表 | IMPLEMENTED | NOT_VERIFIED |
-| SSE | 用户端可调用流式聊天 | `/api/agent/chat/stream` | SSE 流输出 | HTTP | IMPLEMENTED | NOT_VERIFIED |
+| WebSocket | 用户端、客服端 | `/api/ws/chat` + JWT handshake | 无 | 内存订阅表 | IMPLEMENTED | JWT 订阅、广播、历史回读与匿名 401 已验证 |
+| SSE | 用户端可调用流式聊天 | `/api/agent/chat/stream` | SSE 流输出 | HTTP | IMPLEMENTED | `start → token → finish → done` 已验证；当前为整段单 token 事件 |
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | NOT_VERIFIED |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | NOT_VERIFIED |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
@@ -255,7 +255,9 @@ POST /api/aftersales
 
 这是 4 vCPU CPU-only VM 的本地功能证据，不代表生产延迟或吞吐能力。聊天前置情绪 LLM 在这次政策 RAG 验收中通过本机配置关闭；情绪能力的独立验收应单列执行。
 
-当前已有 PostgreSQL、Kafka、本地模型、AI/RAG 后端闭环、全量 Testcontainers、核心业务浏览器 E2E 和管理端知识库生命周期证据。Vision、SSE/跨轮 checkpoint 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
+2026-09-22 又完成 SSE、WebSocket 与跨轮对话验收。SSE 用时 188.358 秒并按 `start → token → finish → done` 结束；当前 `token` 事件携带整段回答。追问用时 196.578 秒，并从 MySQL 历史继承上一轮政策语境。WebSocket 完成 JWT 订阅、客服发信、匹配广播和历史回读；匿名握手返回 401。
+
+普通聊天使用不带 checkpointer 的 LangGraph；PostgreSQL checkpoint 只用于正式审核。实查已有 1 个审核 thread、5 个 checkpoint，聊天 session checkpoint 为 0。Vision 和 Prometheus/Grafana 页面仍待验收，因此完整系统可用性尚未完成最终签收。
 
 ## 8. 已确认的配置问题
 

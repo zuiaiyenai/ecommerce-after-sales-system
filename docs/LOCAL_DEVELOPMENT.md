@@ -123,7 +123,10 @@ Ollama 默认允许文本模型与 Embedding 模型同时驻留，避免 RAG 请
 ```dotenv
 # .env
 AGENT_TIMEOUT_MILLIS=300000
+MINIAPP_AGENT_REQUEST_TIMEOUT_MILLIS=330000
 ```
+
+客户端超时比 Java 网关多 30 秒，用于接收网关的终态或错误事件；不要把客户端超时设得比网关更短。
 
 聊天入口默认先执行一次 LLM 情绪分类。只验收政策 RAG 时，可在本机 `python_agent/.env` 关闭这次可选的前置调用；独立情绪分析接口和正式环境默认行为不受影响：
 
