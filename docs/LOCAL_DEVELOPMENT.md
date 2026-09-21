@@ -1,0 +1,230 @@
+# Windows 本地开发环境
+
+本文以 Windows PowerShell 为主，目标是让项目配置与其他项目的系统环境变量隔离。
+
+## 1. 端口约定
+
+| 服务 | 本机端口 | 容器端口 |
+| --- | ---: | ---: |
+| MySQL | 3307 | 3306 |
+| Redis | 6380 | 6379 |
+| PostgreSQL + pgvector | 5432 | 5432 |
+| Kafka | 9092 | 9092 |
+| Java API | 8080 | 8080 |
+| Python Agent | 8000 | 8000 |
+| 客服/管理前端 | 5173 | 5173 |
+| Prometheus | 9090 | 9090 |
+| Grafana | 3000 | 3000 |
+
+Java API 的上下文路径是 `/api`，例如：
+
+```text
+http://127.0.0.1:8080/api/actuator/health
+```
+
+## 2. 必需软件
+
+- JDK 21
+- Python 3.11 或 3.12
+- Node.js 20
+- Docker Desktop 与 WSL2，用于 PostgreSQL/pgvector、Kafka 和完整 Compose
+
+本机 Maven Wrapper 会依次读取：
+
+1. `AFTERSALES_JAVA_HOME`
+2. 项目根 `.java-home.local`
+3. `JAVA_HOME`
+
+选中的 JDK 必须是 21。
+
+## 3. 首次配置
+
+在项目根目录执行：
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item python_agent/.env.example python_agent/.env
+Copy-Item src/main/resources/application-local.example.yml src/main/resources/application-local.yml
+Set-Content .java-home.local 'D:\java21'
+```
+
+然后编辑本地文件：
+
+- `.env`：数据库、Redis、Kafka、Agent 和共享内部 Token。
+- `python_agent/.env`：LLM、Embedding、Vision、Reranker、pgvector DSN。
+- `application-local.yml`：只放本机 Spring 覆盖项。
+
+这些文件均被 `.gitignore` 排除。不得把真实密码、API Key 或 Token 写入可提交文件。
+
+`AGENT_INTERNAL_TOKEN` 必须在项目根 `.env`、`python_agent/.env` 和 Java 本地配置中一致。
+
+## 4. 配置优先级与环境隔离
+
+Spring Boot 的外部环境变量优先级高于 `application.yml`。如果父 PowerShell 继承了其他项目的以下变量，Java 会被重定向到错误端口或数据库：
+
+```text
+SPRING_CONFIG_ADDITIONAL_LOCATION
+SPRING_DATASOURCE_*
+SPRING_DATA_REDIS_*
+SPRING_KAFKA_BOOTSTRAP_SERVERS
+SERVER_PORT
+MANAGEMENT_SERVER_PORT
+```
+
+请使用项目脚本启动：
+
+```powershell
+.\scripts\start-backend.ps1
+```
+
+该脚本执行以下操作：
+
+1. 只在当前子进程清除上述继承变量。
+2. 从项目根 `.env` 重新加载配置，并覆盖同名进程变量。
+3. 固定 `SPRING_PROFILES_ACTIVE=local`。
+4. 将项目变量映射到 Spring 标准变量。
+5. 使用 JDK 21 Maven Wrapper 启动应用。
+
+脚本不会修改 User 或 Machine 级 Windows 环境变量。
+
+Python Agent 使用：
+
+```powershell
+.\scripts\start-agent.ps1
+```
+
+它先加载项目根 `.env`，再加载 `python_agent/.env`；Agent 专用配置优先。
+
+## 5. 基础设施启动
+
+完整环境使用仓库现有 Compose：
+
+```powershell
+docker compose config
+docker compose up -d mysql redis postgres kafka
+docker compose ps
+```
+
+Compose 从项目根 `.env` 读取本机映射端口。容器之间仍使用 MySQL 3306、Redis 6379、Kafka 29092 和 PostgreSQL 5432。
+
+当前机器还保留了一个被 Git 忽略的本机恢复脚本，可在 Docker 不可用时只启动已有的 MySQL 与 Redis：
+
+```powershell
+.\.runtime\start-local-infra.ps1
+```
+
+这个脚本属于当前电脑，不能作为团队可复现方案。完整 AI/RAG 验收必须使用 PostgreSQL/pgvector 和 Kafka。
+
+## 6. 应用启动顺序
+
+```text
+MySQL / Redis / PostgreSQL / Kafka
+→ Python Agent
+→ Java
+→ Vue 前端
+→ Python Kafka Review Consumer
+→ Prometheus / Grafana
+```
+
+分进程启动示例：
+
+```powershell
+# Terminal 1
+.\scripts\start-agent.ps1
+
+# Terminal 2
+.\scripts\start-backend.ps1
+
+# Terminal 3
+Set-Location frontend/staff-auth-test-ui
+$env:VITE_API_BASE_URL='http://127.0.0.1:8080/api'
+npm run dev:real
+```
+
+Python Kafka Consumer：
+
+```powershell
+Set-Location python_agent
+..\.venv\Scripts\python.exe -m after_sales_agent.interface.kafka_adapter
+```
+
+## 7. 基础验证
+
+### MySQL
+
+```powershell
+mysql --protocol=tcp -h 127.0.0.1 -P 3307 -u ecommerce -p ecommerce_aftersales
+```
+
+期望至少存在 15 张业务表。
+
+### Redis
+
+```powershell
+redis-cli -h 127.0.0.1 -p 6380 PING
+```
+
+期望返回 `PONG`。
+
+### PostgreSQL 与 pgvector
+
+```powershell
+docker compose exec postgres psql -U postgres -d after_sales_rag -c "SELECT extname FROM pg_extension WHERE extname IN ('vector','pg_trgm') ORDER BY extname;"
+docker compose exec postgres psql -U postgres -d after_sales_rag -c "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid='knowledge_chunk'::regclass AND attname='embedding';"
+```
+
+期望扩展包含 `vector`、`pg_trgm`，向量列类型为 `vector(1024)`。
+
+### Kafka
+
+```powershell
+docker compose exec kafka kafka-topics --bootstrap-server kafka:29092 --list
+```
+
+最终验收必须包含真实 producer/consumer 消息，只有端口监听不算通过。
+
+### Java 与 Agent
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/health
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/api/agent/health
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/api/actuator/health
+```
+
+完整依赖启动后，Actuator 应返回 200 与 `UP`。PostgreSQL 未启动时返回 503 是依赖健康检查的真实结果。
+
+## 8. 构建与测试
+
+```powershell
+.\mvnw.cmd test
+
+.\.venv\Scripts\python.exe -m pytest -q python_agent/tests
+
+Set-Location frontend/staff-auth-test-ui
+npm run test:contracts
+$env:VITE_API_BASE_URL='http://127.0.0.1:8080/api'
+npm run build
+
+Set-Location ../uniapp
+npm run build:mp-weixin
+```
+
+Testcontainers 测试需要 Docker。测试被跳过与测试通过是不同证据，验收报告必须分别记录。
+
+## 9. 常见问题
+
+### 应用连接到了 `root@127.0.0.1`
+
+检查是否绕过了 `scripts/start-backend.ps1`，以及父进程是否设置了 `SPRING_CONFIG_ADDITIONAL_LOCATION` 或 `SPRING_DATASOURCE_*`。
+
+### 应用意外启动在 8081/9091
+
+父进程存在 `SERVER_PORT` 或 `MANAGEMENT_SERVER_PORT`。项目脚本会清除并从 `.env` 重新设置为 8080。
+
+### Actuator 返回 503
+
+读取启动日志确认具体 DOWN 组件。当前完整健康检查包含 PostgreSQL，不能用“核心接口 200”替代整体健康状态。
+
+### 前端生产构建拒绝启动
+
+客服前端要求显式 `VITE_API_BASE_URL`，避免生产包静默使用 mock adapter。

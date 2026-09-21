@@ -1,7 +1,20 @@
 spring:
   datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3307/ecommerce_aftersales?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${DB_USERNAME:ecommerce}
     password: ${DB_PASSWORD:local-dev-password}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6380}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+
+pgvector:
+  datasource:
+    url: ${PGVECTOR_URL:jdbc:postgresql://127.0.0.1:5432/after_sales_rag}
+    username: ${PGVECTOR_USERNAME:postgres}
+    password: ${PGVECTOR_PASSWORD:local-dev-password}
 
 app:
   knowledge:
@@ -20,11 +33,12 @@ app:
   jwt:
     secret: "change-this-secret-key-to-at-least-32-bytes-in-production"
   agent:
+    base-url: ${AGENT_BASE_URL:http://127.0.0.1:8000/api}
     # 多副本时填写多个 Agent 地址；每个副本应绑定独立 GPU/推理服务。
     # base-urls:
     #   - http://10.0.0.11:8000/api
     #   - http://10.0.0.12:8000/api
-    internal-token: "replace-with-a-random-shared-secret"
+    internal-token: ${AGENT_INTERNAL_TOKEN:replace-with-a-random-shared-secret}
     # 0 时按“副本数 × 单副本并发”自动计算网关容量。
     max-concurrent-requests: 0
     per-instance-max-concurrent-requests: 2

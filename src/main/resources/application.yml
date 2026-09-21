@@ -117,7 +117,7 @@ app:
     python-command: ${AGENT_PYTHON_COMMAND:python}
     launch-args:
       - -m
-      - after_sales_agent.api.http_server
+      - after_sales_agent.interface.http_server
     script-path: ${AGENT_SCRIPT_PATH:}
     working-directory: ${AGENT_WORKING_DIRECTORY:python_agent}
     startup-wait-millis: ${AGENT_STARTUP_WAIT_MILLIS:15000}

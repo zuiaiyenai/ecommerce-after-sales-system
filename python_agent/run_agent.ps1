@@ -10,7 +10,7 @@ if (Test-Path -LiteralPath $envFile) {
         $name, $value = $line.Split("=", 2)
         $name = $name.Trim()
         $value = $value.Trim().Trim('"').Trim("'")
-        if ($name -and -not [Environment]::GetEnvironmentVariable($name, "Process")) {
+        if ($name) {
             [Environment]::SetEnvironmentVariable($name, $value, "Process")
         }
     }
