@@ -6,7 +6,7 @@
 >
 > 证据范围：当前源码、配置、SQL、自动化测试与本机端口；历史 README 和旧设计文档只作线索。
 
-> 运行状态更新（2026-09-22）：Windows 承载 MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue；专用 Ubuntu VMware 承载 PostgreSQL/pgvector、Kafka、Ollama、TEI Reranker、Prometheus 与 Grafana。Java Outbox 审核、AI/RAG 聊天、SSE、WebSocket、跨轮对话、知识库生命周期和三个应用指标采集目标均已有实机证据。本地 `qwen2.5:3b`、`bge-m3` 和 `BAAI/bge-reranker-v2-m3` 覆盖 LLM、Tool Calling、1024 维 Embedding 与精排，无需远程模型 Key。
+> 运行状态更新（2026-09-22）：Windows 承载 MySQL、Redis、Java、Python Agent、Kafka Consumer 和 Vue；专用 Ubuntu VMware 承载 PostgreSQL/pgvector、Kafka、Ollama、TEI Reranker、Prometheus 与 Grafana。Java Outbox 审核、AI/RAG 聊天、Vision、SSE、WebSocket、跨轮对话、知识库生命周期和三个应用指标采集目标均已有实机证据。本地 `qwen2.5:3b`、`bge-m3`、`qwen2.5vl:3b` 和 `BAAI/bge-reranker-v2-m3` 覆盖文本生成、Tool Calling、Embedding、图片审核与精排，无需远程模型 Key。
 
 ## 1. 审计结论
 
@@ -20,7 +20,7 @@
 - Kafka 承载售后审核请求，Java 通过 Transactional Outbox 发布，Python 消费。
 - 管理/客服端是 Vue 3 + Vite；用户端是 Vue 3 + uni-app。
 
-当前采用混合本地运行：Windows 运行 Java、Python、Vue、MySQL 与 Redis，专用 VMware 运行需要 Linux 容器的 pgvector、Kafka 和本地模型。知识库已生成 43 个当前发布的真实向量 chunk；指定业务商户的 Top-K 检索已命中正确政策。Vision 仍需要单独的视觉模型或远程 Key，不影响文本 AI/RAG 链路。
+当前采用混合本地运行：Windows 运行 Java、Python、Vue、MySQL 与 Redis，专用 VMware 运行需要 Linux 容器的 pgvector、Kafka 和本地模型。知识库已生成 43 个当前发布的真实向量 chunk；指定业务商户的 Top-K 检索已命中正确政策。本地 Vision 已用正常图和破损图完成 Java 网关 E2E，但 CPU 单图约 248–256 秒，完整本地精度评测尚未执行。
 
 ## 2. 真实目录结构
 
@@ -188,7 +188,8 @@ POST /api/aftersales
 | 会话 | 列表、详情、用户咨询 | 会话生命周期 | 对话编排 | MySQL + WebSocket | IMPLEMENTED | Agent 回答关联真实 MySQL session 已验证 |
 | 消息 | 历史与实时展示 | 落库、广播、顺序查询 | append message 工具 | MySQL + WebSocket | IMPLEMENTED | 助手消息 `2102063467434463234` 已通过历史 API 回读 |
 | 工单/售后 | 用户申请、客服审核 | 事务、补证、状态机 | 正式审核 Workflow | MySQL + Kafka | IMPLEMENTED | NOT_VERIFIED |
-| AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + 本地 LLM + 工具 | MySQL/Redis/PostgreSQL | IMPLEMENTED | 141.35 秒返回 AI 模式、1 条可信引用并落库；Vision 另行配置 |
+| AI 客服 | 用户咨询页、客服建议 | HTTP/SSE 网关 | Agent + 本地 LLM + 工具 | MySQL/Redis/PostgreSQL | IMPLEMENTED | 141.35 秒返回 AI 模式、1 条可信引用并落库 |
+| Vision | 图片上传与审核入口 | JWT 网关与超时/fallback | `qwen2.5vl:3b` 多模态审核 | Ollama | IMPLEMENTED | 正常图与破损图各 1 张真实 E2E；约 248–256 秒/张 |
 | RAG | 管理端测试检索 | 检索代理接口 | 混合召回/RRF/rerank | pgvector/FTS/pg_trgm | IMPLEMENTED | 43 个发布 chunk；新导入文档经管理 API 命中 |
 | 知识库 | 管理端列表、草稿、发布 | 完整管理 API | 解析、Embedding、检索 | PostgreSQL | IMPLEMENTED | TXT 上传、草稿确认、发布、1024 维向量与页面展示已通过 |
 | 文档上传 | 文件导入 UI | multipart 校验与异步任务 | PDF/文本解析 | PostgreSQL + 文件系统 | IMPLEMENTED | NOT_VERIFIED |
@@ -219,7 +220,7 @@ POST /api/aftersales
 | Redis | 6380 | RUNNING | Windows 项目专用配置 |
 | PostgreSQL/pgvector | 5432 | RUNNING | Ubuntu VMware Compose，health 为 healthy |
 | Kafka | 9092 | RUNNING | Ubuntu VMware KRaft broker |
-| Ollama | 11434 | RUNNING | `qwen2.5:3b` 与 `bge-m3` |
+| Ollama | 11434 | RUNNING | `qwen2.5:3b`、`bge-m3` 与 `qwen2.5vl:3b` |
 | TEI Reranker | 8081 | RUNNING | `BAAI/bge-reranker-v2-m3` |
 | Java | 8080 | RUNNING | Actuator 200 / `UP` |
 | Python Agent | 8000 | RUNNING | `/api/health` 返回 `ok=true` |
@@ -257,7 +258,7 @@ POST /api/aftersales
 
 2026-09-22 又完成 SSE、WebSocket 与跨轮对话验收。SSE 用时 188.358 秒并按 `start → token → finish → done` 结束；当前 `token` 事件携带整段回答。追问用时 196.578 秒，并从 MySQL 历史继承上一轮政策语境。WebSocket 完成 JWT 订阅、客服发信、匹配广播和历史回读；匿名握手返回 401。
 
-普通聊天使用不带 checkpointer 的 LangGraph；PostgreSQL checkpoint 只用于正式审核。实查已有 1 个审核 thread、5 个 checkpoint，聊天 session checkpoint 为 0。Prometheus 三个 target、告警规则和 Grafana dashboard 也已通过运行验收。Vision 仍待单独配置和验收，因此完整系统可用性尚未完成最终签收。
+普通聊天使用不带 checkpointer 的 LangGraph；PostgreSQL checkpoint 只用于正式审核。实查已有 1 个审核 thread、5 个 checkpoint，聊天 session checkpoint 为 0。Prometheus 三个 target、告警规则和 Grafana dashboard 也已通过运行验收。本地 Vision 正负样本功能闭环已通过；完整本地精度评测、生产容量和公网部署仍不属于当前证据。
 
 ## 8. 已确认的配置问题
 

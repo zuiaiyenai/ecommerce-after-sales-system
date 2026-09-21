@@ -15,9 +15,9 @@
 | Redis | Windows | 6380 | DONE | Java/Consumer 可连接 |
 | PostgreSQL + pgvector | VMware | 5432 | DONE | 版本、扩展、索引、查询通过 |
 | Kafka | VMware | 9092 | DONE | Outbox 审核链路通过 |
-| Ollama | VMware | 11434 | DONE | `qwen2.5:3b`、`bge-m3` |
+| Ollama | VMware | 11434 | DONE | `qwen2.5:3b`、`bge-m3`、`qwen2.5vl:3b` |
 | TEI Reranker | VMware | 8081 | DONE | health 与真实 rerank 通过 |
-| Vision | 未配置 | - | NOT_DONE | 无模型/Key |
+| Vision | VMware Ollama | 11434 | DONE | 正常图与破损图各 1 张真实 E2E |
 | Prometheus / Grafana | VMware | 9090/3000 | DONE | 三个 target UP、规则健康、dashboard 已加载 |
 
 VM 为 `EcommerceAfterSalesInfra`，4 vCPU、8 GB 内存、4 GB swap。地址 `192.168.100.130` 来自 NAT DHCP，变化后需更新本机忽略配置。
@@ -172,13 +172,26 @@ TXT 上传 → 异步解析 → AI 分类草稿 → 政策版本/有效期确认
 
 结构化运行证据保存在被 Git 忽略的 `.runtime/evidence/phase9-observability.json`。从 VM 匿名访问 Agent health 返回 200，匿名访问指标入口返回 401。
 
-## 10. 当前结论
+## 10. 本地 Vision
+
+2026-09-22 在现有 Ubuntu VMware 的 Ollama 下载 `qwen2.5vl:3b`，无需远程 API Key。使用小程序演示用户 JWT 调用 Java `POST /api/agent/review-images`，再经内部 Token 调用 Python Vision：
+
+| 样本 | 预期 | 结果 | 耗时 |
+| --- | --- | --- | ---: |
+| `01_外壳破裂.png` | 有破损 | `success=true`、识别裂纹、`has_damage_area=true` | 255.246 秒 |
+| `image/耳机.png` | 正常商品图 | `success=true`、`has_damage_area=false` | 247.768 秒 |
+
+破损样本首次独立评测曾因 160 token 输出截断触发 JSON 重试，最终成功；两次破损识别的 `damage_confidence` 分别为 0.8 和 0.2，均不足以支持当前 0.85 自动审批阈值。系统会保留人工复核边界，不会因 `has_damage_area=true` 直接修改业务状态。
+
+这两张图片证明本地 Vision 功能链路可运行，不能替代完整质量评测。仓库中的 54 张 `qwen3-vl-plus` 报告属于历史远程模型证据，不能归因于当前本地模型。运行证据保存在被 Git 忽略的 `.runtime/evidence/phase10-vision-smoke.json`、`phase10-vision-java-e2e.json` 和 `phase10-vision-java-normal.json`。
+
+## 11. 当前结论
 
 - Java 核心业务：DONE
 - 文本 AI / RAG：DONE（本地 CPU 功能闭环）
 - Kafka 正式审核主链：DONE
 - SSE / WebSocket / 跨轮聊天：DONE（SSE 当前为整段单事件）
 - Prometheus / Grafana：DONE（本地混合拓扑）
-- Vision：NOT_DONE
+- Vision：DONE（本地正负样本功能闭环；完整本地精度评测未执行）
 - 生产容量、高可用、公网 TLS 与容灾：NOT_DONE
 - 完整 Docker/Testcontainers 门禁：DONE

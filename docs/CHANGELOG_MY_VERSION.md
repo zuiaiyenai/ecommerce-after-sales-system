@@ -111,8 +111,15 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 验证 Java、Python Agent、Review Consumer target 全部 `UP`；
 - 验证 4 条告警规则健康，Grafana 数据库正常并自动加载 Agent Overview dashboard。
 
+## Phase 10：本地 Vision 功能闭环
+
+- 在现有 VM Ollama 增加 `qwen2.5vl:3b`，没有新增虚拟机或远程付费 Key；
+- 将 Compose 的 Agent/Review Consumer Vision 配置接到本地 Ollama；
+- 使用演示用户 JWT 跑通 Java → Python Vision → Ollama → Java；
+- 破损图识别为裂纹，正常商品图未识别为破损，两张均返回 `success=true`；
+- 单图耗时约 248–256 秒，只作为本地 CPU 功能证据；历史 54 张远程模型指标不归因于本地模型。
+
 ## 仍需维护的事项
 
-1. 配置视觉模型后单独验收图片审核。
-2. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
-3. 生产化前补 TLS、密钥管理、备份恢复和容量压测。
+1. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。
+2. 生产化前补 TLS、密钥管理、备份恢复和容量压测。

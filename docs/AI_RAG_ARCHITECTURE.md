@@ -80,7 +80,7 @@ Agent 使用 LangGraph 组织咨询和正式审核。模型可调用订单、工
 | 文本生成 / Tool Calling | Ollama | `qwen2.5:3b` | VM `11434` |
 | Embedding | Ollama OpenAI compatible | `bge-m3` | VM `11434/v1` |
 | Rerank | Hugging Face TEI | `BAAI/bge-reranker-v2-m3` | VM `8081/rerank` |
-| Vision | 未配置 | 无 | NOT_DONE |
+| Vision | Ollama | `qwen2.5vl:3b` | VM `11434` |
 
 CPU 验收环境会把 Java Agent 超时设为 300 秒，前端 Agent 请求超时设为 330 秒，以便接收 Java 网关终态或错误事件。政策聊天可通过本机忽略配置关闭可选的前置情绪 LLM 调用，主链的 Embedding、pgvector、Reranker 和回答 LLM 仍真实执行。
 
@@ -102,7 +102,8 @@ CPU 验收环境会把 Java Agent 超时设为 300 秒，前端 Agent 请求超�
 - 同一 MySQL 会话的追问正确继承上一轮政策语境；
 - SSE 返回 `start → token → finish → done`，当前 `token` 是工作流完成后的整段回答，不是模型逐 token 输出；
 - 本地 CPU 链路观察到约 141–244 秒，仅证明功能闭环；
-- Vision、生产并发和公网部署尚未完成验收。
+- Vision 正负各 1 张图片已通过 Java JWT 网关真实调用，单图约 248–256 秒；样本不足以形成新的本地精度结论；
+- 生产并发和公网部署尚未完成验收。
 
 ## 7. 代码入口
 

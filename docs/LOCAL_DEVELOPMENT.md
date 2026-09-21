@@ -114,7 +114,29 @@ Compose 从项目根 `.env` 读取本机映射端口。容器之间仍使用 MyS
 
 - `qwen2.5:3b`：文本生成、结构化输出和原生 Tool Calling；
 - `bge-m3`：OpenAI compatible Embedding，固定输出 1024 维；
+- `qwen2.5vl:3b`：售后图片审核；
 - `BAAI/bge-reranker-v2-m3`：Hugging Face TEI `/rerank` 精排服务。
+
+首次配置 VM 时，在 Ubuntu 项目目录拉取 Ollama 模型：
+
+```bash
+docker compose --profile local-ai up -d ollama
+docker compose exec ollama ollama pull qwen2.5:3b
+docker compose exec ollama ollama pull bge-m3
+docker compose exec ollama ollama pull qwen2.5vl:3b
+```
+
+Windows 运行 Python Agent 时，在 `python_agent/.env` 指向 VM：
+
+```dotenv
+VISION_PROVIDER=ollama
+VISION_BASE_URL=http://192.168.100.130:11434
+VISION_API_KEY=
+VISION_MODEL=qwen2.5vl:3b
+VISION_TIMEOUT_SECONDS=300
+```
+
+本地 4 vCPU CPU 实测单图约 248–256 秒，只用于功能闭环。自动审核仍受置信度、证据一致性和 Java 状态机约束；不要把单图成功写成生产吞吐或模型精度结论。
 
 Ollama 默认允许文本模型与 Embedding 模型同时驻留，避免 RAG 请求在两个模型之间反复换载。当前 4 vCPU 环境使用单并发，并将本地 CPU 推理读取超时设为 240 秒、单次总超时设为 300 秒。TEI 将批处理令牌限制为 4096，Agent 每次精排 5 个 RRF 候选并等待 30 秒，以适配 8 GB 内存的 CPU 虚拟机。
 
