@@ -275,7 +275,7 @@ POST /api/aftersales
 
 ## 9. 完整环境验收标准（当前均已满足）
 
-1. 项目自身配置能在新 PowerShell 会话中稳定启动，不读取 `fctts-main5` 的全局数据库值。
+1. 项目自身配置能在新 PowerShell 会话中稳定启动，不读取其他项目的全局数据库值。
 2. `docker compose config` 可解析，Redis 明确映射到 6380。
 3. PostgreSQL 实际执行 `CREATE EXTENSION vector`，并验证表、1024 维列、索引和一次 Top-K 查询。
 4. Kafka 实际创建主题并完成一次 Java producer → Python consumer 事件。

@@ -2,6 +2,8 @@
 
 面向电商售后场景的智能客服与工单协同系统。项目覆盖用户咨询、售后申请、凭证审核、知识检索、AI 辅助决策、人工接管、商家运营和链路监控，并通过 Java 业务内核、Python LangGraph Agent、事件驱动架构与分层 RAG 保证业务状态可控、AI 结论可解释、分布式失败可恢复。
 
+技术链路：Vue → Spring Boot → MySQL / Redis / Kafka → Python AI Agent → PostgreSQL + pgvector → Ollama / Embedding / Reranker / Vision。
+
 ## 项目亮点
 
 - **单 Agent + 渐进式 Skill 架构：** 按咨询、补证、正式审核和人工转接逐级加载 Skill 元数据、指令与参考资源，使启动阶段 Skill 正文驻留量降低 80.7%，正式审核分支注入的 Skill 指令量降低约 50%；通过内容哈希固化 Skill 版本，并以确定性 Gate 和 Java 状态机约束审核决策。
@@ -9,6 +11,7 @@
 - **知识工程与 Agentic RAG：** 面向 PDF、Markdown 和 TXT 设计标题层级感知的结构化递归切片，保留段落、列表、表格和页码语义；基于 pgvector、pg_trgm 与 RRF 构建混合检索，在知识覆盖不足时生成最多 3 条互补 Query，执行一次有界并行重试与融合排序。
 - **RAG 质量治理：** 构建覆盖检索、上下文、生成与业务路由的分层评测体系，结合数据契约校验定位链路质量损耗；在 60 条离线评测集上实现 Faithfulness 85.99%、Answer Relevancy 90.93%，True Hallucination Rate 降至 5%。
 - **全链路可观测：** 以 Trace ID 串联 Java、Outbox、Kafka、Agent 工具调用与结果落库，并通过 Prometheus + Grafana 监控请求、延迟、错误、RAG 降级、幂等处理、DLQ 和人工转接等关键指标。
+- **鉴权与实时交互：** 使用 Spring Security、JWT 与 RBAC 约束用户、客服和管理员权限，通过 SSE 输出流式 Agent 响应，并以 WebSocket 同步会话消息和审核结果。
 
 ## 一、总体架构
 
@@ -594,6 +597,6 @@ docker compose ps
 ## 十一、版本与许可边界
 
 - 当前 Git 历史包含多位贡献者，接管和改造时保留提交历史，不把他人的既有提交改写成个人独立完成。
-- 当前仓库没有 `LICENSE` 或可确认的上游仓库声明，因此不凭空添加 MIT、Apache-2.0 等许可证，也不宣称已经取得第三方代码的再许可权。
-- 若后续公开发布，由仓库所有者先确认代码来源和贡献授权，再选择许可证并补充对应版权与来源说明。
+- 本仓库基于 [yyx758/ecommerce-after-sales-system](https://github.com/yyx758/ecommerce-after-sales-system) 进行二次开发；本版本新增和完善的能力见 `docs/CHANGELOG_MY_VERSION.md`。
+- 上游仓库与当前代码树均未提供 `LICENSE` 或 `NOTICE`，因此本仓库不自行添加 MIT、Apache-2.0 等许可证，也不宣称完全原创或已经取得第三方代码的再许可权。公开可见不等于授予复制、修改或再分发许可；后续采用开源许可证前需由权利人确认代码来源和授权范围。
 - 用户端默认使用微信开发者工具的 `touristappid`。真机调试或发布前必须替换为自己的小程序 AppID；页面不展示未经核验的电话、备案号或协议链接。
