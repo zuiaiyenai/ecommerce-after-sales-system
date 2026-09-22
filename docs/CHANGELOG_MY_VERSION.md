@@ -150,6 +150,13 @@ E2E:    141.35 s, AI mode, 1 trusted citation, MySQL history readback
 - 修正 GitHub Actions 分层 RAG 指标门禁的测试文件路径，使其指向真实的 `tests/unit/test_rag_metrics.py`；
 - 本地使用 workflow 同款命令执行该门禁，并静态解析 CI 与 nightly workflow；是否在 GitHub Runner 成功仍以远端运行记录为准。
 
+## Phase 16：管理端真实数据边界收尾
+
+- 删除客服绩效卡固定的综合分、满意度、好评率和近 7 日趋势，无真实样本时显示明确空态；
+- 删除账号治理页固定操作日志、设备数量、安全判断和未接入的知识权限结论，只保留 API 可证明的字段；
+- 更新管理员 overview 中已经过期的知识库“后续扩展”描述；
+- 前端契约测试增至 17/17，real API 生产构建与 Java 编译通过。
+
 ## 仍需维护的事项
 
 1. 为 SQL 引入统一迁移工具，避免依赖手工建库顺序。

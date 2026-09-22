@@ -50,3 +50,17 @@ test('real admin dashboard does not render fixed mock business data', async () =
   assert.doesNotMatch(dashboard, /adminDashboardMock|fallbackPendingAccounts|fallbackKnowledgeMaintenance/);
   assert.doesNotMatch(dashboard, /星选旗舰店|Knowledge Admin|Security Bot|<strong>6<\/strong>/);
 });
+
+test('real performance and account governance views expose honest empty states', async () => {
+  const performance = await source('src/components/ServicePerformanceCard.vue');
+  const accounts = await source('src/views/AdminAccountsView.vue');
+
+  assert.doesNotMatch(performance, /fallbackTrendData|return 96|value: '4\.7 \/ 5'|value: '93%'|score: 88/);
+  assert.match(performance, /近 7 日暂无评价或响应样本/);
+  assert.match(performance, /hasPerformanceData/);
+
+  assert.doesNotMatch(accounts, /baseOperationLogs|Platform Admin|Security Admin|登录设备数量|未发现异常/);
+  assert.doesNotMatch(accounts, /售后政策 \/ FAQ \/ 服务规则|允许使用敏感规则|允许查看证据审核规则/);
+  assert.match(accounts, /当前后端尚未提供账号审计日志接口/);
+  assert.match(accounts, /细粒度知识权限[^]*尚未接入独立权限配置/);
+});

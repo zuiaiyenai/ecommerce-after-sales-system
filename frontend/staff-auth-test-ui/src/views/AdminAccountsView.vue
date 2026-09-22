@@ -60,14 +60,6 @@ const detailTabs = [
   { key: 'logs', label: '操作日志' }
 ];
 
-const baseOperationLogs = [
-  { id: 'log-1', action: '管理员修改账号信息', operator: 'Platform Admin', time: '今天 10:42', status: '已记录' },
-  { id: 'log-2', action: '调整商家归属', operator: 'Platform Admin', time: '今天 09:58', status: '配置变更' },
-  { id: 'log-3', action: '修改接待上限', operator: 'Service Admin', time: '昨天 18:16', status: '已生效' },
-  { id: 'log-4', action: '重置密码', operator: 'Security Admin', time: '昨天 17:48', status: '安全操作' },
-  { id: 'log-5', action: '停用 / 启用账号', operator: 'Platform Admin', time: '06-28 14:21', status: '权限审计' }
-];
-
 const selectedAccount = computed(() => {
   return accounts.value.find((item) => sameId(item.id, selectedAccountId.value)) || null;
 });
@@ -165,8 +157,8 @@ const allowNewSession = computed(() => {
 const knowledgeItems = computed(() => [
   {
     label: '可访问知识库范围',
-    value: form.knowledgeScope || form.merchantCode || 'MERCHANT_DEMO',
-    enabled: true
+    value: form.knowledgeScope || '未配置',
+    enabled: Boolean(form.knowledgeScope)
   },
   {
     label: '所属商家知识库',
@@ -174,35 +166,17 @@ const knowledgeItems = computed(() => [
     enabled: Boolean(form.merchantCode)
   },
   {
-    label: '通用知识库',
-    value: '售后政策 / FAQ / 服务规则',
-    enabled: true
-  },
-  {
-    label: '允许使用敏感规则',
-    value: '仅允许读取命中结果，不允许外泄规则细节',
+    label: '细粒度知识权限',
+    value: '尚未接入独立权限配置',
     enabled: false
-  },
-  {
-    label: '允许查看证据审核规则',
-    value: '图片证据、退款规则与售后时效',
-    enabled: true
   }
 ]);
 
 const securityFacts = computed(() => [
   { label: '最近登录时间', value: displayTime(selectedAccount.value?.lastLoginTime) },
-  { label: '登录设备数量', value: selectedAccount.value ? '1 台' : '--' },
-  { label: '登录异常提醒', value: selectedAccount.value?.onlineStatus === 'BUSY' ? '关注忙碌状态' : '未发现异常' }
+  { label: '当前在线状态', value: selectedAccount.value?.onlineStatus || '--' },
+  { label: '安全审计数据', value: '尚未接入' }
 ]);
-
-const operationLogs = computed(() => {
-  const prefix = selectedAccount.value?.realName || form.realName || '当前账号';
-  return baseOperationLogs.map((item) => ({
-    ...item,
-    action: `${item.action}：${prefix}`
-  }));
-});
 
 watch(
   form,
@@ -770,15 +744,9 @@ onMounted(loadPage);
               </section>
 
               <section v-else key="logs" class="tab-panel">
-                <div class="operation-log-list">
-                  <article v-for="log in operationLogs" :key="log.id" class="operation-log-row">
-                    <span class="log-dot"></span>
-                    <div>
-                      <strong>{{ log.action }}</strong>
-                      <p>{{ log.operator }} / {{ log.time }}</p>
-                    </div>
-                    <span class="status-tag neutral">{{ log.status }}</span>
-                  </article>
+                <div class="operation-log-empty">
+                  <strong>暂无可用的账号操作记录</strong>
+                  <p>当前后端尚未提供账号审计日志接口。</p>
                 </div>
               </section>
             </Transition>
@@ -1402,6 +1370,23 @@ onMounted(loadPage);
   display: grid;
   gap: 10px;
   margin-top: 12px;
+}
+
+.operation-log-empty {
+  display: grid;
+  gap: 6px;
+  place-items: center;
+  min-height: 180px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.operation-log-empty strong {
+  color: var(--text);
+}
+
+.operation-log-empty p {
+  margin: 0;
 }
 
 .security-grid {

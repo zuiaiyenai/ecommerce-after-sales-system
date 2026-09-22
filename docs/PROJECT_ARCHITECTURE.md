@@ -207,7 +207,7 @@ POST /api/aftersales
 | 监控 | 管理端 Agent 运行中心 | Actuator/Micrometer | Prometheus metrics | Prometheus/Grafana | IMPLEMENTED | 三个 target UP、4 条规则健康、Grafana dashboard 已加载 |
 | 日志/Trace ID | 无 | MDC Trace Filter | TraceRecorder/请求日志 | 日志文件 | IMPLEMENTED | Java/Agent E2E 响应和运行证据已回读 Trace ID |
 | 全局异常处理 | 错误展示 | GlobalExceptionHandler | 结构化错误 | 无 | IMPLEMENTED | 自动化已覆盖一部分 |
-| 自动化测试 | 16 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
+| 自动化测试 | 17 个契约通过 | 148 通过、0 跳过 | 非集成集 609 通过；真实 pgvector/Redis/LLM 8 项通过 | VM Docker + SSH 隧道 | IMPLEMENTED | Testcontainers 与真实模型门禁已执行 |
 | CI/CD | 无 | GitHub Actions | GitHub Actions | 真实模型 smoke 可跳过 | PARTIAL | NOT_VERIFIED |
 
 ## 6. 当前运行状态
@@ -271,6 +271,7 @@ POST /api/aftersales
 7. 仓库有 SQL migration 文件，但没有 Flyway/Liquibase；已有数据库如何可靠升级尚无统一执行器。
 8. Python 非集成、pgvector、Redis Testcontainers、真实 LLM 与 Java 全量 Testcontainers 当前全绿；CI Runner 仍需配置等价 Docker 与模型环境后才能复现这些门禁。
 9. `merchantCs.mock.js` 仍保留显式开发模式；生产构建在缺少 `VITE_API_BASE_URL` 时会主动失败，不会静默回退 mock。
+10. 管理端真实模式只展示接口可证明的账号、知识库和绩效数据；缺少审计接口或绩效样本时展示明确空态。
 
 ## 9. 完整环境验收标准（当前均已满足）
 

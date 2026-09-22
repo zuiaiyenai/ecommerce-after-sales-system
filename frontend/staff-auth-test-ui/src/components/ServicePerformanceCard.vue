@@ -8,16 +8,6 @@ const props = defineProps({
   }
 });
 
-const fallbackTrendData = [
-  { day: '周一', score: 88 },
-  { day: '周二', score: 89 },
-  { day: '周三', score: 90 },
-  { day: '周四', score: 91 },
-  { day: '周五', score: 93 },
-  { day: '周六', score: 94 },
-  { day: '周日', score: 92 }
-];
-
 const metricConfigs = [
   {
     key: 'avgResponseTime',
@@ -26,7 +16,7 @@ const metricConfigs = [
     value: '--',
     targetText: '目标 ≤ 5分钟',
     goalText: '响应更快，体验更稳',
-    currentPercent: 100,
+    currentPercent: 0,
     targetPercent: 100,
     sampleSize: 0,
     lowerIsBetter: true
@@ -35,24 +25,24 @@ const metricConfigs = [
     key: 'satisfaction',
     label: '用户满意度',
     aliases: ['用户满意度'],
-    value: '4.7 / 5',
+    value: '--',
     targetText: '目标 ≥ 4.5 / 5（基于真实评价）',
     goalText: '真实评价体验保持高位',
-    currentPercent: 94,
+    currentPercent: 0,
     targetPercent: 90,
-    sampleSize: 5,
+    sampleSize: 0,
     lowerIsBetter: false
   },
   {
     key: 'goodRate',
     label: '好评率',
     aliases: ['好评率'],
-    value: '93%',
+    value: '--',
     targetText: '目标 ≥ 90%（基于真实评价）',
     goalText: '真实评价正向反馈占比',
-    currentPercent: 93,
+    currentPercent: 0,
     targetPercent: 90,
-    sampleSize: 5,
+    sampleSize: 0,
     lowerIsBetter: false
   }
 ];
@@ -78,17 +68,25 @@ const trendGridLines = computed(() => {
   });
 });
 
+const hasPerformanceData = computed(() => {
+  const metrics = Array.isArray(props.performance?.metrics) ? props.performance.metrics : [];
+  return metrics.some((item) => hasMetricValue(item));
+});
+
 const trendData = computed(() => {
-  const source = Array.isArray(props.performance?.trend) && props.performance.trend.length
+  const source = hasPerformanceData.value && Array.isArray(props.performance?.trend)
     ? props.performance.trend
-    : fallbackTrendData;
+    : [];
   return source.map((item, index) => ({
-    day: item?.day || fallbackTrendData[index]?.day || `第${index + 1}天`,
-    score: clampPercent(item?.score ?? fallbackTrendData[index]?.score ?? 0)
+    day: item?.day || `第${index + 1}天`,
+    score: clampPercent(item?.score)
   }));
 });
 
 const serviceScore = computed(() => {
+  if (!hasPerformanceData.value) {
+    return null;
+  }
   const fromApi = Number(props.performance?.serviceScore);
   if (Number.isFinite(fromApi)) {
     return clampPercent(fromApi);
@@ -98,12 +96,15 @@ const serviceScore = computed(() => {
     .map((item) => Number(item?.currentPercent))
     .filter((value) => Number.isFinite(value) && value > 0);
   if (!available.length) {
-    return 96;
+    return null;
   }
   return clampPercent(Math.round(available.reduce((sum, value) => sum + value, 0) / available.length));
 });
 
 const scoreStatus = computed(() => {
+  if (!hasPerformanceData.value) {
+    return '暂无服务表现数据';
+  }
   if (props.performance?.scoreStatus) {
     return props.performance.scoreStatus;
   }
@@ -120,10 +121,13 @@ const scoreStatus = computed(() => {
 });
 
 const scoreTags = computed(() => {
+  if (!hasPerformanceData.value) {
+    return ['暂无数据'];
+  }
   if (Array.isArray(props.performance?.tags) && props.performance.tags.length) {
     return props.performance.tags;
   }
-  return serviceScore.value >= 90 ? ['优秀', '达成目标'] : ['稳定', '持续优化'];
+  return [];
 });
 
 const scorePercent = computed(() => clampPercent(serviceScore.value));
@@ -136,6 +140,9 @@ const trendLift = computed(() => {
   return data[data.length - 1].score - data[0].score;
 });
 const trendSummary = computed(() => {
+  if (!trendData.value.length) {
+    return '近7日暂无数据';
+  }
   if (props.performance?.trendSummary) {
     return props.performance.trendSummary;
   }
@@ -150,6 +157,9 @@ const trendSummary = computed(() => {
 
 const trendPoints = computed(() => {
   const data = trendData.value;
+  if (!data.length) {
+    return [];
+  }
   const scores = data.map((item) => item.score);
   const min = Math.min(trendScoreFloor, ...scores);
   const max = Math.max(trendScoreCeiling, ...scores);
@@ -192,9 +202,9 @@ function normalizeMetric(config) {
   const source = findMetric(config);
   const hasSource = Boolean(source);
   const hasSourceValue = hasMetricValue(source);
-  const currentPercent = hasSourceValue ? source.currentPercent : config.currentPercent;
-  const targetPercent = hasSourceValue ? source.targetPercent : config.targetPercent;
-  const sampleSize = hasSource ? Number(source.sampleSize ?? config.sampleSize) : config.sampleSize;
+  const currentPercent = hasSourceValue ? source.currentPercent : 0;
+  const targetPercent = hasSource ? source.targetPercent : config.targetPercent;
+  const sampleSize = hasSource ? Number(source.sampleSize ?? 0) : 0;
   const normalized = {
     ...config,
     value: hasSourceValue ? normalizeMetricValue(config, source.value) : (hasSource ? source.value || '--' : config.value),
@@ -202,7 +212,7 @@ function normalizeMetric(config) {
     targetPercent: clampPercent(targetPercent),
     sampleSize: Number.isFinite(sampleSize) ? sampleSize : 0,
     lowerIsBetter: Boolean(source?.lowerIsBetter ?? config.lowerIsBetter),
-    hasData: hasSource ? hasSourceValue : true
+    hasData: hasSource && hasSourceValue
   };
   const reached = normalized.hasData && isTargetReached(normalized);
 
@@ -349,6 +359,9 @@ function statusToneFor(metric, reached) {
 }
 
 function clampPercent(value) {
+  if (value == null) {
+    return 0;
+  }
   const percent = Number(value);
   if (!Number.isFinite(percent)) {
     return 0;
@@ -382,13 +395,13 @@ function clampPercent(value) {
           />
         </svg>
         <span class="score-halo"></span>
-        <strong>{{ serviceScore }}</strong>
+        <strong>{{ serviceScore ?? '--' }}</strong>
         <small>分</small>
       </div>
       <div class="score-copy">
         <span>服务综合分</span>
         <p>{{ scoreStatus }}</p>
-        <em>{{ trendSummary }} · {{ scoreTags[1] || '持续观察' }}</em>
+        <em>{{ trendSummary }}<template v-if="scoreTags[1]"> · {{ scoreTags[1] }}</template></em>
         <div class="score-tags" aria-label="服务状态">
           <b v-for="tag in scoreTags" :key="tag">{{ tag }}</b>
         </div>
@@ -403,7 +416,7 @@ function clampPercent(value) {
         </div>
         <span>{{ trendSummary }}</span>
       </div>
-      <div class="trend-chart">
+      <div v-if="trendPoints.length" class="trend-chart">
         <svg
           class="trend-svg"
           :viewBox="`0 0 ${trendChartWidth} ${trendChartHeight}`"
@@ -468,7 +481,8 @@ function clampPercent(value) {
           <strong>{{ activeTrendPoint.score }} 分</strong>
         </div>
       </div>
-      <div class="trend-days" aria-hidden="true">
+      <div v-else class="trend-empty">近 7 日暂无评价或响应样本</div>
+      <div v-if="trendPoints.length" class="trend-days" aria-hidden="true">
         <span
           v-for="point in trendPoints"
           :key="point.day"
@@ -753,6 +767,14 @@ function clampPercent(value) {
   height: 100%;
   display: grid;
   overflow: hidden;
+}
+
+.trend-empty {
+  min-height: 148px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .trend-svg {

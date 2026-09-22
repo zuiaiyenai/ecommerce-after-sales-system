@@ -92,7 +92,7 @@ public class AdminConsoleServiceImpl implements AdminConsoleService {
 
         AdminOverview overview = new AdminOverview();
         overview.setGreeting("您好，" + Optional.ofNullable(admin.getRealName()).orElse("管理员"));
-        overview.setSubtitle("统一管理客服账号、商家归属与基础接待配置");
+        overview.setSubtitle("统一管理客服账号、商家归属、知识库生命周期与 Agent 运行状态");
         overview.setStats(List.of(
                 stat("客服账号", staffAccounts.size(), "blue"),
                 stat("启用账号", activeCount, "green"),
@@ -105,7 +105,7 @@ public class AdminConsoleServiceImpl implements AdminConsoleService {
                 "客服端注册仅提交申请，管理员审核通过后账号才能直接用账号密码登录。",
                 "商家编码由管理员端维护，客服登录不再要求额外输入商家编码。",
                 "管理员端可统一管理客服账号与商家归属，默认重置密码为 123456。",
-                "当前管理员端先承接身份治理，后续再扩展知识库治理模块。"
+                "管理员端已接入客服账号、商家归属、知识库生命周期和 Agent 运行监控。"
         ));
         return overview;
     }
