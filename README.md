@@ -4,6 +4,15 @@
 
 技术链路：Vue → Spring Boot → MySQL / Redis / Kafka → Python AI Agent → PostgreSQL + pgvector → Ollama / Embedding / Reranker / Vision。
 
+项目导航：
+
+- [微信小程序前端展示](docs/demo/FRONTEND_SHOWCASE.md)
+- [系统架构与数据流](docs/architecture/SYSTEM_ARCHITECTURE.md)
+- [首次启动指南](docs/STARTUP_GUIDE.md)
+- [5 分钟面试演示](docs/DEMO_SCRIPT_5MIN.md)
+- [技术面试讲解](docs/INTERVIEW_GUIDE.md)
+- [Java + AI 简历素材](docs/RESUME_BULLETS.md)
+
 ## 项目亮点
 
 - **单 Agent + 渐进式 Skill 架构：** 按咨询、补证、正式审核和人工转接逐级加载 Skill 元数据、指令与参考资源，使启动阶段 Skill 正文驻留量降低 80.7%，正式审核分支注入的 Skill 指令量降低约 50%；通过内容哈希固化 Skill 版本，并以确定性 Gate 和 Java 状态机约束审核决策。
@@ -12,6 +21,7 @@
 - **RAG 质量治理：** 构建覆盖检索、上下文、生成与业务路由的分层评测体系，结合数据契约校验定位链路质量损耗；在 60 条离线评测集上实现 Faithfulness 85.99%、Answer Relevancy 90.93%，True Hallucination Rate 降至 5%。
 - **全链路可观测：** 以 Trace ID 串联 Java、Outbox、Kafka、Agent 工具调用与结果落库，并通过 Prometheus + Grafana 监控请求、延迟、错误、RAG 降级、幂等处理、DLQ 和人工转接等关键指标。
 - **鉴权与实时交互：** 使用 Spring Security、JWT 与 RBAC 约束用户、客服和管理员权限，通过 SSE 输出流式 Agent 响应，并以 WebSocket 同步会话消息和审核结果。
+- **小程序真实业务闭环：** 15 个原有页面与新增意见反馈页均连接真实 Java API；收货地址由 MySQL 持久化，按 JWT 用户隔离，并以事务和数据库唯一约束保证每个用户至多一个默认地址。
 
 ## 一、总体架构
 
@@ -449,6 +459,8 @@ stateDiagram-v2
 - 图片或文件形式的售后凭证上传与补充
 - AI 与人工客服共享同一会话历史
 - 售后状态、补证请求和人工接入通知同步展示
+- 收货地址新增、编辑、删除、默认设置与跨页面持久化
+- 意见反馈提交、重复提交保护和后台管理员查询
 
 ### 商家与管理员侧
 
@@ -503,7 +515,7 @@ stateDiagram-v2
 
 | 层次 | 技术 |
 | --- | --- |
-| 业务后端 | Java 21、Spring Boot、MyBatis-Plus、Spring Security |
+| 业务后端 | Java 21、Spring Boot、MyBatis-Plus、Flyway、Spring Security |
 | AI 编排 | Python、LangGraph、LLM Function Calling |
 | 模型能力 | Provider 可替换；本地使用 Ollama `qwen2.5:3b`、Ollama `bge-m3`、Ollama `qwen2.5vl:3b`、TEI `BAAI/bge-reranker-v2-m3` |
 | 知识检索 | PostgreSQL、pgvector、pg_trgm、RRF、Reranker |
@@ -531,6 +543,7 @@ stateDiagram-v2
 │  ├─ uniapp/                   # 用户端小程序
 │  └─ staff-auth-test-ui/       # 商家客服端与管理员端
 ├─ sql/                         # MySQL、pgvector 脚本与迁移
+├─ src/main/resources/db/       # Flyway MySQL 版本化迁移
 ├─ observability/               # Prometheus / Grafana 配置
 ├─ tools/                       # 评测、审计和压测工具
 ├─ compose.yml                  # 本地完整链路编排
@@ -538,6 +551,8 @@ stateDiagram-v2
 ```
 
 ## 九、快速启动
+
+完整的首次配置、分步启动、健康检查与常见错误见 [启动指南](docs/STARTUP_GUIDE.md)。
 
 复制并填写根 `.env` 与 `python_agent/.env` 后，在仓库根目录运行：
 
@@ -582,6 +597,10 @@ docker compose ps
 这些账号来自本地种子数据和开发配置，只用于本机演示。
 
 各服务也可以用 `scripts/start-*.ps1` 分终端启动，详细配置和故障排查见 `docs/LOCAL_DEVELOPMENT.md`。
+
+小程序 16 个正式路由及核心状态截图见 [前端展示总览](docs/demo/FRONTEND_SHOWCASE.md)：
+
+![微信小程序页面总览](docs/demo/screenshots/00-showcase-contact-sheet.png)
 
 ## 十、配置安全
 

@@ -1,119 +1,144 @@
-# Java 后端 / Java + AI 应用面试指南
+# 面试讲解指南
 
-## 1. 一分钟项目介绍
+回答原则：先讲业务问题，再讲代码约束与验证证据；本地验收数据只代表当前环境，不推导生产吞吐。
 
-这是一个智能电商售后系统。Java Spring Boot 负责用户、订单、工单、会话、权限、事务和最终状态；Python LangGraph Agent 负责咨询编排、RAG 和正式审核；MySQL 保存业务真相，PostgreSQL/pgvector 保存知识与向量，Redis 做限流和幂等，Kafka 通过 Transactional Outbox 驱动异步审核。文本 AI 已在本地 CPU 环境跑通 Ollama、Embedding、pgvector、RRF、TEI Reranker、LLM Tool Calling 和消息落库。
+## 1. Spring Boot 与分层
 
-## 2. 我能真实描述的工作
+- **场景：** 订单、售后、客服、地址和反馈需要统一业务入口。
+- **问题：** AI 与多端接入后，业务状态容易分散。
+- **设计：** Controller 处理协议与身份，Service 管事务和状态，Mapper 访问 MySQL；Python 只通过内部 API 调用 Java。
+- **实现：** `AfterSalesController`、`AfterSalesServiceImpl`、`ShippingAddressController`、`ShippingAddressServiceImpl`。
+- **为什么：** 将可变的模型能力放在业务边界外，最终写入仍可校验和测试。
+- **替代方案：** Agent 直接访问数据库，开发快但权限、事务和审计边界会重复。
+- **Trade-off：** 多一次 HTTP 调用，换取单一业务事实来源。
+- **面试回答：** “Java 是业务内核，Agent 生成建议或工具计划，最终状态只由 Java 按权限和状态机落库。”
+- **追问：** Agent 超时、重复请求或返回非法动作时怎么处理？
 
-- 审计 Java、Vue、Python、SQL 与 Compose 的真实调用关系；
-- 隔离本机多项目环境变量，建立可重复启动脚本；
-- 在 VMware 中部署 PostgreSQL/pgvector、Kafka、Ollama 和 TEI；
-- 修复知识库通用维度的 `NULL` 过滤和放宽检索的可信契约；
-- 让 Java 按登录用户从 MySQL 重建订单上下文，防止客户端伪造 RAG 过滤条件；
-- 跑通 Java → Agent → Embedding → pgvector → Reranker → LLM → Java → MySQL；
-- 用自动化测试、HTTP 回读、数据库记录和日志区分源码能力与实机证据。
+## 2. MyBatis-Plus 与用户隔离
 
-不要声称生产高并发、云上高可用、Vision 已完成或所有 Testcontainers 用例已执行。
+- **场景：** 用户只能操作自己的订单、工单和地址。
+- **问题：** 只按主键查询会形成横向越权风险。
+- **设计：** 身份来自 `@CurrentUserId`；关键资源 SQL 同时包含资源 ID 和所有者 ID。
+- **实现：** `ShippingAddressMapper.selectOwned(userId, addressId)`，更新、删除、设默认前先校验所有权。
+- **替代方案：** 全局数据权限插件。当前项目规模下显式 SQL 更容易审计。
+- **Trade-off：** Mapper 方法增多，但权限条件清晰且测试可直接断言。
+- **面试回答：** “前端不传可信 userId，JWT 解析出的 userId 同时进入查询条件。”
+- **追问：** 批量接口、管理员接口如何复用数据权限？
 
-## 3. Transactional Outbox
+## 3. MySQL 与事务
 
-**代码在哪里**：`AfterSalesServiceImpl`、`AfterSalesReviewEventServiceImpl`、`after_sales_event_outbox`。
+- **场景：** 售后申请要同时创建工单、会话记录和审核事件；默认地址只能有一个。
+- **问题：** 多表写入或并发请求可能产生部分成功和重复默认值。
+- **设计：** Service 使用事务；售后事件通过 Outbox 与业务数据同事务；默认地址先清旧值再设置，并用生成列唯一索引兜底。
+- **实现：** `@Transactional`、`after_sales_event_outbox`、Flyway `V1__enforce_single_default_shipping_address.sql`。
+- **替代方案：** 只靠应用锁或先发 Kafka。前者跨实例复杂，后者可能出现消息存在但业务回滚。
+- **Trade-off：** Outbox 引入发布任务和状态表；换取可恢复的一致性。
+- **面试回答：** “本地事务保证业务记录与待发布事件一起提交，独立 Publisher 负责最终发送。”
+- **追问：** 唯一索引冲突、Publisher 崩溃和事件顺序怎么处理？
 
-**为什么这样设计**：创建工单和发送 Kafka 无法放进一个普通本地事务。先在同一 MySQL 事务写工单与 Outbox，再异步发布，可避免业务成功但事件永久丢失。
+## 4. Redis
 
-**涉及原理**：本地事务、至少一次投递、幂等、重试、退避、DLQ。
+- **场景：** 接口限流、审核事件消费幂等和短期审核状态。
+- **问题：** Kafka 至少一次投递会带来重复消费，模型调用又比较昂贵。
+- **设计：** Consumer 用 Redis 原子认领 `event_id`，处理过程中续期，过期任务允许接管；Java 使用 Redis 做窗口限流和短期缓存。
+- **实现：** `RedisRateLimiterServiceImpl`、Python `kafka_adapter.py` 的事件认领逻辑。
+- **Trade-off：** Redis 不是最终事实源；业务完成仍由 Java/MySQL 幂等验证。
+- **面试回答：** “Redis 降低重复工作，MySQL 状态和审核请求 ID 决定最终是否应用。”
+- **追问：** Redis 故障时会不会重复修改工单？
 
-**缺点**：存在发布延迟、重复投递和 Outbox 表清理成本。
+## 5. Kafka、消息可靠性与失败重试
 
-**替代方案**：CDC/Debezium、事务消息、业务允许时直接同步调用。
+- **场景：** 图片审核和 RAG 推理耗时，不应阻塞售后提交。
+- **问题：** 数据库和 Kafka 不能使用一个本地事务。
+- **设计：** Transactional Outbox；Publisher 查询待发布记录，发送成功后标记；Consumer 手动决定提交 Offset，有限重试后进入 DLQ/人工处理。
+- **实现：** `AfterSalesReviewEventServiceImpl`、`AfterSalesReviewDlqConsumer`、Python `AfterSalesReviewKafkaConsumer`。
+- **幂等：** `event_id`、`review_request_id`、证据版本和 Java 状态机共同判重。
+- **Trade-off：** 最终一致，用户先看到工单创建，审核状态随后更新。
+- **面试回答：** “系统接受至少一次投递，通过多层幂等把重复消息变成可安全重放。”
+- **追问：** Outbox 表不断增长、毒消息和分区暂停如何治理？
 
-**面试回答**：项目选择“本地事务 + Outbox + 幂等消费”，保证不丢业务事件；它不是恰好一次，重复由 `event_id` 和业务条件更新吸收。
+## 6. WebSocket 与 SSE
 
-## 4. Kafka 消费幂等
+- **场景：** 客服消息需要双端同步，Agent 回复希望流式返回。
+- **设计：** WebSocket 推送持久化后的消息/审核状态；SSE 代理 Agent 流式事件。
+- **实现：** `ChatWebSocketHandler`、`AgentGatewayController.streamChat`、`AgentGatewayServiceImpl`。
+- **为什么：** WebSocket 适合双向会话，SSE 对服务端单向流式响应更简单。
+- **Trade-off：** 推送不作为事实来源，断线后客户端必须重新加载历史。
+- **面试回答：** “先落库再通知，重连后以历史接口纠正本地展示。”
+- **追问：** 多实例下 WebSocket 广播、背压和断点续传怎么做？
 
-**代码在哪里**：Python `kafka_adapter.py`，Java `AfterSalesReviewDlqConsumer`。
+## 7. AI Agent 与 Ollama
 
-**为什么这样设计**：Kafka 可能重复投递，长时间 AI 审核也可能超过普通处理时长。
+- **场景：** 普通咨询需要按意图查询订单/政策；正式审核需要受控流程。
+- **设计：** 单 `AfterSalesAgent` 调度 Skill/Workflow/Tool；本地 Ollama 提供文本、Embedding 和 Vision。
+- **实现：** `python_agent/after_sales_agent/application/`、`skills/formal-review/`、provider 层。
+- **为什么：** 单 Agent 减少多 Agent 协调状态；正式审核走确定性路由与 Gate。
+- **Trade-off：** 本地 CPU 模型响应慢，适合功能验证，不代表生产容量。
+- **面试回答：** “模型负责理解和建议，工具白名单、最大步数、版本校验和 Gate 限制它的动作范围。”
+- **追问：** 如何防 Prompt Injection 和工具越权？
 
-**涉及原理**：关闭自动提交、处理成功后提交 offset、幂等键、租约续期、DLQ。
+## 8. RAG 与 pgvector
 
-**缺点**：Redis/文件幂等记录也要维护；单 partition 本地环境没有证明扩展能力。
+- **场景：** 售后政策有商家、类目、版本和生效时间约束。
+- **问题：** 单纯向量相似可能召回过期或跨商家政策。
+- **设计：** 结构化硬过滤后执行 Dense + Keyword，RRF 融合，再由 Reranker 精排；知识不足时最多一次有界多查询改写。
+- **实现：** `retrieval/knowledge_filters.py`、pgvector/pg_trgm 查询、Reranker provider。
+- **失败策略：** 降级召回可用于提示，但正式审核不会把它当可信政策自动通过。
+- **Trade-off：** 检索链路更长，换取来源、版本和覆盖情况可审计。
+- **面试回答：** “模型只能改写自然语言查询，不能修改商家、版本、生效时间等硬过滤条件。”
+- **追问：** RRF 参数、阈值、Chunk 策略和评测集怎么确定？
 
-**面试回答**：offset 提交只代表消息位置，不能代替业务幂等。项目同时校验 `event_id`、`review_request_id` 和 `evidence_revision`。
+## 9. 服务降级
 
-## 5. Java 与 Python 的职责边界
+- **场景：** Ollama、Embedding、Reranker、Vision 或 Agent 可能超时/不可用。
+- **设计：** 分类故障、有限重试；证据不足请求补证，其余不确定性转人工；Java 持久化终态和系统消息。
+- **实现：** Python provider 错误分类、Kafka Consumer 重试/DLQ、Java 人工接管服务。
+- **Trade-off：** 可用性优先于自动化率，部分请求需要人工处理。
+- **面试回答：** “降级不是伪造一个成功答案，而是生成明确的人工状态并保证流程可继续。”
+- **追问：** 如何避免下游故障造成重试风暴？
 
-**代码在哪里**：`InternalAgentToolsController`、`AgentToolRegistry`、`AgentConversationContextService`。
+## 10. JWT、鉴权与 RBAC
 
-**为什么这样设计**：模型输出不应直接成为订单或工单真相。Java 保留鉴权、事务、状态机和最终写入，Python 只编排与建议。
+- **场景：** 小程序用户、客服和管理员共用一套 API 服务。
+- **设计：** Spring Security 无状态会话，JWT Filter 解析主体；Service 对管理员/商家角色再做数据库校验；内部 Agent API 使用独立 Token。
+- **实现：** `SecurityConfig`、`JwtAuthenticationFilter`、`CurrentUserIdArgumentResolver`、`AdminConsoleServiceImpl.ensureAdmin`。
+- **Trade-off：** JWT 撤销需要额外机制；当前项目依赖过期时间和账号状态校验。
+- **面试回答：** “认证证明主体，资源归属和角色权限仍在业务查询中验证。”
+- **追问：** Token 泄漏、密钥轮换和强制登出怎么实现？
 
-**涉及原理**：防腐层、最小权限、零信任输入、契约边界。
+## 11. 可观测性：Prometheus 与 Grafana
 
-**缺点**：跨进程调用增加延迟和部署复杂度。
+- **场景：** 需要判断慢在 Java 网关、检索、模型还是消息链路。
+- **设计：** Trace ID 串联日志；Java Micrometer、Agent 和 Consumer 输出 Prometheus 指标；Grafana 汇总运行面板。
+- **指标：** 请求延迟/错误、RAG 模式与降级、Outbox 发布、消费幂等、DLQ、人工接管。
+- **Trade-off：** 高基数字段不进入 label，自由文本和密钥不记录。
+- **面试回答：** “先用指标定位组件，再用 Trace ID 和结构化日志还原单次链路。”
+- **追问：** 当前未接 Alertmanager，生产告警如何补齐？
 
-**替代方案**：同 JVM AI SDK、消息驱动命令、独立业务微服务。
+## 12. Docker 与本地拓扑
 
-**面试回答**：客户端和 LLM 都是不可信输入。Java 用登录用户重查 MySQL，并在每次工具写入前重做业务校验。
+- **场景：** Windows 开发机可使用 Docker Desktop，也支持专用 Ubuntu VMware。
+- **设计：** `compose.yml` 定义完整环境；PowerShell 脚本支持 Docker、VM 和 Existing 模式。
+- **实现：** `scripts/dev-start.ps1` 检查六个基础设施端点，再启动四个应用进程。
+- **Trade-off：** VM 模式增加网络和 SSH 配置，但能在 Docker Desktop 不可用时复用同一 Compose 服务。
+- **面试回答：** “拓扑可变，应用契约和健康检查保持一致。”
+- **追问：** 如何迁移到 Kubernetes，哪些状态服务不应和应用同生命周期？
 
-## 6. RAG 检索
+## 13. CI 与测试
 
-**代码在哪里**：`PgVectorKnowledgeRetriever`、`knowledge_filters.py`、`reranker_client.py`。
+- **场景：** Java、Python 和两个前端技术栈需要独立质量门禁。
+- **设计：** GitHub Actions 分三个 Job；Java 跑 Maven 测试，Python 跑全量 pytest 和安全评测，前端跑契约测试与生产构建。
+- **实现：** `.github/workflows/ci.yml`。
+- **测试层次：** Service/Controller 单测、MySQL/Testcontainers 集成、Python unit/contract/integration、前端契约、微信开发者工具逐页回归。
+- **Trade-off：** 微信平台与本地模型 E2E 不适合全部放入 CI，需要单独记录环境证据。
+- **面试回答：** “CI 证明确定性代码；真实模型、微信能力和混合基础设施由本地 E2E 补充验证。”
+- **追问：** 哪些测试可并行，哪些必须隔离数据库？
 
-**为什么这样设计**：向量召回适合语义，FTS/pg_trgm 适合关键词和拼写，RRF 融合后再精排可提高排序质量。
+## 14. 微信小程序联调
 
-**涉及原理**：Embedding、cosine、Top-K、全文索引、RRF、Rerank、硬过滤。
-
-**缺点**：CPU 本地模型慢；过滤、阈值和索引参数需要评测集校准。
-
-**替代方案**：Elasticsearch/OpenSearch、托管向量库、仅 BM25、端到端长上下文。
-
-**面试回答**：可信政策必须同时满足严格业务过滤、Reranker 成功、分数阈值和引用契约。召回放宽只用于提示，不能自动审批。
-
-## 7. MySQL 与 PostgreSQL 为什么分开
-
-**代码在哪里**：`application.yml`、`DATABASE_DESIGN.md`、pgvector schema。
-
-**为什么这样设计**：MySQL 已承载业务事务；PostgreSQL 提供 pgvector、FTS、pg_trgm 和 LangGraph checkpoint。
-
-**涉及原理**：多数据源、数据所有权、最终一致性、索引选择。
-
-**缺点**：备份、迁移、监控和本地环境更复杂，不能跨库直接做 ACID 事务。
-
-**面试回答**：两个库按事实职责拆分，不做跨库强事务。Python 不越过 Java 修改 MySQL。
-
-## 8. 慢链路怎么优化
-
-当前 4 vCPU VM 的真实聊天耗时 141.35 秒。主要成本来自本地文本生成，严格检索约 25 秒。
-
-可解释的优化顺序：
-
-1. 先用 trace 拆分 Embedding、向量查询、Rerank、LLM；
-2. 缓存 query embedding，控制候选数与上下文长度；
-3. 可选情绪分析与主回答并行或按场景关闭；
-4. 使用更快模型、GPU 或远程推理；
-5. 用 SSE 改善首字延迟；
-6. 压测后再调整线程池、连接池和模型并发。
-
-不能把一次功能验收延迟包装成生产吞吐指标。
-
-## 9. 高频追问速答
-
-**为什么不是微服务？** 业务规模适合模块化单体，Java 内部事务和维护成本更可控；Python 只因 AI 生态独立部署。
-
-**如何避免模型幻觉自动改工单？** 严格政策过滤、可信引用、Java 守卫、状态机条件更新，任何一项不满足就补证或转人工。
-
-**RRF 是什么？** 按不同召回列表中的名次累加 `1/(k+rank)`，不要求向量分数和关键词分数处于同一量纲。
-
-**为什么 ID 用字符串？** Snowflake 类 64 位 ID 超过 JavaScript 安全整数范围，JSON 字符串可避免精度损失。
-
-**为什么 Actuator 曾是 503？** 整体健康包含 PostgreSQL 等依赖；依赖未启动不等于 Java 核心 API 全部失效，证据要分层描述。
-
-**是否实现恰好一次？** 没有。系统实现至少一次投递与幂等处理，这是更准确的工程表述。
-
-## 10. 简历可写亮点
-
-- 基于 Spring Boot、MySQL、Redis、Kafka 与 Transactional Outbox 实现售后工单异步审核，使用幂等键、手动提交、租约续期和 DLQ 保障可恢复性。
-- 设计 Java 与 LangGraph Agent 的可信边界，由 Java 重建订单上下文并校验最终写入，防止客户端或模型伪造业务事实。
-- 搭建 pgvector 混合检索链路，组合 1024 维 Embedding、FTS、pg_trgm、RRF 与 Reranker，并对放宽召回实施不可信降级。
-- 在本地 VMware 完成 PostgreSQL、Kafka、Ollama、TEI 与 Windows 应用混合部署，跑通真实政策问答、引用和 MySQL 消息回读。
+- **场景：** 小程序覆盖登录、订单、售后、客服、地址和反馈。
+- **设计：** `request.js` 统一注入 JWT、处理 401 与错误提示；业务页以服务端返回为准。
+- **实现：** `frontend/uniapp/src/pages/`、`frontend/uniapp/src/utils/request.js`。
+- **Trade-off：** `touristappid` 无法完整验证地图瓦片和部分正式能力；文件选择器也需要人工操作。
+- **面试回答：** “构建通过后还在微信开发者工具逐页点击，并核对 Console、Network 和持久化结果。”
+- **追问：** 正式 AppID 的域名白名单、隐私声明和上传限制如何配置？
