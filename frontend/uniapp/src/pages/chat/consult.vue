@@ -525,6 +525,18 @@ async function resolveRemoteSession(options) {
   if (options.sessionId) {
     return await loadSessionHistory(options.sessionId)
   }
+  if (options.fresh === '1') {
+    try {
+      const result = await createChatSession({ forceNew: true })
+      if (!result?.sessionId) return false
+      sessionId.value = String(result.sessionId)
+      evaluationPending.value = result.status === 'AWAITING_EVALUATION'
+      syncSessionMode(result.mode, result.status)
+      return await loadSessionHistory(result.sessionId)
+    } catch (error) {
+      return false
+    }
+  }
   const ticketId = options.ticketId
   if (!options.orderId && !ticketId) {
     return false
@@ -1036,7 +1048,11 @@ onLoad(async (options) => {
 
   evaluationPending.value = options.status === 'AWAITING_EVALUATION'
   const hasRemoteConversation = await resolveRemoteSession(options)
-  const hasSavedConversation = hasRemoteConversation ? true : restoreConversation()
+  const hasSavedConversation = hasRemoteConversation
+    ? true
+    : options.fresh === '1'
+      ? false
+      : restoreConversation()
   if (!hasSavedConversation) {
     addMessage('service', '您可以描述具体问题并补充图片，我会结合订单和材料给您回复。')
   }

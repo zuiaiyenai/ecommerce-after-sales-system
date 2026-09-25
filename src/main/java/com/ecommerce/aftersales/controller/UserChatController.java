@@ -86,6 +86,14 @@ public class UserChatController {
     public ApiResponse<CreateSessionResponse> createSession(@CurrentUserId Long userId,
                                                             @RequestBody CreateSessionRequest request) {
         ChatSession session = findExistingSession(userId, request);
+        if (Boolean.TRUE.equals(request.getForceNew()) && session != null) {
+            LocalDateTime now = LocalDateTime.now();
+            session.setStatus(STATUS_CLOSED);
+            session.setCloseTime(now);
+            session.setUpdateTime(now);
+            chatSessionMapper.updateById(session);
+            session = null;
+        }
         boolean created = false;
         if (session == null) {
             session = new ChatSession();

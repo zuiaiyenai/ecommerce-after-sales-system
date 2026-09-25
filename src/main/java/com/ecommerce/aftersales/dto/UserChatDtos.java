@@ -17,6 +17,7 @@ public final class UserChatDtos {
         private Long orderId;
         private String merchantCode;
         private String message;
+        private Boolean forceNew;
     }
 
     @Data

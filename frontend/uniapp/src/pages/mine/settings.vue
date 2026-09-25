@@ -69,7 +69,7 @@ function goProfile() {
 }
 
 function changePassword() {
-  uni.showToast({ title: '修改密码功能开发中', icon: 'none' })
+  uni.navigateTo({ url: '/pages/auth/auth?mode=reset' })
 }
 
 function clearCache() {

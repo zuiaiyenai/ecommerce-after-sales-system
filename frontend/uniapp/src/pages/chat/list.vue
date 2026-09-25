@@ -52,7 +52,7 @@ async function loadSessions() {
 }
 
 function startNewChat() {
-  uni.navigateTo({ url: '/pages/chat/consult' })
+  uni.navigateTo({ url: '/pages/chat/consult?fresh=1' })
 }
 
 function openSession(item) {

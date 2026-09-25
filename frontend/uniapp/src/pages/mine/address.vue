@@ -13,7 +13,7 @@
           <text class="addr-phone">{{ addr.phone }}</text>
           <view v-if="addr.isDefault" class="default-tag">默认</view>
         </view>
-        <text class="addr-detail">{{ addr.province }}{{ addr.city }}{{ addr.district }}{{ addr.detail }}</text>
+        <text class="addr-detail">{{ addressText(addr) }}</text>
         <view class="addr-footer">
           <view class="addr-action" @tap="setDefault(addr.id)">
             <text class="radio" :class="{ checked: addr.isDefault }">{{ addr.isDefault ? '◉' : '○' }}</text>
@@ -34,7 +34,7 @@
 
     <!-- 新增/编辑弹窗 -->
     <view v-if="showForm" class="modal-mask" @tap.self="closeForm">
-      <view class="modal-content">
+      <view class="modal-content" @tap.stop>
         <text class="modal-title">{{ editingId ? '编辑地址' : '新增地址' }}</text>
         <view class="divider"></view>
         <view class="form-item">
@@ -68,11 +68,14 @@
 
 <script setup>
 import { ref, reactive } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
 
-const addresses = ref([
+const STORAGE_KEY = 'userAddresses'
+const DEFAULT_ADDRESSES = [
   { id: 1, name: '张三', phone: '13800138001', province: '北京市', city: '北京市', district: '朝阳区', detail: '三里屯路19号院1号楼', isDefault: true },
   { id: 2, name: '李四', phone: '13900139002', province: '上海市', city: '上海市', district: '浦东新区', detail: '陆家嘴环路1000号', isDefault: false }
-])
+]
+const addresses = ref([])
 
 const showForm = ref(false)
 const editingId = ref(null)
@@ -83,6 +86,19 @@ const form = reactive({
   detail: '',
   isDefault: false
 })
+
+onLoad(() => {
+  const saved = uni.getStorageSync(STORAGE_KEY)
+  addresses.value = Array.isArray(saved) ? saved : DEFAULT_ADDRESSES.map(addr => ({ ...addr }))
+})
+
+function persistAddresses() {
+  uni.setStorageSync(STORAGE_KEY, addresses.value)
+}
+
+function addressText(addr) {
+  return `${addr.region || `${addr.province || ''}${addr.city || ''}${addr.district || ''}`}${addr.detail || ''}`
+}
 
 function closeForm() {
   showForm.value = false
@@ -102,7 +118,7 @@ function editAddress(addr) {
   editingId.value = addr.id
   form.name = addr.name
   form.phone = addr.phone
-  form.region = addr.province + addr.city + addr.district
+  form.region = addr.region || `${addr.province || ''}${addr.city || ''}${addr.district || ''}`
   form.detail = addr.detail
   form.isDefault = addr.isDefault
   showForm.value = true
@@ -115,6 +131,10 @@ function saveAddress() {
   }
   if (!form.phone.trim() || form.phone.length !== 11) {
     uni.showToast({ title: '请输入正确手机号', icon: 'none' })
+    return
+  }
+  if (!form.region.trim()) {
+    uni.showToast({ title: '请输入所在地区', icon: 'none' })
     return
   }
   if (!form.detail.trim()) {
@@ -131,6 +151,10 @@ function saveAddress() {
     if (addr) {
       addr.name = form.name
       addr.phone = form.phone
+      addr.region = form.region
+      addr.province = ''
+      addr.city = ''
+      addr.district = ''
       addr.detail = form.detail
       addr.isDefault = form.isDefault
     }
@@ -139,6 +163,7 @@ function saveAddress() {
       id: Date.now(),
       name: form.name,
       phone: form.phone,
+      region: form.region,
       province: '',
       city: '',
       district: '',
@@ -147,6 +172,7 @@ function saveAddress() {
     })
   }
 
+  persistAddresses()
   uni.showToast({ title: '保存成功', icon: 'success' })
   closeForm()
 }
@@ -158,6 +184,7 @@ function deleteAddress(id) {
     success: (res) => {
       if (res.confirm) {
         addresses.value = addresses.value.filter(a => a.id !== id)
+        persistAddresses()
         uni.showToast({ title: '已删除', icon: 'success' })
       }
     }
@@ -166,6 +193,7 @@ function deleteAddress(id) {
 
 function setDefault(id) {
   addresses.value.forEach(a => a.isDefault = a.id === id)
+  persistAddresses()
   uni.showToast({ title: '已设为默认', icon: 'success' })
 }
 </script>

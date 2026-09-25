@@ -123,6 +123,7 @@
 
 <script setup>
 import { computed, reactive, ref, onMounted, onUnmounted } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
 import { request } from '../../utils/request'
 
 const statusBarHeight = ref(0)
@@ -163,6 +164,12 @@ const modeTips = computed(() => {
 onMounted(() => {
   const sysInfo = uni.getSystemInfoSync()
   statusBarHeight.value = sysInfo.statusBarHeight || 20
+})
+
+onLoad((options) => {
+  if (options.mode === 'reset') {
+    switchMode('reset')
+  }
 })
 
 onUnmounted(() => {
