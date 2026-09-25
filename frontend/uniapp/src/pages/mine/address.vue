@@ -2,7 +2,14 @@
   <view class="page">
     <!-- 地址列表 -->
     <scroll-view class="list-area" scroll-y>
-      <view v-if="addresses.length === 0" class="empty">
+      <view v-if="loading" class="empty">
+        <text class="empty-text">地址加载中...</text>
+      </view>
+      <view v-else-if="loadError" class="empty">
+        <text class="empty-text">{{ loadError }}</text>
+        <button class="retry-btn" @tap="loadAddresses">重新加载</button>
+      </view>
+      <view v-else-if="addresses.length === 0" class="empty">
         <text class="empty-icon">📍</text>
         <text class="empty-text">暂无收货地址</text>
       </view>
@@ -29,7 +36,7 @@
 
     <!-- 新增按钮 -->
     <view class="bottom-bar">
-      <button class="add-btn" @tap="showForm = true">+ 新增收货地址</button>
+      <button class="add-btn" @tap="openCreate">+ 新增收货地址</button>
     </view>
 
     <!-- 新增/编辑弹窗 -->
@@ -47,7 +54,11 @@
         </view>
         <view class="form-item">
           <text class="form-label">所在地区</text>
-          <input v-model="form.region" class="form-input" placeholder="省/市/区" />
+          <picker mode="region" :value="regionValue" @change="onRegionChange">
+            <view class="form-input picker-text" :class="{ placeholder: !regionText }">
+              {{ regionText || '请选择省/市/区' }}
+            </view>
+          </picker>
         </view>
         <view class="form-item">
           <text class="form-label">详细地址</text>
@@ -59,7 +70,7 @@
         </view>
         <view class="form-actions">
           <button class="cancel-btn" @tap="closeForm">取消</button>
-          <button class="save-btn" @tap="saveAddress">保存</button>
+          <button class="save-btn" :disabled="saving" @tap="saveAddress">{{ saving ? '保存中...' : '保存' }}</button>
         </view>
       </view>
     </view>
@@ -67,37 +78,53 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { computed, ref, reactive } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
+import { request } from '../../utils/request'
 
-const STORAGE_KEY = 'userAddresses'
-const DEFAULT_ADDRESSES = [
-  { id: 1, name: '张三', phone: '13800138001', province: '北京市', city: '北京市', district: '朝阳区', detail: '三里屯路19号院1号楼', isDefault: true },
-  { id: 2, name: '李四', phone: '13900139002', province: '上海市', city: '上海市', district: '浦东新区', detail: '陆家嘴环路1000号', isDefault: false }
-]
 const addresses = ref([])
+const loading = ref(false)
+const loadError = ref('')
+const saving = ref(false)
 
 const showForm = ref(false)
 const editingId = ref(null)
 const form = reactive({
   name: '',
   phone: '',
-  region: '',
+  province: '',
+  city: '',
+  district: '',
   detail: '',
   isDefault: false
 })
+const regionValue = computed(() => [form.province, form.city, form.district])
+const regionText = computed(() => [form.province, form.city, form.district].filter(Boolean).join(' / '))
 
 onLoad(() => {
-  const saved = uni.getStorageSync(STORAGE_KEY)
-  addresses.value = Array.isArray(saved) ? saved : DEFAULT_ADDRESSES.map(addr => ({ ...addr }))
+  loadAddresses()
 })
 
-function persistAddresses() {
-  uni.setStorageSync(STORAGE_KEY, addresses.value)
+async function loadAddresses() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    addresses.value = await request({ url: '/miniapp/user/addresses' })
+  } catch (error) {
+    loadError.value = error.message || '地址加载失败'
+  } finally {
+    loading.value = false
+  }
 }
 
 function addressText(addr) {
-  return `${addr.region || `${addr.province || ''}${addr.city || ''}${addr.district || ''}`}${addr.detail || ''}`
+  return `${addr.province || ''}${addr.city || ''}${addr.district || ''} ${addr.detail || ''}`.trim()
+}
+
+function openCreate() {
+  editingId.value = null
+  resetForm()
+  showForm.value = true
 }
 
 function closeForm() {
@@ -109,7 +136,9 @@ function closeForm() {
 function resetForm() {
   form.name = ''
   form.phone = ''
-  form.region = ''
+  form.province = ''
+  form.city = ''
+  form.district = ''
   form.detail = ''
   form.isDefault = false
 }
@@ -118,13 +147,22 @@ function editAddress(addr) {
   editingId.value = addr.id
   form.name = addr.name
   form.phone = addr.phone
-  form.region = addr.region || `${addr.province || ''}${addr.city || ''}${addr.district || ''}`
+  form.province = addr.province || ''
+  form.city = addr.city || ''
+  form.district = addr.district || ''
   form.detail = addr.detail
   form.isDefault = addr.isDefault
   showForm.value = true
 }
 
-function saveAddress() {
+function onRegionChange(event) {
+  const [province = '', city = '', district = ''] = event.detail.value || []
+  form.province = province
+  form.city = city
+  form.district = district
+}
+
+async function saveAddress() {
   if (!form.name.trim()) {
     uni.showToast({ title: '请输入收货人姓名', icon: 'none' })
     return
@@ -133,8 +171,8 @@ function saveAddress() {
     uni.showToast({ title: '请输入正确手机号', icon: 'none' })
     return
   }
-  if (!form.region.trim()) {
-    uni.showToast({ title: '请输入所在地区', icon: 'none' })
+  if (!form.province || !form.city || !form.district) {
+    uni.showToast({ title: '请选择所在地区', icon: 'none' })
     return
   }
   if (!form.detail.trim()) {
@@ -142,59 +180,59 @@ function saveAddress() {
     return
   }
 
-  if (form.isDefault) {
-    addresses.value.forEach(a => a.isDefault = false)
+  const data = {
+    name: form.name.trim(),
+    phone: form.phone.trim(),
+    province: form.province,
+    city: form.city,
+    district: form.district,
+    detail: form.detail.trim(),
+    isDefault: form.isDefault
   }
-
-  if (editingId.value) {
-    const addr = addresses.value.find(a => a.id === editingId.value)
-    if (addr) {
-      addr.name = form.name
-      addr.phone = form.phone
-      addr.region = form.region
-      addr.province = ''
-      addr.city = ''
-      addr.district = ''
-      addr.detail = form.detail
-      addr.isDefault = form.isDefault
-    }
-  } else {
-    addresses.value.push({
-      id: Date.now(),
-      name: form.name,
-      phone: form.phone,
-      region: form.region,
-      province: '',
-      city: '',
-      district: '',
-      detail: form.detail,
-      isDefault: form.isDefault
+  saving.value = true
+  try {
+    await request({
+      url: editingId.value ? `/miniapp/user/addresses/${editingId.value}` : '/miniapp/user/addresses',
+      method: editingId.value ? 'PUT' : 'POST',
+      data
     })
+    await loadAddresses()
+    closeForm()
+    uni.showToast({ title: '保存成功', icon: 'success' })
+  } catch (error) {
+    uni.showToast({ title: error.message || '保存失败', icon: 'none' })
+  } finally {
+    saving.value = false
   }
-
-  persistAddresses()
-  uni.showToast({ title: '保存成功', icon: 'success' })
-  closeForm()
 }
 
 function deleteAddress(id) {
   uni.showModal({
     title: '提示',
     content: '确定删除该地址吗？',
-    success: (res) => {
+    success: async (res) => {
       if (res.confirm) {
-        addresses.value = addresses.value.filter(a => a.id !== id)
-        persistAddresses()
-        uni.showToast({ title: '已删除', icon: 'success' })
+        try {
+          await request({ url: `/miniapp/user/addresses/${id}`, method: 'DELETE' })
+          await loadAddresses()
+          uni.showToast({ title: '已删除', icon: 'success' })
+        } catch (error) {
+          uni.showToast({ title: error.message || '删除失败', icon: 'none' })
+        }
       }
     }
   })
 }
 
-function setDefault(id) {
-  addresses.value.forEach(a => a.isDefault = a.id === id)
-  persistAddresses()
-  uni.showToast({ title: '已设为默认', icon: 'success' })
+async function setDefault(id) {
+  if (addresses.value.find(address => address.id === id)?.isDefault) return
+  try {
+    await request({ url: `/miniapp/user/addresses/${id}/default`, method: 'PUT' })
+    await loadAddresses()
+    uni.showToast({ title: '已设为默认', icon: 'success' })
+  } catch (error) {
+    uni.showToast({ title: error.message || '设置失败', icon: 'none' })
+  }
 }
 </script>
 
@@ -233,6 +271,17 @@ function setDefault(id) {
   margin-top: 20rpx;
   font-size: 28rpx;
   color: #999;
+}
+
+.retry-btn {
+  margin-top: 24rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  padding: 0 28rpx;
+  border-radius: 14rpx;
+  background: #ffffff;
+  color: #b86a4a;
+  font-size: 24rpx;
 }
 
 /* 地址卡片 */
@@ -433,6 +482,14 @@ function setDefault(id) {
   font-size: 28rpx;
 }
 
+.picker-text {
+  line-height: 72rpx;
+}
+
+.picker-text.placeholder {
+  color: #999999;
+}
+
 .form-check {
   display: flex;
   align-items: center;
@@ -469,5 +526,9 @@ function setDefault(id) {
   font-size: 28rpx;
   font-weight: 700;
   border: none;
+}
+
+.save-btn[disabled] {
+  opacity: 0.65;
 }
 </style>
