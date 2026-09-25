@@ -1,169 +1,213 @@
 <template>
   <view class="page">
-    <view class="brand">
+    <view class="brand-card">
       <view class="app-icon">
         <view class="bag-handle"></view>
-        <view class="bag-body">
-          <view class="bag-check"></view>
-        </view>
+        <view class="bag-body"><view class="bag-check"></view></view>
       </view>
-      <text class="app-name">电商售后客服</text>
-      <text class="app-version">Version 1.0.0</text>
-    </view>
-
-    <view class="menu">
-      <view class="menu-item" @tap="showComingSoon('去评分')">
-        <text class="menu-label">去评分</text>
-        <text class="menu-arrow">›</text>
-      </view>
-      <view class="menu-item" @tap="showComingSoon('功能介绍')">
-        <text class="menu-label">功能介绍</text>
-        <text class="menu-arrow">›</text>
-      </view>
-      <view class="menu-item" @tap="showComingSoon('投诉')">
-        <text class="menu-label">投诉</text>
-        <text class="menu-arrow">›</text>
-      </view>
-      <view class="menu-item" @tap="showComingSoon('版本更新')">
-        <text class="menu-label">版本更新</text>
-        <text class="menu-arrow">›</text>
+      <view class="brand-copy">
+        <text class="app-name">电商售后智能客服系统</text>
+        <text class="app-version">Version 1.1.0</text>
+        <text class="app-positioning">Java 后端与 AI 应用工程求职展示项目</text>
       </view>
     </view>
 
-    <view class="footer">
-      <text class="footer-text">本地教学与功能演示项目</text>
-      <text class="footer-text">技术说明、运行证据与许可状态见仓库 README</text>
+    <view class="content-card">
+      <text class="section-title">项目介绍</text>
+      <text class="paragraph">面向电商售后场景，覆盖订单、售后申请、智能客服、人工接管、评价分析和运营观测。业务最终状态由 Spring Boot 服务维护，Python Agent 负责 AI 编排与知识检索。</text>
     </view>
+
+    <view class="content-card">
+      <text class="section-title">技术栈</text>
+      <view class="tag-list">
+        <text v-for="item in techStack" :key="item" class="tag">{{ item }}</text>
+      </view>
+    </view>
+
+    <view class="content-card">
+      <text class="section-title">核心能力</text>
+      <view v-for="item in capabilities" :key="item" class="bullet-row">
+        <text class="bullet">•</text>
+        <text class="bullet-text">{{ item }}</text>
+      </view>
+    </view>
+
+    <view class="content-card">
+      <text class="section-title">服务条款</text>
+      <text class="paragraph">本项目用于本地教学、功能演示和技术交流。演示账号与演示数据仅用于验证业务流程；使用者应遵守适用法律法规，不得利用本项目处理违法内容或攻击第三方系统。</text>
+    </view>
+
+    <view class="content-card">
+      <text class="section-title">隐私说明</text>
+      <text class="paragraph">登录手机号、收货地址、反馈联系方式和业务记录仅写入当前配置的本地服务与数据库，用于完成对应功能。请勿在公开演示环境填写真实密码、验证码、身份证件或支付信息。</text>
+    </view>
+
+    <view class="footer">源代码、启动说明、架构与测试证据见仓库文档</view>
   </view>
 </template>
 
 <script setup>
-function showComingSoon(title) {
-  uni.showToast({
-    title: `${title}暂未开放`,
-    icon: 'none'
-  })
-}
+const techStack = [
+  'Spring Boot 3', 'Java 21', 'MyBatis-Plus', 'MySQL', 'Redis',
+  'Kafka', 'Python Agent', 'Ollama', 'pgvector', 'Prometheus', 'Grafana', 'uni-app'
+]
+
+const capabilities = [
+  '订单到售后工单的完整业务闭环',
+  'AI 客服、RAG 检索、情绪分析与人工降级',
+  'Transactional Outbox、重试与幂等控制',
+  'JWT 鉴权、用户数据隔离与服务端持久化',
+  'Prometheus 指标、Grafana 面板与自动化测试'
+]
 </script>
 
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 0 60rpx 64rpx;
+  padding: 28rpx 28rpx 64rpx;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  background: #ffffff;
+  background: #f0eeea;
   color: #1f1f1f;
 }
 
-.brand {
+.brand-card,
+.content-card {
+  padding: 30rpx;
+  border-radius: 24rpx;
+  background: #ffffff;
+  box-shadow: 0 2rpx 16rpx rgba(0, 0, 0, 0.04);
+}
+
+.brand-card {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  padding-top: 206rpx;
-  padding-bottom: 94rpx;
 }
 
 .app-icon {
   position: relative;
-  width: 128rpx;
-  height: 128rpx;
-  border-radius: 30rpx;
+  flex-shrink: 0;
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 26rpx;
   background: linear-gradient(180deg, #d79a72 0%, #b86a4a 100%);
-  box-shadow: 0 12rpx 28rpx rgba(184, 106, 74, 0.24);
+  box-shadow: 0 10rpx 24rpx rgba(184, 106, 74, 0.22);
 }
 
 .bag-handle {
   position: absolute;
-  left: 42rpx;
-  top: 30rpx;
-  width: 44rpx;
-  height: 32rpx;
-  border: 8rpx solid rgba(255, 255, 255, 0.92);
+  left: 37rpx;
+  top: 26rpx;
+  width: 38rpx;
+  height: 28rpx;
+  border: 7rpx solid rgba(255, 255, 255, 0.92);
   border-bottom: 0;
-  border-radius: 26rpx 26rpx 0 0;
+  border-radius: 22rpx 22rpx 0 0;
   box-sizing: border-box;
 }
 
 .bag-body {
   position: absolute;
-  left: 30rpx;
-  top: 52rpx;
-  width: 68rpx;
-  height: 54rpx;
-  border-radius: 12rpx;
+  left: 26rpx;
+  top: 46rpx;
+  width: 60rpx;
+  height: 48rpx;
+  border-radius: 10rpx;
   background: #ffffff;
 }
 
 .bag-check {
   position: absolute;
-  left: 22rpx;
-  top: 18rpx;
-  width: 26rpx;
-  height: 14rpx;
-  border-left: 7rpx solid #b86a4a;
-  border-bottom: 7rpx solid #b86a4a;
+  left: 19rpx;
+  top: 15rpx;
+  width: 23rpx;
+  height: 12rpx;
+  border-left: 6rpx solid #b86a4a;
+  border-bottom: 6rpx solid #b86a4a;
   transform: rotate(-45deg);
-  box-sizing: border-box;
+}
+
+.brand-copy {
+  min-width: 0;
+  margin-left: 26rpx;
+}
+
+.app-name,
+.app-version,
+.app-positioning {
+  display: block;
 }
 
 .app-name {
-  margin-top: 66rpx;
-  font-size: 42rpx;
-  font-weight: 500;
-  line-height: 1.2;
-  color: #222222;
+  font-size: 31rpx;
+  font-weight: 800;
 }
 
 .app-version {
+  margin-top: 8rpx;
+  color: #b86a4a;
+  font-size: 23rpx;
+  font-weight: 700;
+}
+
+.app-positioning {
+  margin-top: 10rpx;
+  color: #888;
+  font-size: 21rpx;
+  line-height: 1.5;
+}
+
+.content-card {
   margin-top: 22rpx;
-  font-size: 34rpx;
-  line-height: 1.2;
-  color: #6d6d6d;
 }
 
-.menu {
-  border-top: 1rpx solid #eeeeee;
+.section-title {
+  display: block;
+  margin-bottom: 18rpx;
+  font-size: 29rpx;
+  font-weight: 800;
 }
 
-.menu-item {
+.paragraph,
+.bullet-text {
+  color: #666;
+  font-size: 24rpx;
+  line-height: 1.75;
+}
+
+.tag-list {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 116rpx;
-  border-bottom: 1rpx solid #eeeeee;
+  flex-wrap: wrap;
+  gap: 12rpx;
 }
 
-.menu-label {
-  font-size: 34rpx;
-  color: #222222;
+.tag {
+  padding: 8rpx 16rpx;
+  border-radius: 10rpx;
+  background: #fff5f0;
+  color: #a85f42;
+  font-size: 21rpx;
 }
 
-.menu-arrow {
-  font-size: 60rpx;
-  font-weight: 200;
-  color: #b8b8b8;
-  line-height: 1;
+.bullet-row {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 10rpx;
+}
+
+.bullet {
+  margin-right: 12rpx;
+  color: #c97b5a;
+  line-height: 1.75;
+}
+
+.bullet-text {
+  flex: 1;
 }
 
 .footer {
-  margin-top: auto;
-  padding-top: 160rpx;
-  padding-bottom: env(safe-area-inset-bottom);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.footer-text {
-  font-size: 25rpx;
-  line-height: 1.45;
-  color: #9a9a9a;
+  padding: 44rpx 20rpx 0;
   text-align: center;
-}
-
-.footer-text + .footer-text {
-  margin-top: 12rpx;
+  color: #999;
+  font-size: 21rpx;
 }
 </style>

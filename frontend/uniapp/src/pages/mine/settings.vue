@@ -90,7 +90,7 @@ function goAbout() {
 }
 
 function goFeedback() {
-  uni.showToast({ title: '意见反馈功能开发中', icon: 'none' })
+  uni.navigateTo({ url: '/pages/mine/feedback' })
 }
 
 function logout() {

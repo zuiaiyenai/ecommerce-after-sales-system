@@ -105,6 +105,14 @@
       }
     },
     {
+      "path": "pages/mine/feedback",
+      "style": {
+        "navigationBarTitleText": "意见反馈",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
       "path": "pages/mine/about",
       "style": {
         "navigationBarTitleText": "关于项目",
